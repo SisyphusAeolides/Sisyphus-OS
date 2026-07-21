@@ -12,7 +12,10 @@ reference-driver = []
 kernel-bin = []
 
 [dependencies]
+aether = { path = "../../core/aether" }
 abyss = { path = "../../core/abyss" }
+blacklab = { path = "../../core/blacklab" }
+kairos = { path = "../../core/kairos" }
 sisyphus-driver-abi = { path = "../../libraries/driver-abi" }
 
 [lib]

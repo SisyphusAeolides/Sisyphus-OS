@@ -1,3 +1,85 @@
+use crate::arch::{Architecture, InterruptState};
+
+pub struct X86_64;
+
+impl Architecture for X86_64 {
+    const NAME: &'static str = "x86_64";
+    const PAGE_SHIFT: usize = 12;
+    const CACHE_LINE_SIZE: usize = 64;
+    const MAXIMUM_CPUS: usize = 256;
+
+    fn hardware_thread_id() -> u32 {
+        let maximum_leaf = core::arch::x86_64::__cpuid(0).eax;
+        for leaf in [0x1f, 0x0b] {
+            if maximum_leaf >= leaf {
+                let topology = core::arch::x86_64::__cpuid_count(leaf, 0);
+                if topology.ebx != 0 {
+                    return topology.edx;
+                }
+            }
+        }
+        core::arch::x86_64::__cpuid(1).ebx >> 24
+    }
+
+    fn counter_sample() -> u64 {
+        let low: u32;
+        let high: u32;
+        // SAFETY: RDTSC is available on x86_64. The value is a local ordering
+        // and accounting source until timer calibration establishes units.
+        unsafe {
+            core::arch::asm!(
+                "rdtsc",
+                out("eax") low,
+                out("edx") high,
+                options(nomem, nostack),
+            );
+        }
+        (u64::from(high) << 32) | u64::from(low)
+    }
+
+    fn spin_wait() {
+        core::hint::spin_loop();
+    }
+
+    fn halt() -> ! {
+        halt()
+    }
+
+    fn save_and_disable_interrupts() -> InterruptState {
+        let flags: usize;
+        // SAFETY: Boulder executes this at ring 0. Reading RFLAGS and clearing
+        // IF does not alter memory or the stack visible to Rust.
+        unsafe {
+            core::arch::asm!(
+                "pushfq",
+                "pop {flags}",
+                "cli",
+                flags = out(reg) flags,
+                options(nomem),
+            );
+        }
+        InterruptState::new(flags & (1 << 9) != 0)
+    }
+
+    unsafe fn restore_interrupts(state: InterruptState) {
+        if state.interrupts_were_enabled() {
+            // SAFETY: The method contract requires a matching state captured
+            // on this hardware thread.
+            unsafe { core::arch::asm!("sti", options(nomem, nostack)) };
+        } else {
+            // SAFETY: Keeping maskable interrupts disabled restores the saved
+            // state without modifying unrelated RFLAGS bits.
+            unsafe { core::arch::asm!("cli", options(nomem, nostack)) };
+        }
+    }
+
+    unsafe fn invalidate_local_page(virtual_address: usize) {
+        // SAFETY: Forwarded under this method's page-table synchronization
+        // contract.
+        unsafe { invalidate_page(virtual_address) };
+    }
+}
+
 /// Writes one byte to an x86 I/O port.
 ///
 /// # Safety

@@ -7,10 +7,21 @@ name = "abyss"
 version = "0.1.0"
 
 [[package]]
+name = "aether"
+version = "0.1.0"
+
+[[package]]
+name = "blacklab"
+version = "0.1.0"
+
+[[package]]
 name = "boulder"
 version = "0.1.0"
 dependencies = [
  "abyss",
+ "aether",
+ "blacklab",
+ "kairos",
  "sisyphus-driver-abi",
 ]
 
@@ -27,6 +38,10 @@ version = "0.1.0"
 dependencies = [
  "slope",
 ]
+
+[[package]]
+name = "kairos"
+version = "0.1.0"
 
 [[package]]
 name = "push"

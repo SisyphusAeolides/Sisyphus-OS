@@ -7,6 +7,9 @@ and userland.
 ## Architecture
 
 - `core/abyss`: physical and virtual memory primitives.
+- `core/aether`: explicit effect machines, bounded flight recording, and policy execution.
+- `core/blacklab`: logical-time, inference, and adaptation planning.
+- `core/kairos`: ABI negotiation, normalized machine profiles, and object authority.
 - `kernel/boulder`: kernel core and C driver host.
 - `libraries/driver-abi`: canonical Rust definition of the stable C driver ABI.
 - `libraries/slope`: safe userland syscall surface.
@@ -112,6 +115,72 @@ preemptible, implicit-deadline periodic tasks using conservative integer
 utilization accounting. Runtime budgets, absolute deadlines, missed releases,
 and overruns are reported explicitly. RTM wrappers are CPUID-gated rollback
 aids only and are not treated as memory-security boundaries.
+
+Boulder has a compile-time architecture contract for CPU identity, local
+counter sampling, interrupt-state preservation, local TLB invalidation, and idle
+behavior. The x86-64 backend is implemented; additional architecture backends
+remain gated until their boot, interrupt-controller, and page-table paths are
+complete. Scoped authority proofs make privileged operations explicit without
+claiming that kernel bootstrap cannot construct the root authority.
+
+The bounded heterogeneous fabric routes fixed-size work descriptors to CPU,
+firmware, copy, compute, media, or remote nodes by capability and NUMA domain.
+Node queues and work slots use generation-checked handles, explicit completion
+transitions, and bounded capacity. The initial implementation serializes
+metadata and is restricted to thread context; interrupt handlers must defer
+work through an IRQ handoff queue.
+
+Aether provides allocation-free effect state machines whose handlers fail
+closed on unknown operations, a bounded single-writer flight recorder with
+stable logical tickets, and a policy VM with verified registers and branches,
+bounded execution fuel, serialized program replacement, and explicit
+host-call registration. Boulder supplies architecture timestamps and CPU IDs
+and gates policy installation through scoped authority. Software provenance,
+speculative journals, and linear session IPC remain disabled until their
+cross-CPU ownership and revocation models are complete.
+
+Kairos strictly negotiates self-describing ABI layouts and feature
+intersections, constructs bounded machine profiles from Boulder's real ACPI,
+boot-memory, and PCI observations, and synthesizes immutable machine and NUMA
+domain snapshots. Its internal object table uses non-cloneable,
+generation-checked handles with rights attenuation and opaque payload handles.
+Raw-pointer message transport, mutable global profile publication, and a
+user-visible syscall token encoding remain disabled pending per-process handle
+tables and revocation-safe ownership transfer.
+
+Black Lab evaluates a checked rational logical-time model, stores bounded
+semantic memory relationships through object handles and page numbers, ranks
+validated hardware-personality transforms, and emits resonance plans from
+immutable snapshots. Its fixed-shape INT8 inference uses checked configuration,
+i64 accumulators, and bounded operation counts. Thermal forecasts become power
+advice only after offline validation metadata passes the configured quality
+gate. Its Q16.16 PA-I learner publishes atomic weight snapshots and provides
+telemetry only; it cannot authorize memory access. Resonance outputs remain
+advisory and never directly remap memory or reconfigure hardware. Aion's
+bounded evolution chamber uses an explicit deterministic seed, scores each
+forecast once against later observations, preserves four elites, and requires
+minimum evidence before producing a new generation. Evolved candidates remain
+non-actionable until independently validated through the thermal quality gate.
+Echidna represents temporary cross-address-space sharing as generation-checked,
+expiring metadata leases; the memory manager must separately validate and map
+their opaque object handles. Tartarus tracks retired ranges in software and
+returns quarantine decisions while placing learning samples on a bounded queue.
+It neither overloads architecture page-table bits nor trains a model in an
+exception handler.
+Oureboros is currently a fixed-capacity deterministic artifact catalog, not a
+replacement VFS. It unfolds versioned recipes into caller-owned writable
+buffers, checks their exact SHA-256 manifest measurements, and clears output on
+failure. Executable-class output is never transferred directly to control: it
+must still pass the existing binary loader and W^X mapping pipeline. Manifest
+measurements provide authenticity only when the manifest root is independently
+protected and replicated.
+The ignition sequence is a protocol-neutral phase guard around Boulder's
+existing GRUB/Multiboot2 handoff. It requires validated boot information,
+memory, topology, subsystems, and interrupt routing in order before declaring
+the kernel online. A future Limine entry can feed the same guard without adding
+a competing entry symbol. Userland remains explicitly not ready until a
+measured artifact also passes executable-format validation, relocation,
+address-space installation, and Ring 3 entry setup.
 
 ```sh
 rustup component add rust-src --toolchain nightly

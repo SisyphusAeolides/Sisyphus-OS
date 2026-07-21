@@ -1,7 +1,10 @@
 [workspace]
 resolver = "3"
 members = [
+    "core/aether",
     "core/abyss",
+    "core/blacklab",
+    "core/kairos",
     "kernel/boulder",
     "libraries/driver-abi",
     "libraries/slope",
@@ -10,7 +13,10 @@ members = [
     "userland/crest",
 ]
 default-members = [
+    "core/aether",
     "core/abyss",
+    "core/blacklab",
+    "core/kairos",
     "kernel/boulder",
     "libraries/driver-abi",
     "libraries/slope",

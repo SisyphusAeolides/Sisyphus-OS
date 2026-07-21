@@ -9,8 +9,16 @@ use abyss::reservation::{Reservation, ReservationKind, ReservationTable};
 use boulder::arch::x86_64::{halt, idle};
 use boulder::boot::acpi::discover_madt;
 use boulder::boot::multiboot2::BootInformation;
+use boulder::capability::{
+    ArtifactSynthesisControl, Authority, FabricControl, FaultPolicyControl, LearningControl,
+    MachineProfileControl, MemorySharingControl, PolicyControl, ResonanceControl,
+};
 use boulder::cpu::topology::{self, ExecutionClass, TopologyPolicy};
+use boulder::fabric::{
+    Completion, KERNEL_FABRIC, NodeCapabilities, NodeClass, WorkDescriptor, opcode,
+};
 use boulder::hw::pci;
+use boulder::ignition::{BootProtocol, IgnitionSequence};
 use boulder::interrupts;
 use boulder::mmio::{EARLY_MAPPED_PHYSICAL_LIMIT, direct_map_address, kernel_mmio};
 use boulder::serial::SerialPort;
@@ -60,6 +68,7 @@ pub extern "C" fn boulder_main(multiboot_address: usize) -> ! {
     // kernel console before other drivers are initialized.
     let mut serial = unsafe { SerialPort::initialize(COM1) };
     let _ = writeln!(serial, "Boulder: entering Rust in long mode");
+    let mut ignition = IgnitionSequence::new(BootProtocol::Multiboot2);
 
     // SAFETY: Bootstrap assembly enters with interrupts disabled and installs
     // the GDT selector expected by Boulder's interrupt gates.
@@ -103,6 +112,10 @@ pub extern "C" fn boulder_main(multiboot_address: usize) -> ! {
             halt();
         }
     };
+    if let Err(error) = ignition.validate_handoff(memory_map.regions().len()) {
+        let _ = writeln!(serial, "Boulder: ignition handoff failed: {error:?}");
+        halt();
+    }
 
     let mut usable_bytes = 0_u64;
     for region in memory_map.regions() {
@@ -241,6 +254,10 @@ pub extern "C" fn boulder_main(multiboot_address: usize) -> ! {
         halt();
     }
     let _ = writeln!(serial, "Abyss: higher-half direct map verified");
+    if let Err(error) = ignition.memory_ready(frames.managed_frames(), frames.free_frames()) {
+        let _ = writeln!(serial, "Boulder: ignition memory phase failed: {error:?}");
+        halt();
+    }
 
     let rsdp = match boot.rsdp() {
         Ok(rsdp) => rsdp,
@@ -355,6 +372,122 @@ pub extern "C" fn boulder_main(multiboot_address: usize) -> ! {
         cpu_topology.enclave_cores,
         cpu_topology.compute_cores
     );
+    if let Err(error) = ignition.topology_ready(cpu_topology.processor_count) {
+        let _ = writeln!(serial, "Boulder: ignition topology phase failed: {error:?}");
+        halt();
+    }
+
+    // SAFETY: This is the single trusted bootstrap path. Subsystems receive
+    // scoped rights from this root instead of constructing authority directly.
+    let authority = unsafe { Authority::assume_root() };
+    let fabric_control = authority.grant::<FabricControl>();
+    let cpu_node = match KERNEL_FABRIC.register_node(
+        NodeClass::Cpu,
+        0,
+        NodeCapabilities::empty(),
+        &fabric_control,
+    ) {
+        Ok(node) => node,
+        Err(error) => {
+            let _ = writeln!(serial, "Boulder: fabric CPU registration failed: {error:?}");
+            halt();
+        }
+    };
+    let fabric_work = match KERNEL_FABRIC.submit(
+        WorkDescriptor::new(opcode::NOP, 0, 0, 0),
+        NodeClass::Cpu,
+        0,
+        NodeCapabilities::empty(),
+        &fabric_control,
+    ) {
+        Ok(handle) => handle,
+        Err(error) => {
+            let _ = writeln!(serial, "Boulder: fabric submission failed: {error:?}");
+            halt();
+        }
+    };
+    let taken_work = match KERNEL_FABRIC.take(cpu_node) {
+        Ok(Some(work)) => work,
+        Ok(None) => {
+            let _ = writeln!(serial, "Boulder: fabric CPU queue was unexpectedly empty");
+            halt();
+        }
+        Err(error) => {
+            let _ = writeln!(serial, "Boulder: fabric work retrieval failed: {error:?}");
+            halt();
+        }
+    };
+    if taken_work.0 != fabric_work || taken_work.1.opcode != opcode::NOP {
+        let _ = writeln!(serial, "Boulder: fabric returned the wrong work item");
+        halt();
+    }
+    if let Err(error) = KERNEL_FABRIC.complete(fabric_work, Ok(())) {
+        let _ = writeln!(serial, "Boulder: fabric completion failed: {error:?}");
+        halt();
+    }
+    if KERNEL_FABRIC.completion(fabric_work) != Ok(Completion::Succeeded) {
+        let _ = writeln!(serial, "Boulder: fabric completion state was not published");
+        halt();
+    }
+    if let Err(error) = KERNEL_FABRIC.release(fabric_work, &fabric_control) {
+        let _ = writeln!(serial, "Boulder: fabric release failed: {error:?}");
+        halt();
+    }
+    let _ = writeln!(
+        serial,
+        "Boulder: capability-gated fabric work cycle verified"
+    );
+
+    let policy_control = authority.grant::<PolicyControl>();
+    if let Err(error) = boulder::aether::initialize(&policy_control) {
+        let _ = writeln!(serial, "Boulder: Aether initialization failed: {error:?}");
+        halt();
+    }
+    if boulder::aether::policy_allows_page_count(512) != Ok(true)
+        || boulder::aether::policy_allows_page_count(513) != Ok(false)
+        || boulder::aether::recorded_events() < 3
+    {
+        let _ = writeln!(serial, "Boulder: Aether policy or recorder test failed");
+        halt();
+    }
+    let _ = writeln!(
+        serial,
+        "Boulder: Aether policy and bounded flight recorder verified"
+    );
+
+    let resonance_control = authority.grant::<ResonanceControl>();
+    let learning_control = authority.grant::<LearningControl>();
+    let memory_sharing = authority.grant::<MemorySharingControl>();
+    let fault_policy = authority.grant::<FaultPolicyControl>();
+    let artifact_synthesis = authority.grant::<ArtifactSynthesisControl>();
+    let blacklab = match boulder::blacklab::initialize(
+        &resonance_control,
+        &learning_control,
+        &memory_sharing,
+        &fault_policy,
+        &artifact_synthesis,
+    ) {
+        Ok(summary) => summary,
+        Err(error) => {
+            let _ = writeln!(
+                serial,
+                "Boulder: Black Lab initialization failed: {error:?}"
+            );
+            halt();
+        }
+    };
+    let _ = writeln!(
+        serial,
+        "Boulder: Black Lab time={} ns, heat={}, predictions={}, epoch={}, generation={}, faults={}, artifact={} bytes",
+        blacklab.logical_nanoseconds,
+        blacklab.semantic_heat,
+        blacklab.predictions,
+        blacklab.next_epoch,
+        blacklab.evolution_generation,
+        blacklab.quarantined_faults,
+        blacklab.materialized_bytes
+    );
+
     // SAFETY: ACPI described the active controllers, the local APIC is live,
     // and interrupts are disabled after the completed self-IPI test.
     let io_apics = match unsafe { interrupts::initialize_io_apics(&madt, mmio, local_apic.id) } {
@@ -384,6 +517,32 @@ pub extern "C" fn boulder_main(multiboot_address: usize) -> ! {
         "Boulder: discovered {} PCI function(s)",
         pci_inventory.devices().len()
     );
+
+    let machine_profile_control = authority.grant::<MachineProfileControl>();
+    let kairos = match boulder::kairos::initialize(
+        &madt,
+        &memory_map,
+        &pci_inventory,
+        &machine_profile_control,
+    ) {
+        Ok(summary) => summary,
+        Err(error) => {
+            let _ = writeln!(serial, "Boulder: Kairos initialization failed: {error:?}");
+            halt();
+        }
+    };
+    let _ = writeln!(
+        serial,
+        "Boulder: Kairos profile CPUs={}, memory={}, I/O={}, domains={}",
+        kairos.processors, kairos.memory_regions, kairos.io_devices, kairos.domains
+    );
+    if let Err(error) = ignition.subsystems_ready() {
+        let _ = writeln!(
+            serial,
+            "Boulder: ignition subsystem phase failed: {error:?}"
+        );
+        halt();
+    }
 
     // SAFETY: Interrupts remain disabled and PIT channel 2 has not been
     // assigned to another subsystem during early boot.
@@ -456,7 +615,26 @@ pub extern "C" fn boulder_main(multiboot_address: usize) -> ! {
         "Boulder: driver memory capabilities {:#x}",
         driver_host.api().capabilities
     );
+    if let Err(error) = ignition.interrupts_ready() {
+        let _ = writeln!(
+            serial,
+            "Boulder: ignition interrupt phase failed: {error:?}"
+        );
+        halt();
+    }
     interrupts::enable();
+    let ignition_summary = match ignition.online() {
+        Ok(summary) => summary,
+        Err(error) => {
+            let _ = writeln!(serial, "Boulder: ignition online phase failed: {error:?}");
+            halt();
+        }
+    };
+    let _ = writeln!(
+        serial,
+        "Boulder: ignition {:?} online, userland_ready={}",
+        ignition_summary.protocol, ignition_summary.userland_ready
+    );
     let _ = writeln!(serial, "Boulder: interrupt-routing milestone complete");
 
     idle()
