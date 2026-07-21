@@ -7,9 +7,11 @@ use abyss::memory::MemoryRegionKind;
 use abyss::paging::PhysicalAddress;
 use abyss::reservation::{Reservation, ReservationKind, ReservationTable};
 use boulder::arch::x86_64::{halt, idle};
+use boulder::boot::acpi::discover_madt;
 use boulder::boot::multiboot2::BootInformation;
+use boulder::hw::pci;
 use boulder::interrupts;
-use boulder::mmio::{direct_map_address, kernel_mmio};
+use boulder::mmio::{EARLY_MAPPED_PHYSICAL_LIMIT, direct_map_address, kernel_mmio};
 use boulder::serial::SerialPort;
 use boulder::shim::{AbyssAllocator, DriverHost, DriverServices, IrqService, MmioService};
 use core::alloc::{GlobalAlloc, Layout};
@@ -38,6 +40,17 @@ unsafe extern "C" fn irq_test_handler(context: *mut c_void) {
     if let Some(counter) = unsafe { counter.as_ref() } {
         counter.fetch_add(1, Ordering::Relaxed);
     }
+}
+
+fn map_acpi_region(physical_address: u64, length: usize) -> Option<*const u8> {
+    if length == 0
+        || physical_address
+            .checked_add(length as u64)
+            .is_none_or(|end| end > EARLY_MAPPED_PHYSICAL_LIMIT)
+    {
+        return None;
+    }
+    direct_map_address(physical_address).map(|address| address as *const u8)
 }
 
 #[unsafe(no_mangle)]
@@ -228,6 +241,31 @@ pub extern "C" fn boulder_main(multiboot_address: usize) -> ! {
     }
     let _ = writeln!(serial, "Abyss: higher-half direct map verified");
 
+    let rsdp = match boot.rsdp() {
+        Ok(rsdp) => rsdp,
+        Err(error) => {
+            let _ = writeln!(serial, "Boulder: ACPI root pointer error: {error:?}");
+            halt();
+        }
+    };
+    // SAFETY: Bootstrap paging keeps the first GiB stable in the direct map,
+    // and the mapper rejects every ACPI range outside that mapped window.
+    let madt = match unsafe { discover_madt(rsdp, map_acpi_region) } {
+        Ok(madt) => madt,
+        Err(error) => {
+            let _ = writeln!(serial, "Boulder: ACPI MADT discovery failed: {error:?}");
+            halt();
+        }
+    };
+    let _ = writeln!(
+        serial,
+        "Boulder: ACPI revision={} LAPIC={:#x}, I/O APICs={}, overrides={}",
+        rsdp.revision,
+        madt.local_apic_address,
+        madt.io_apics().len(),
+        madt.interrupt_source_overrides().len()
+    );
+
     let mmio = kernel_mmio();
     let mapping = match mmio.map(0xb8000, 2, 0) {
         Ok(mapping) => mapping,
@@ -285,6 +323,70 @@ pub extern "C" fn boulder_main(multiboot_address: usize) -> ! {
         serial,
         "Boulder: local APIC id={} version={:#x} at {:#x}, self-IPI verified",
         local_apic.id, local_apic.version, local_apic.physical_address
+    );
+    if local_apic.physical_address != madt.local_apic_address {
+        let _ = writeln!(
+            serial,
+            "Boulder: local APIC address disagrees with ACPI ({:#x})",
+            madt.local_apic_address
+        );
+        halt();
+    }
+    // SAFETY: ACPI described the active controllers, the local APIC is live,
+    // and interrupts are disabled after the completed self-IPI test.
+    let io_apics = match unsafe { interrupts::initialize_io_apics(&madt, mmio, local_apic.id) } {
+        Ok(info) => info,
+        Err(error) => {
+            let _ = writeln!(serial, "Boulder: I/O APIC initialization failed: {error:?}");
+            halt();
+        }
+    };
+    let _ = writeln!(
+        serial,
+        "Boulder: {} I/O APIC(s), {} redirection entries, {} source override(s)",
+        io_apics.controller_count,
+        io_apics.redirection_entries,
+        io_apics.interrupt_source_overrides
+    );
+
+    // SAFETY: The x86 PC boot platform exposes PCI configuration mechanism
+    // one, and no driver can access its ports before this early inventory.
+    let pci_inventory = unsafe { pci::scan_buses() };
+    if pci_inventory.overflowed() {
+        let _ = writeln!(serial, "Boulder: PCI inventory capacity exceeded");
+        halt();
+    }
+    let _ = writeln!(
+        serial,
+        "Boulder: discovered {} PCI function(s)",
+        pci_inventory.devices().len()
+    );
+
+    // SAFETY: Interrupts remain disabled and PIT channel 2 has not been
+    // assigned to another subsystem during early boot.
+    let timer = match unsafe { interrupts::initialize_local_apic_timer(10) } {
+        Ok(timer) => timer,
+        Err(error) => {
+            let _ = writeln!(serial, "Boulder: local APIC timer failed: {error:?}");
+            halt();
+        }
+    };
+    interrupts::enable();
+    for _ in 0..100_000_000 {
+        if interrupts::apic_timer_hits() >= 2 {
+            break;
+        }
+        core::hint::spin_loop();
+    }
+    interrupts::disable();
+    if interrupts::apic_timer_hits() < 2 {
+        let _ = writeln!(serial, "Boulder: local APIC timer delivery timed out");
+        halt();
+    }
+    let _ = writeln!(
+        serial,
+        "Boulder: local APIC timer {} Hz, {} ms period verified",
+        timer.ticks_per_second, timer.period_milliseconds
     );
 
     let driver_allocator = AbyssAllocator::new(&KERNEL_HEAP);

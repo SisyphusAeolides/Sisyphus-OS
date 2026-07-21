@@ -24,4 +24,5 @@ if [ "$status" -ne 0 ] && [ "$status" -ne 124 ]; then
 fi
 
 cat "$output"
+grep -Fq "Boulder: local APIC timer" "$output"
 grep -Fq "Boulder: interrupt-routing milestone complete" "$output"

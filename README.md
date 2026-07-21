@@ -31,6 +31,20 @@ The canonical C header is
 `kernel/boulder/include/sisyphus/driver.h`. A linked reference driver lives in
 `kernel/boulder/drivers/reference` and is exercised by the Rust test suite.
 
+Boulder also contains compatibility foundations for externally built C code:
+
+- bounds-checked ELF64 relocatable-object and shared-object validation;
+- a W^X load-plan validator and bounded AMD64 relocation engine;
+- an explicit external-symbol allowlist and a small versioned Linux KPI subset;
+- serialized C device and network vtable adapters;
+- backend-gated IOMMU domains, deferred hotplug events, and device typestates.
+
+These components do not claim that an arbitrary foreign kernel module can run
+unchanged. Linux, BSD, and Windows drivers depend on large, version-specific
+kernel interfaces and execution assumptions. Each compatibility personality
+must resolve and validate those contracts before executable module loading is
+enabled.
+
 `DriverHost` derives its capability mask and callback table directly from the
 installed services. A capability cannot be advertised without its backend.
 `AbyssAllocator` connects the C allocation callbacks to Abyss's bootstrap bump
@@ -61,8 +75,13 @@ installs a higher-half physical alias and a dedicated cache-disabled MMIO window
 The bootstrap CPU then installs a 256-entry IDT, remaps and masks the legacy
 8259 PIC, and exposes generation-checked IRQ registrations to C drivers. APIC
 capability is detected at boot, the local xAPIC is enabled through the uncached
-MMIO window, and a self-IPI validates local routing. External I/O APIC routing
-waits for ACPI MADT discovery.
+MMIO window, and a self-IPI validates local routing. Boulder validates the
+Multiboot ACPI root pointer, traverses the RSDT or XSDT, parses the MADT, applies
+interrupt-source overrides, and programs every I/O APIC redirection entry from
+a masked state. The local APIC timer is calibrated against PIT channel 2 and
+must deliver repeated periodic interrupts before boot can complete. Legacy PCI
+configuration-space discovery records all present functions while respecting
+multifunction headers.
 
 ```sh
 rustup component add rust-src --toolchain nightly

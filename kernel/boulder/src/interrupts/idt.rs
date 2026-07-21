@@ -1,7 +1,7 @@
 use core::mem::size_of;
 
 const IDT_ENTRIES: usize = 256;
-const INTERRUPT_STUBS: usize = 49;
+const INTERRUPT_STUBS: usize = 50;
 const KERNEL_CODE_SELECTOR: u16 = 0x08;
 const INTERRUPT_GATE: u8 = 0x8e;
 

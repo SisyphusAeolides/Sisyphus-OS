@@ -8,7 +8,7 @@ use sisyphus_driver_abi::{
 use crate::shim::IrqService;
 use crate::sync::SpinLock;
 
-use super::pic;
+use super::set_irq_masked;
 
 const IRQ_LINES: usize = 16;
 
@@ -123,7 +123,7 @@ impl IrqService for KernelIrq {
             return STATUS_NOT_FOUND;
         }
         slot.enabled = enabled;
-        pic::set_masked(irq as u8, !enabled);
+        set_irq_masked(irq as u8, !enabled);
         STATUS_OK
     }
 
@@ -136,7 +136,7 @@ impl IrqService for KernelIrq {
         if slot.handler.is_none() || slot.generation != generation {
             return STATUS_NOT_FOUND;
         }
-        pic::set_masked(irq as u8, true);
+        set_irq_masked(irq as u8, true);
         *slot = IrqSlot::EMPTY;
         STATUS_OK
     }

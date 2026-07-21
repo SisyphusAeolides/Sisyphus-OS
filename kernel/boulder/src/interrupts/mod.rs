@@ -1,5 +1,6 @@
 mod apic;
 mod idt;
+mod ioapic;
 mod irq;
 mod pic;
 
@@ -9,7 +10,8 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use crate::arch::x86_64::halt;
 use crate::serial::SerialPort;
 
-pub use apic::LocalApicInfo;
+pub use apic::{LocalApicInfo, LocalApicTimerInfo, TimerError};
+pub use ioapic::{IoApicError, IoApicInfo};
 pub use irq::{KernelIrq, kernel_irq};
 
 core::arch::global_asm!(include_str!("stubs.S"), options(att_syntax));
@@ -18,9 +20,11 @@ const COM1: u16 = 0x3f8;
 const LEGACY_IRQ_VECTOR_BASE: usize = 32;
 const LEGACY_IRQ_VECTOR_END: usize = 48;
 pub const APIC_TEST_VECTOR: u8 = 48;
+pub const APIC_TIMER_VECTOR: u8 = 49;
 
 static BREAKPOINT_HITS: AtomicUsize = AtomicUsize::new(0);
 static APIC_TEST_HITS: AtomicUsize = AtomicUsize::new(0);
+static APIC_TIMER_HITS: AtomicUsize = AtomicUsize::new(0);
 
 #[repr(C)]
 pub struct InterruptFrame {
@@ -100,6 +104,43 @@ pub fn apic_test_hits() -> usize {
     APIC_TEST_HITS.load(Ordering::Relaxed)
 }
 
+/// Calibrates and starts Boulder's periodic local APIC timer.
+///
+/// # Safety
+///
+/// This must be called on the bootstrap CPU with interrupts disabled and with
+/// exclusive ownership of PIT channel 2.
+pub unsafe fn initialize_local_apic_timer(
+    period_milliseconds: u32,
+) -> Result<LocalApicTimerInfo, TimerError> {
+    APIC_TIMER_HITS.store(0, Ordering::Relaxed);
+    unsafe { apic::calibrate_and_start_timer(APIC_TIMER_VECTOR, period_milliseconds) }
+}
+
+pub fn apic_timer_hits() -> usize {
+    APIC_TIMER_HITS.load(Ordering::Relaxed)
+}
+
+/// Maps and initializes every I/O APIC described by ACPI.
+///
+/// # Safety
+///
+/// The MADT must describe the active platform, the local APIC must already be
+/// initialized, and interrupts must remain disabled during reconfiguration.
+pub unsafe fn initialize_io_apics(
+    madt: &crate::boot::acpi::MadtInfo,
+    mmio: &dyn crate::shim::MmioService,
+    destination_apic_id: u8,
+) -> Result<IoApicInfo, IoApicError> {
+    unsafe { ioapic::initialize(madt, mmio, destination_apic_id) }
+}
+
+fn set_irq_masked(irq: u8, masked: bool) {
+    if !ioapic::set_masked(irq, masked) {
+        pic::set_masked(irq, masked);
+    }
+}
+
 #[unsafe(no_mangle)]
 extern "C" fn boulder_interrupt_dispatch(frame: *mut InterruptFrame) {
     let Some(frame) = (unsafe { frame.as_mut() }) else {
@@ -112,10 +153,18 @@ extern "C" fn boulder_interrupt_dispatch(frame: *mut InterruptFrame) {
         LEGACY_IRQ_VECTOR_BASE..LEGACY_IRQ_VECTOR_END => {
             let irq = (frame.vector - LEGACY_IRQ_VECTOR_BASE) as u8;
             kernel_irq().dispatch(irq);
-            pic::end_of_interrupt(irq);
+            if ioapic::is_initialized() {
+                apic::end_of_interrupt();
+            } else {
+                pic::end_of_interrupt(irq);
+            }
         }
         48 => {
             APIC_TEST_HITS.fetch_add(1, Ordering::Relaxed);
+            apic::end_of_interrupt();
+        }
+        49 => {
+            APIC_TIMER_HITS.fetch_add(1, Ordering::Relaxed);
             apic::end_of_interrupt();
         }
         255 => {}

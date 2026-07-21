@@ -1,6 +1,8 @@
 mod abyss_allocator;
 mod host;
+pub mod linux_kpi;
 mod module;
+pub mod polymorphic_vtable;
 mod services;
 
 pub use abyss_allocator::AbyssAllocator;

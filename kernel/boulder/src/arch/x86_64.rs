@@ -34,6 +34,42 @@ pub unsafe fn inb(port: u16) -> u8 {
     value
 }
 
+/// Writes one 32-bit value to an x86 I/O port.
+///
+/// # Safety
+///
+/// The caller must ensure that the port exists, accepts double-word writes,
+/// and is exclusively owned for the duration of this access.
+pub unsafe fn outl(port: u16, value: u32) {
+    unsafe {
+        core::arch::asm!(
+            "out dx, eax",
+            in("dx") port,
+            in("eax") value,
+            options(nomem, nostack, preserves_flags),
+        );
+    }
+}
+
+/// Reads one 32-bit value from an x86 I/O port.
+///
+/// # Safety
+///
+/// The caller must ensure that the port exists, permits double-word reads,
+/// and is exclusively owned for the duration of this access.
+pub unsafe fn inl(port: u16) -> u32 {
+    let value: u32;
+    unsafe {
+        core::arch::asm!(
+            "in eax, dx",
+            in("dx") port,
+            out("eax") value,
+            options(nomem, nostack, preserves_flags),
+        );
+    }
+    value
+}
+
 /// Invalidates the local TLB entry for one virtual address.
 ///
 /// # Safety

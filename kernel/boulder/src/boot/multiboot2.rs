@@ -1,8 +1,12 @@
 use abyss::memory::{MemoryMap, MemoryMapError, MemoryRegion, MemoryRegionKind};
 use abyss::paging::PhysicalAddress;
 
+use super::acpi::Rsdp;
+
 const TAG_END: u32 = 0;
 const TAG_MEMORY_MAP: u32 = 6;
+const TAG_ACPI_OLD: u32 = 14;
+const TAG_ACPI_NEW: u32 = 15;
 const HEADER_SIZE: usize = 8;
 const TAG_HEADER_SIZE: usize = 8;
 const MEMORY_MAP_HEADER_SIZE: usize = 16;
@@ -89,6 +93,25 @@ impl BootInformation {
         Ok(map)
     }
 
+    pub fn rsdp(self) -> Result<Rsdp, BootError> {
+        let tag = match self.find_tag(TAG_ACPI_NEW)? {
+            Some(tag) => tag,
+            None => self
+                .find_tag(TAG_ACPI_OLD)?
+                .ok_or(BootError::MissingAcpiRsdp)?,
+        };
+        let payload_length = tag.size - TAG_HEADER_SIZE;
+        // SAFETY: find_tag verified the complete tag and its payload against
+        // the bounds of the Multiboot2 information structure.
+        let payload = unsafe {
+            core::slice::from_raw_parts(
+                (tag.address + TAG_HEADER_SIZE) as *const u8,
+                payload_length,
+            )
+        };
+        Rsdp::parse(payload).map_err(|_| BootError::MalformedAcpiRsdp)
+    }
+
     fn find_tag(self, wanted_type: u32) -> Result<Option<Tag>, BootError> {
         let end = self.address + self.total_size;
         let mut address = self.address + HEADER_SIZE;
@@ -128,6 +151,8 @@ pub enum BootError {
     MissingEndTag,
     MissingMemoryMap,
     MalformedMemoryMap,
+    MissingAcpiRsdp,
+    MalformedAcpiRsdp,
     AddressOverflow,
     TooManyMemoryRegions,
 }

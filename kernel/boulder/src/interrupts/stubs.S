@@ -65,6 +65,7 @@ ISR_NO_ERROR 45
 ISR_NO_ERROR 46
 ISR_NO_ERROR 47
 ISR_NO_ERROR 48
+ISR_NO_ERROR 49
 
 .global isr_unhandled
 isr_unhandled:
@@ -124,4 +125,4 @@ isr_stub_table:
     .quad isr_24, isr_25, isr_26, isr_27, isr_28, isr_29, isr_30, isr_31
     .quad isr_32, isr_33, isr_34, isr_35, isr_36, isr_37, isr_38, isr_39
     .quad isr_40, isr_41, isr_42, isr_43, isr_44, isr_45, isr_46, isr_47
-    .quad isr_48
+    .quad isr_48, isr_49
