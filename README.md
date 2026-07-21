@@ -170,17 +170,25 @@ exception handler.
 Oureboros is currently a fixed-capacity deterministic artifact catalog, not a
 replacement VFS. It unfolds versioned recipes into caller-owned writable
 buffers, checks their exact SHA-256 manifest measurements, and clears output on
-failure. Executable-class output is never transferred directly to control: it
-must still pass the existing binary loader and W^X mapping pipeline. Manifest
-measurements provide authenticity only when the manifest root is independently
-protected and replicated.
+failure. A verified-artifact token keeps the measured source buffer immutably
+borrowed while Boulder prepares it. The first executable recipe emits a fixed,
+minimal x86-64 ET_DYN image whose information is part of the generator; it is
+preparation evidence rather than a compressed arbitrary user program. The PID
+1 preparation path rejects dynamic-linker requirements, non-user addresses,
+oversized images, unreadable executable segments, and manifest/ELF entry-point
+disagreement. Executable-class output is never transferred directly to
+control: a future installer must copy it into writable non-executable pages,
+clear BSS, remeasure, and seal final W^X permissions. Manifest measurements
+provide authenticity only when the manifest root is independently protected
+and replicated.
 The ignition sequence is a protocol-neutral phase guard around Boulder's
 existing GRUB/Multiboot2 handoff. It requires validated boot information,
 memory, topology, subsystems, and interrupt routing in order before declaring
 the kernel online. A future Limine entry can feed the same guard without adding
-a competing entry symbol. Userland remains explicitly not ready until a
-measured artifact also passes executable-format validation, relocation,
-address-space installation, and Ring 3 entry setup.
+a competing entry symbol. Userland remains explicitly not ready even though a
+measured PID 1 image now passes static executable-format preparation: separate
+user page tables, segment installation, relocation policy, TSS privilege
+stacks, syscall entry, scheduling, and Ring 3 transfer are not yet complete.
 
 ```sh
 rustup component add rust-src --toolchain nightly

@@ -12,6 +12,7 @@ use boulder::boot::multiboot2::BootInformation;
 use boulder::capability::{
     ArtifactSynthesisControl, Authority, FabricControl, FaultPolicyControl, LearningControl,
     MachineProfileControl, MemorySharingControl, PolicyControl, ResonanceControl,
+    UserlandImageControl,
 };
 use boulder::cpu::topology::{self, ExecutionClass, TopologyPolicy};
 use boulder::fabric::{
@@ -460,12 +461,14 @@ pub extern "C" fn boulder_main(multiboot_address: usize) -> ! {
     let memory_sharing = authority.grant::<MemorySharingControl>();
     let fault_policy = authority.grant::<FaultPolicyControl>();
     let artifact_synthesis = authority.grant::<ArtifactSynthesisControl>();
+    let userland_image = authority.grant::<UserlandImageControl>();
     let blacklab = match boulder::blacklab::initialize(
         &resonance_control,
         &learning_control,
         &memory_sharing,
         &fault_policy,
         &artifact_synthesis,
+        &userland_image,
     ) {
         Ok(summary) => summary,
         Err(error) => {
@@ -478,14 +481,15 @@ pub extern "C" fn boulder_main(multiboot_address: usize) -> ! {
     };
     let _ = writeln!(
         serial,
-        "Boulder: Black Lab time={} ns, heat={}, predictions={}, epoch={}, generation={}, faults={}, artifact={} bytes",
+        "Boulder: Black Lab time={} ns, heat={}, predictions={}, epoch={}, generation={}, faults={}, artifact={} bytes, PID1 plan entry={:#x}",
         blacklab.logical_nanoseconds,
         blacklab.semantic_heat,
         blacklab.predictions,
         blacklab.next_epoch,
         blacklab.evolution_generation,
         blacklab.quarantined_faults,
-        blacklab.materialized_bytes
+        blacklab.materialized_bytes,
+        blacklab.pid1_entry_point
     );
 
     // SAFETY: ACPI described the active controllers, the local APIC is live,

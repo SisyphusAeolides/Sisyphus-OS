@@ -1,5 +1,6 @@
 pub const MAXIMUM_FRACTAL_INODES: usize = 1024;
 pub const MAXIMUM_ARTIFACT_BYTES: usize = 1024 * 1024;
+pub const MINIMAL_X86_64_ELF_BYTES: usize = 132;
 
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -62,6 +63,25 @@ pub struct ArtifactMeasurement {
     pub sha256: [u8; 32],
 }
 
+/// A measured artifact that keeps its backing buffer immutably borrowed.
+///
+/// Consumers can parse or copy these bytes, but safe code cannot modify the
+/// source between measurement and preparation while this token is alive.
+pub struct VerifiedArtifact<'bytes> {
+    measurement: ArtifactMeasurement,
+    bytes: &'bytes [u8],
+}
+
+impl VerifiedArtifact<'_> {
+    pub const fn measurement(&self) -> ArtifactMeasurement {
+        self.measurement
+    }
+
+    pub const fn bytes(&self) -> &[u8] {
+        self.bytes
+    }
+}
+
 /// Fixed-capacity catalog of deterministic artifact recipes.
 ///
 /// The catalog synthesizes bytes into caller-owned writable memory and checks
@@ -106,11 +126,11 @@ impl FractalCatalog {
             .ok_or(OureborosError::UnknownInode)
     }
 
-    pub fn materialize(
+    pub fn materialize<'bytes>(
         &self,
         inode_id: u32,
-        target: &mut [u8],
-    ) -> Result<ArtifactMeasurement, OureborosError> {
+        target: &'bytes mut [u8],
+    ) -> Result<VerifiedArtifact<'bytes>, OureborosError> {
         let seed = *self.seed(inode_id)?;
         let output_length = seed.unfolded_size_bytes as usize;
         if target.len() < output_length {
@@ -123,13 +143,17 @@ impl FractalCatalog {
             output.fill(0);
             return Err(OureborosError::DigestMismatch);
         }
-        Ok(ArtifactMeasurement {
+        let measurement = ArtifactMeasurement {
             inode_id,
             class: seed.class,
             architecture: seed.architecture,
             bytes_written: output_length,
             entry_offset: seed.entry_offset as usize,
             sha256: actual,
+        };
+        Ok(VerifiedArtifact {
+            measurement,
+            bytes: &target[..output_length],
         })
     }
 
@@ -159,16 +183,29 @@ pub fn measure_recipe(
     if unfolded_size_bytes == 0 || unfolded_size_bytes > MAXIMUM_ARTIFACT_BYTES {
         return Err(OureborosError::InvalidSeed);
     }
-    let mut generator = Generator::new(recipe);
     let mut hasher = Sha256::new();
-    let full_chunks = unfolded_size_bytes / 8;
-    for _ in 0..full_chunks {
-        hasher.update(&generator.next().to_le_bytes());
-    }
-    let remainder = unfolded_size_bytes % 8;
-    if remainder != 0 {
-        let bytes = generator.next().to_le_bytes();
-        hasher.update(&bytes[..remainder]);
+    match recipe.algorithm_version {
+        1 => {
+            let mut generator = Generator::new(recipe);
+            let full_chunks = unfolded_size_bytes / 8;
+            for _ in 0..full_chunks {
+                hasher.update(&generator.next().to_le_bytes());
+            }
+            let remainder = unfolded_size_bytes % 8;
+            if remainder != 0 {
+                let bytes = generator.next().to_le_bytes();
+                hasher.update(&bytes[..remainder]);
+            }
+        }
+        2 => {
+            if unfolded_size_bytes != MINIMAL_X86_64_ELF_BYTES {
+                return Err(OureborosError::InvalidSeed);
+            }
+            let mut image = [0_u8; MINIMAL_X86_64_ELF_BYTES];
+            unfold_minimal_x86_64_elf(recipe, &mut image);
+            hasher.update(&image);
+        }
+        _ => return Err(OureborosError::UnsupportedRecipe),
     }
     Ok(hasher.finish())
 }
@@ -197,11 +234,20 @@ fn validate_seed(seed: FractalSeed) -> Result<(), OureborosError> {
             }
         }
     }
+    if seed.recipe.algorithm_version == 2
+        && (seed.class != FractalClass::Executable
+            || seed.architecture != TargetArchitecture::X86_64
+            || size != MINIMAL_X86_64_ELF_BYTES
+            || seed.entry_offset != 128)
+    {
+        return Err(OureborosError::InvalidSeed);
+    }
     Ok(())
 }
 
 fn validate_recipe(recipe: FractalRecipe) -> Result<(), OureborosError> {
-    if recipe.algorithm_version != 1 || (recipe.base_entropy == 0 && recipe.structural_mutator == 0)
+    if !matches!(recipe.algorithm_version, 1 | 2)
+        || (recipe.base_entropy == 0 && recipe.structural_mutator == 0)
     {
         return Err(OureborosError::UnsupportedRecipe);
     }
@@ -210,12 +256,56 @@ fn validate_recipe(recipe: FractalRecipe) -> Result<(), OureborosError> {
 
 fn unfold(recipe: FractalRecipe, output: &mut [u8]) -> Result<(), OureborosError> {
     validate_recipe(recipe)?;
-    let mut generator = Generator::new(recipe);
-    for chunk in output.chunks_mut(8) {
-        let bytes = generator.next().to_le_bytes();
-        chunk.copy_from_slice(&bytes[..chunk.len()]);
+    match recipe.algorithm_version {
+        1 => {
+            let mut generator = Generator::new(recipe);
+            for chunk in output.chunks_mut(8) {
+                let bytes = generator.next().to_le_bytes();
+                chunk.copy_from_slice(&bytes[..chunk.len()]);
+            }
+        }
+        2 if output.len() == MINIMAL_X86_64_ELF_BYTES => {
+            let image: &mut [u8; MINIMAL_X86_64_ELF_BYTES] =
+                output.try_into().map_err(|_| OureborosError::InvalidSeed)?;
+            unfold_minimal_x86_64_elf(recipe, image);
+        }
+        2 => return Err(OureborosError::InvalidSeed),
+        _ => return Err(OureborosError::UnsupportedRecipe),
     }
     Ok(())
+}
+
+/// Emits a minimal static ET_DYN image containing `pause; jmp $-2`.
+///
+/// The image is preparation evidence only. Its loop has no syscall or exit
+/// path and must not be treated as a functional init process.
+fn unfold_minimal_x86_64_elf(recipe: FractalRecipe, image: &mut [u8; MINIMAL_X86_64_ELF_BYTES]) {
+    image.fill(0);
+    image[..4].copy_from_slice(b"\x7fELF");
+    image[4] = 2;
+    image[5] = 1;
+    image[6] = 1;
+    image[16..18].copy_from_slice(&3_u16.to_le_bytes());
+    image[18..20].copy_from_slice(&62_u16.to_le_bytes());
+    image[20..24].copy_from_slice(&1_u32.to_le_bytes());
+    image[24..32].copy_from_slice(&0x1000_u64.to_le_bytes());
+    image[32..40].copy_from_slice(&64_u64.to_le_bytes());
+    image[52..54].copy_from_slice(&64_u16.to_le_bytes());
+    image[54..56].copy_from_slice(&56_u16.to_le_bytes());
+    image[56..58].copy_from_slice(&1_u16.to_le_bytes());
+
+    let header = &mut image[64..120];
+    header[0..4].copy_from_slice(&1_u32.to_le_bytes());
+    header[4..8].copy_from_slice(&5_u32.to_le_bytes());
+    header[8..16].copy_from_slice(&128_u64.to_le_bytes());
+    header[16..24].copy_from_slice(&0x1000_u64.to_le_bytes());
+    header[32..40].copy_from_slice(&4_u64.to_le_bytes());
+    header[40..48].copy_from_slice(&4_u64.to_le_bytes());
+    header[48..56].copy_from_slice(&1_u64.to_le_bytes());
+
+    image[120..128]
+        .copy_from_slice(&(recipe.base_entropy ^ recipe.structural_mutator).to_le_bytes());
+    image[128..132].copy_from_slice(&[0xf3, 0x90, 0xeb, 0xfc]);
 }
 
 struct Generator {
@@ -499,7 +589,8 @@ mod tests {
         let mut catalog = FractalCatalog::new();
         catalog.plant_seed(seed).unwrap();
         let mut output = [0_u8; 40];
-        let measurement = catalog.materialize(1, &mut output).unwrap();
+        let artifact = catalog.materialize(1, &mut output).unwrap();
+        let measurement = artifact.measurement();
         assert_eq!(measurement.bytes_written, 37);
         assert_eq!(measurement.sha256, digest);
 
@@ -507,10 +598,10 @@ mod tests {
         corrupt.inode_id = 2;
         corrupt.expected_sha256[0] ^= 1;
         catalog.plant_seed(corrupt).unwrap();
-        assert_eq!(
+        assert!(matches!(
             catalog.materialize(2, &mut output),
             Err(OureborosError::DigestMismatch)
-        );
+        ));
         assert_eq!(output[..37], [0; 37]);
     }
 
@@ -529,5 +620,32 @@ mod tests {
             FractalCatalog::new().plant_seed(seed),
             Err(OureborosError::InvalidSeed)
         );
+    }
+
+    #[test]
+    fn unfolds_a_measured_minimal_x86_64_elf_recipe() {
+        let recipe = FractalRecipe {
+            algorithm_version: 2,
+            base_entropy: 0x9999_8888_7777_6666,
+            structural_mutator: 0xaaaa_bbbb_cccc_dddd,
+        };
+        let digest = measure_recipe(recipe, MINIMAL_X86_64_ELF_BYTES).unwrap();
+        let mut catalog = FractalCatalog::new();
+        catalog
+            .plant_seed(FractalSeed {
+                inode_id: 3,
+                class: FractalClass::Executable,
+                architecture: TargetArchitecture::X86_64,
+                recipe,
+                unfolded_size_bytes: MINIMAL_X86_64_ELF_BYTES as u32,
+                entry_offset: 128,
+                expected_sha256: digest,
+            })
+            .unwrap();
+        let mut output = [0_u8; MINIMAL_X86_64_ELF_BYTES];
+        let artifact = catalog.materialize(3, &mut output).unwrap();
+        assert_eq!(artifact.bytes()[..4], *b"\x7fELF");
+        assert_eq!(artifact.bytes()[128..], [0xf3, 0x90, 0xeb, 0xfc]);
+        assert_eq!(artifact.measurement().sha256, digest);
     }
 }

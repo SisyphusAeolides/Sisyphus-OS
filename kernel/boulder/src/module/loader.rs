@@ -7,6 +7,8 @@ const SEGMENT_EXECUTABLE: u32 = 1 << 0;
 const SEGMENT_WRITABLE: u32 = 1 << 1;
 const SEGMENT_READABLE: u32 = 1 << 2;
 const SEGMENT_FLAGS: u32 = SEGMENT_EXECUTABLE | SEGMENT_WRITABLE | SEGMENT_READABLE;
+const SEGMENT_DYNAMIC: u32 = 2;
+const SEGMENT_INTERPRETER: u32 = 3;
 const MAXIMUM_LOAD_SEGMENTS: usize = 16;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -49,6 +51,7 @@ pub struct LoadPlan {
     pub image_start: u64,
     pub image_end: u64,
     pub entry_point: u64,
+    pub requires_runtime_linker: bool,
 }
 
 impl LoadPlan {
@@ -78,11 +81,16 @@ impl LoadPlan {
             image_start: u64::MAX,
             image_end: 0,
             entry_point: read_u64(bytes, 24).ok_or(LoaderError::Truncated)?,
+            requires_runtime_linker: false,
         };
         for index in 0..program_header_count {
             let offset = program_header_offset + index * program_header_size;
             let header = &bytes[offset..offset + program_header_size];
-            if read_u32(header, 0).ok_or(LoaderError::InvalidProgramHeaders)? != SEGMENT_LOAD {
+            let segment_type = read_u32(header, 0).ok_or(LoaderError::InvalidProgramHeaders)?;
+            if matches!(segment_type, SEGMENT_DYNAMIC | SEGMENT_INTERPRETER) {
+                plan.requires_runtime_linker = true;
+            }
+            if segment_type != SEGMENT_LOAD {
                 continue;
             }
             let flags = read_u32(header, 4).ok_or(LoaderError::InvalidSegment)?;
@@ -168,6 +176,24 @@ impl LoadPlan {
         bytes
             .get(segment.file_offset..segment.file_offset + segment.file_size)
             .ok_or(LoaderError::InvalidSegment)
+    }
+
+    pub fn entry_file_offset(&self) -> Result<usize, LoaderError> {
+        let segment = self
+            .segments()
+            .iter()
+            .copied()
+            .find(|segment| segment.executable && segment.contains(self.entry_point))
+            .ok_or(LoaderError::InvalidEntryPoint)?;
+        let within_segment = usize::try_from(self.entry_point - segment.virtual_address)
+            .map_err(|_| LoaderError::InvalidEntryPoint)?;
+        if within_segment >= segment.file_size {
+            return Err(LoaderError::InvalidEntryPoint);
+        }
+        segment
+            .file_offset
+            .checked_add(within_segment)
+            .ok_or(LoaderError::InvalidEntryPoint)
     }
 }
 
@@ -274,6 +300,8 @@ mod tests {
         assert_eq!(plan.image_start, 0x1000);
         assert_eq!(plan.image_end, 0x2000);
         assert_eq!(plan.segments().len(), 1);
+        assert!(!plan.requires_runtime_linker);
+        assert_eq!(plan.entry_file_offset(), Ok(128));
         assert_eq!(
             plan.segment_data(&bytes, plan.segments()[0]).unwrap(),
             &[1, 2, 3, 4]

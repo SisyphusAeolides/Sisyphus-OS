@@ -20,6 +20,7 @@ pub struct LearningControl;
 pub struct MemorySharingControl;
 pub struct FaultPolicyControl;
 pub struct ArtifactSynthesisControl;
+pub struct UserlandImageControl;
 
 impl sealed::Sealed for FabricControl {}
 impl sealed::Sealed for PhysicalMemoryControl {}
@@ -33,6 +34,7 @@ impl sealed::Sealed for LearningControl {}
 impl sealed::Sealed for MemorySharingControl {}
 impl sealed::Sealed for FaultPolicyControl {}
 impl sealed::Sealed for ArtifactSynthesisControl {}
+impl sealed::Sealed for UserlandImageControl {}
 
 impl Right for FabricControl {}
 impl Right for PhysicalMemoryControl {}
@@ -46,6 +48,7 @@ impl Right for LearningControl {}
 impl Right for MemorySharingControl {}
 impl Right for FaultPolicyControl {}
 impl Right for ArtifactSynthesisControl {}
+impl Right for UserlandImageControl {}
 
 /// Root from which scoped kernel authority proofs are issued.
 ///

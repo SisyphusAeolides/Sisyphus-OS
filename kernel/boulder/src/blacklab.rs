@@ -7,8 +7,8 @@ use ::blacklab::graph::{
     EdgeKind, GraphError, NodeKind, PagePrediction, SemanticEdge, SemanticGraph, SemanticNode,
 };
 use ::blacklab::oureboros::{
-    FractalCatalog, FractalClass, FractalRecipe, FractalSeed, OureborosError, TargetArchitecture,
-    measure_recipe,
+    FractalCatalog, FractalClass, FractalRecipe, FractalSeed, MINIMAL_X86_64_ELF_BYTES,
+    OureborosError, TargetArchitecture, measure_recipe,
 };
 use ::blacklab::pythia::{ClassifierError, Label, NYX_ANOMALY_DETECTOR};
 use ::blacklab::resonance::{
@@ -26,8 +26,9 @@ use ::blacklab::timeline::{CounterScale, TimelineError, WorkloadTerm, logical_de
 use crate::aether::{event_kind, record};
 use crate::capability::{
     ArtifactSynthesisControl, Capability, FaultPolicyControl, LearningControl,
-    MemorySharingControl, ResonanceControl,
+    MemorySharingControl, ResonanceControl, UserlandImageControl,
 };
+use crate::process::image::{UserImageError, prepare_user_image};
 use crate::sync::SpinLock;
 
 struct Runtime {
@@ -72,6 +73,7 @@ pub struct Summary {
     pub evolution_generation: u64,
     pub quarantined_faults: u64,
     pub materialized_bytes: usize,
+    pub pid1_entry_point: u64,
     pub thermal_model_actionable: bool,
 }
 
@@ -88,6 +90,7 @@ pub enum InitializeError {
     Echidna(EchidnaError),
     Tartarus(TartarusError),
     Oureboros(OureborosError),
+    UserImage(UserImageError),
     IncompletePlan,
 }
 
@@ -97,6 +100,7 @@ pub fn initialize(
     _memory_sharing: &Capability<'_, MemorySharingControl>,
     _fault_policy: &Capability<'_, FaultPolicyControl>,
     _artifact_synthesis: &Capability<'_, ArtifactSynthesisControl>,
+    userland_image: &Capability<'_, UserlandImageControl>,
 ) -> Result<Summary, InitializeError> {
     let mut runtime = RUNTIME.lock();
     if runtime.initialized {
@@ -331,10 +335,11 @@ pub fn initialize(
         })
         .map_err(InitializeError::Oureboros)?;
     let mut artifact = [0_u8; 64];
-    let measurement = runtime
+    let artifact = runtime
         .artifacts
         .materialize(1, &mut artifact)
         .map_err(InitializeError::Oureboros)?;
+    let measurement = artifact.measurement();
     if measurement.sha256 != expected_sha256
         || measurement.class != FractalClass::Configuration
         || runtime.artifacts.len() != 1
@@ -342,6 +347,37 @@ pub fn initialize(
         return Err(InitializeError::IncompletePlan);
     }
     let materialized_bytes = measurement.bytes_written;
+
+    let pid1_recipe = FractalRecipe {
+        algorithm_version: 2,
+        base_entropy: 0x9999_8888_7777_6666,
+        structural_mutator: 0xaaaa_bbbb_cccc_dddd,
+    };
+    let pid1_digest = measure_recipe(pid1_recipe, MINIMAL_X86_64_ELF_BYTES)
+        .map_err(InitializeError::Oureboros)?;
+    runtime
+        .artifacts
+        .plant_seed(FractalSeed {
+            inode_id: 2,
+            class: FractalClass::Executable,
+            architecture: TargetArchitecture::X86_64,
+            recipe: pid1_recipe,
+            unfolded_size_bytes: MINIMAL_X86_64_ELF_BYTES as u32,
+            entry_offset: 128,
+            expected_sha256: pid1_digest,
+        })
+        .map_err(InitializeError::Oureboros)?;
+    let mut pid1_bytes = [0_u8; MINIMAL_X86_64_ELF_BYTES];
+    let pid1_artifact = runtime
+        .artifacts
+        .materialize(2, &mut pid1_bytes)
+        .map_err(InitializeError::Oureboros)?;
+    let pid1_image =
+        prepare_user_image(pid1_artifact, userland_image).map_err(InitializeError::UserImage)?;
+    if pid1_image.measurement().sha256 != pid1_digest || runtime.artifacts.len() != 2 {
+        return Err(InitializeError::IncompletePlan);
+    }
+    let pid1_entry_point = pid1_image.plan().entry_point;
 
     let fault_features = [1, 0, 0, 0, 0, 0, 0, 0];
     NYX_ANOMALY_DETECTOR
@@ -419,6 +455,7 @@ pub fn initialize(
         evolution_generation,
         quarantined_faults,
         materialized_bytes,
+        pid1_entry_point,
         thermal_model_actionable: thermal_forecast.validated,
     })
 }

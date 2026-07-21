@@ -17,6 +17,7 @@ pub mod memory;
 pub mod mirage;
 pub mod mmio;
 pub mod module;
+pub mod process;
 pub mod scheduler;
 pub mod serial;
 pub mod shim;
