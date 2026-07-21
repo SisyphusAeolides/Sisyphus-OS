@@ -60,7 +60,13 @@ pub trait UserAddressSpaceBackend {
         entry_point: u64,
     ) -> Result<Self::Process, Self::Error>;
 
-    fn abort(&mut self, space: Self::Space);
+    fn abort(&mut self, space: Self::Space) -> Result<(), Self::Error>;
+
+    fn process_info(&self, process: &Self::Process) -> Option<ProcessImageInfo>;
+
+    fn process_generation(&self, process: &Self::Process) -> Option<u32>;
+
+    fn release_process(&mut self, process: &Self::Process) -> Result<(), Self::Error>;
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -85,37 +91,31 @@ pub fn install_user_image<Backend: UserAddressSpaceBackend>(
         let memory_size = match usize::try_from(segment.memory_size) {
             Ok(size) => size,
             Err(_) => {
-                backend.abort(space);
-                return Err(InstallError::InvalidSegmentSize);
+                return fail_after_abort(backend, space, InstallError::InvalidSegmentSize);
             }
         };
         let mapping = match backend.map_zeroed(space, segment.virtual_address, memory_size) {
             Ok(mapping) => mapping,
             Err(error) => {
-                backend.abort(space);
-                return Err(InstallError::Backend(error));
+                return fail_after_abort(backend, space, InstallError::Backend(error));
             }
         };
         let data = match plan.segment_data(image.bytes(), *segment) {
             Ok(data) => data,
             Err(error) => {
-                backend.abort(space);
-                return Err(InstallError::Loader(error));
+                return fail_after_abort(backend, space, InstallError::Loader(error));
             }
         };
         if let Err(error) = backend.copy_into(mapping, 0, data) {
-            backend.abort(space);
-            return Err(InstallError::Backend(error));
+            return fail_after_abort(backend, space, InstallError::Backend(error));
         }
         match backend.verify_contents(mapping, data, memory_size) {
             Ok(true) => {}
             Ok(false) => {
-                backend.abort(space);
-                return Err(InstallError::VerificationFailed);
+                return fail_after_abort(backend, space, InstallError::VerificationFailed);
             }
             Err(error) => {
-                backend.abort(space);
-                return Err(InstallError::Backend(error));
+                return fail_after_abort(backend, space, InstallError::Backend(error));
             }
         }
         let permissions = MappingPermissions {
@@ -124,20 +124,17 @@ pub fn install_user_image<Backend: UserAddressSpaceBackend>(
             executable: segment.executable,
         };
         if permissions.writable && permissions.executable {
-            backend.abort(space);
-            return Err(InstallError::WriteExecuteMapping);
+            return fail_after_abort(backend, space, InstallError::WriteExecuteMapping);
         }
         if let Err(error) = backend.seal(mapping, permissions) {
-            backend.abort(space);
-            return Err(InstallError::Backend(error));
+            return fail_after_abort(backend, space, InstallError::Backend(error));
         }
     }
 
     let process = match backend.commit(space, plan.entry_point) {
         Ok(process) => process,
         Err(error) => {
-            backend.abort(space);
-            return Err(InstallError::Backend(error));
+            return fail_after_abort(backend, space, InstallError::Backend(error));
         }
     };
     Ok(InstalledUserImage {
@@ -148,9 +145,21 @@ pub fn install_user_image<Backend: UserAddressSpaceBackend>(
     })
 }
 
+fn fail_after_abort<Backend: UserAddressSpaceBackend, T>(
+    backend: &mut Backend,
+    space: Backend::Space,
+    error: InstallError<Backend::Error>,
+) -> Result<T, InstallError<Backend::Error>> {
+    match backend.abort(space) {
+        Ok(()) => Err(error),
+        Err(cleanup_error) => Err(InstallError::Cleanup(cleanup_error)),
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum InstallError<BackendError> {
     Backend(BackendError),
+    Cleanup(BackendError),
     Loader(LoaderError),
     InvalidSegmentSize,
     VerificationFailed,
@@ -175,6 +184,10 @@ pub struct ProcessImageHandle {
 }
 
 impl ProcessImageHandle {
+    pub(crate) const fn new(slot: u16, generation: u32) -> Self {
+        Self { slot, generation }
+    }
+
     pub const fn slot(&self) -> u16 {
         self.slot
     }
@@ -188,6 +201,8 @@ impl ProcessImageHandle {
 pub struct ProcessImageInfo {
     pub entry_point: u64,
     pub segment_count: usize,
+    pub address_space_root: Option<u64>,
+    pub owned_frames: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -246,6 +261,8 @@ impl<const BYTES_PER_SEGMENT: usize> DryRunAddressSpace<BYTES_PER_SEGMENT> {
             process_info: ProcessImageInfo {
                 entry_point: 0,
                 segment_count: 0,
+                address_space_root: None,
+                owned_frames: 0,
             },
         }
     }
@@ -255,7 +272,7 @@ impl<const BYTES_PER_SEGMENT: usize> DryRunAddressSpace<BYTES_PER_SEGMENT> {
             .then_some(self.process_info)
     }
 
-    pub fn release_process(&mut self, handle: &ProcessImageHandle) -> Result<(), DryRunError> {
+    pub fn release(&mut self, handle: &ProcessImageHandle) -> Result<(), DryRunError> {
         if self.resolve_process(handle).is_none() {
             return Err(DryRunError::InvalidHandle);
         }
@@ -414,19 +431,33 @@ impl<const BYTES_PER_SEGMENT: usize> UserAddressSpaceBackend
         self.process_info = ProcessImageInfo {
             entry_point,
             segment_count: self.slot_count,
+            address_space_root: None,
+            owned_frames: 0,
         };
-        Ok(ProcessImageHandle {
-            slot: 0,
-            generation: self.process_generation,
-        })
+        Ok(ProcessImageHandle::new(0, self.process_generation))
     }
 
-    fn abort(&mut self, space: Self::Space) {
+    fn abort(&mut self, space: Self::Space) -> Result<(), Self::Error> {
         if self.active && space.generation == self.generation {
             self.active = false;
             self.slot_count = 0;
             self.slots.fill(DryRunSlot::EMPTY);
+            Ok(())
+        } else {
+            Err(DryRunError::InvalidHandle)
         }
+    }
+
+    fn process_info(&self, process: &Self::Process) -> Option<ProcessImageInfo> {
+        self.resolve_process(process)
+    }
+
+    fn process_generation(&self, process: &Self::Process) -> Option<u32> {
+        self.resolve_process(process).map(|_| process.generation())
+    }
+
+    fn release_process(&mut self, process: &Self::Process) -> Result<(), Self::Error> {
+        self.release(process)
     }
 }
 
@@ -503,9 +534,11 @@ mod tests {
             Some(ProcessImageInfo {
                 entry_point: 0x1000,
                 segment_count: 1,
+                address_space_root: None,
+                owned_frames: 0,
             })
         );
-        backend.release_process(&installed.process).unwrap();
+        backend.release(&installed.process).unwrap();
         assert_eq!(backend.resolve_process(&installed.process), None);
     }
 

@@ -168,6 +168,56 @@ pub unsafe fn invalidate_page(address: usize) {
     }
 }
 
+/// Enables the architectural no-execute page-table bit.
+///
+/// # Safety
+///
+/// The caller must execute at ring 0 during serialized bootstrap before any
+/// page tables containing the no-execute bit can become active.
+pub unsafe fn enable_execute_disable() -> Result<(), ExecuteDisableError> {
+    let maximum_extended_leaf = core::arch::x86_64::__cpuid(0x8000_0000).eax;
+    if maximum_extended_leaf < 0x8000_0001
+        || core::arch::x86_64::__cpuid(0x8000_0001).edx & (1 << 20) == 0
+    {
+        return Err(ExecuteDisableError::Unsupported);
+    }
+    const EFER: u32 = 0xc000_0080;
+    const EFER_NXE: u64 = 1 << 11;
+    // SAFETY: The caller established ring-0 bootstrap context and CPUID
+    // confirms support for EFER.NXE.
+    let value = unsafe { read_msr(EFER) };
+    unsafe { write_msr(EFER, value | EFER_NXE) };
+    if unsafe { read_msr(EFER) } & EFER_NXE == 0 {
+        return Err(ExecuteDisableError::EnableFailed);
+    }
+    Ok(())
+}
+
+/// Returns the physical frame containing the active level-four page table.
+///
+/// # Safety
+///
+/// The caller must execute at ring 0 on x86_64 and must treat the returned
+/// root as shared hardware state unless it owns the required synchronization.
+pub unsafe fn active_page_table_root() -> u64 {
+    let value: u64;
+    // SAFETY: The caller guarantees privileged x86_64 execution.
+    unsafe {
+        core::arch::asm!(
+            "mov {}, cr3",
+            out(reg) value,
+            options(nomem, nostack, preserves_flags),
+        );
+    }
+    value & 0x000f_ffff_ffff_f000
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExecuteDisableError {
+    Unsupported,
+    EnableFailed,
+}
+
 /// Reads a model-specific register.
 ///
 /// # Safety

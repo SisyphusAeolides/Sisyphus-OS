@@ -6,13 +6,13 @@ use abyss::frame::BitmapFrameAllocator;
 use abyss::memory::MemoryRegionKind;
 use abyss::paging::PhysicalAddress;
 use abyss::reservation::{Reservation, ReservationKind, ReservationTable};
-use boulder::arch::x86_64::{halt, idle};
+use boulder::arch::x86_64::{active_page_table_root, enable_execute_disable, halt, idle};
 use boulder::boot::acpi::discover_madt;
 use boulder::boot::multiboot2::BootInformation;
 use boulder::capability::{
     ArtifactSynthesisControl, Authority, FabricControl, FaultPolicyControl, LearningControl,
-    MachineProfileControl, MemorySharingControl, PolicyControl, ProcessInstallControl,
-    ResonanceControl, UserlandImageControl,
+    MachineProfileControl, MemorySharingControl, PhysicalMemoryControl, PolicyControl,
+    ProcessInstallControl, ResonanceControl, UserlandImageControl,
 };
 use boulder::cpu::topology::{self, ExecutionClass, TopologyPolicy};
 use boulder::fabric::{
@@ -21,7 +21,10 @@ use boulder::fabric::{
 use boulder::hw::pci;
 use boulder::ignition::{BootProtocol, IgnitionSequence};
 use boulder::interrupts;
-use boulder::mmio::{EARLY_MAPPED_PHYSICAL_LIMIT, direct_map_address, kernel_mmio};
+use boulder::mmio::{
+    EARLY_MAPPED_PHYSICAL_LIMIT, HIGHER_HALF_DIRECT_MAP_BASE, direct_map_address, kernel_mmio,
+};
+use boulder::process::x86_64::{DirectMapFrameMemory, FrameBackedAddressSpace};
 use boulder::serial::SerialPort;
 use boulder::shim::{AbyssAllocator, DriverHost, DriverServices, IrqService, MmioService};
 use core::alloc::{GlobalAlloc, Layout};
@@ -463,27 +466,60 @@ pub extern "C" fn boulder_main(multiboot_address: usize) -> ! {
     let artifact_synthesis = authority.grant::<ArtifactSynthesisControl>();
     let userland_image = authority.grant::<UserlandImageControl>();
     let process_install = authority.grant::<ProcessInstallControl>();
-    let blacklab = match boulder::blacklab::initialize(
-        &resonance_control,
-        &learning_control,
-        &memory_sharing,
-        &fault_policy,
-        &artifact_synthesis,
-        &userland_image,
-        &process_install,
-    ) {
-        Ok(summary) => summary,
-        Err(error) => {
-            let _ = writeln!(
-                serial,
-                "Boulder: Black Lab initialization failed: {error:?}"
-            );
-            halt();
+    let physical_memory = authority.grant::<PhysicalMemoryControl>();
+    // SAFETY: Bootstrap is serialized at ring 0 and no process page tables
+    // containing NX entries can be activated before this feature gate.
+    if let Err(error) = unsafe { enable_execute_disable() } {
+        let _ = writeln!(serial, "Boulder: execute-disable unavailable: {error:?}");
+        halt();
+    }
+    // SAFETY: CR3 is read during serialized BSP bootstrap and only used as an
+    // immutable source for the kernel half of a new, inactive hierarchy.
+    let kernel_page_table_root = PhysicalAddress::new(unsafe { active_page_table_root() });
+    let process_frames_before = frames.free_frames();
+    let blacklab = {
+        // SAFETY: The bitmap allocator manages only the first GiB, which the
+        // bootstrap maps at this stable writable higher-half direct-map base.
+        let frame_memory = unsafe {
+            DirectMapFrameMemory::new(
+                &mut frames,
+                HIGHER_HALF_DIRECT_MAP_BASE,
+                EARLY_MAPPED_PHYSICAL_LIMIT,
+                &physical_memory,
+            )
+        };
+        let mut process_backend =
+            FrameBackedAddressSpace::new(frame_memory, kernel_page_table_root, &process_install);
+        let controls = boulder::blacklab::Controls {
+            resonance: &resonance_control,
+            learning: &learning_control,
+            memory_sharing: &memory_sharing,
+            fault_policy: &fault_policy,
+            artifact_synthesis: &artifact_synthesis,
+            userland_image: &userland_image,
+            process_install: &process_install,
+        };
+        match boulder::blacklab::initialize(controls, &mut process_backend) {
+            Ok(summary) => summary,
+            Err(error) => {
+                let _ = writeln!(
+                    serial,
+                    "Boulder: Black Lab initialization failed: {error:?}"
+                );
+                halt();
+            }
         }
     };
+    if blacklab.pid1_page_table_root.is_none()
+        || blacklab.pid1_owned_frames != 5
+        || frames.free_frames() != process_frames_before
+    {
+        let _ = writeln!(serial, "Boulder: PID1 frame-backed teardown failed");
+        halt();
+    }
     let _ = writeln!(
         serial,
-        "Boulder: Black Lab time={} ns, heat={}, predictions={}, epoch={}, generation={}, faults={}, artifact={} bytes, PID1 plan entry={:#x}, install=dry-run:{}",
+        "Boulder: Black Lab time={} ns, heat={}, predictions={}, epoch={}, generation={}, faults={}, artifact={} bytes, PID1 plan entry={:#x}, install=frame-backed:{}",
         blacklab.logical_nanoseconds,
         blacklab.semantic_heat,
         blacklab.predictions,
@@ -493,6 +529,12 @@ pub extern "C" fn boulder_main(multiboot_address: usize) -> ! {
         blacklab.materialized_bytes,
         blacklab.pid1_entry_point,
         blacklab.pid1_install_generation
+    );
+    let _ = writeln!(
+        serial,
+        "Boulder: PID1 page-table root={:#x}, frames={}, reclaimed=true, cr3_activation=false",
+        blacklab.pid1_page_table_root.unwrap_or(0),
+        blacklab.pid1_owned_frames,
     );
 
     // SAFETY: ACPI described the active controllers, the local APIC is live,

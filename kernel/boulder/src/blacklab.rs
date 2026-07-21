@@ -29,9 +29,7 @@ use crate::capability::{
     MemorySharingControl, ProcessInstallControl, ResonanceControl, UserlandImageControl,
 };
 use crate::process::image::{UserImageError, prepare_user_image};
-use crate::process::install::{
-    DryRunAddressSpace, DryRunError, InstallError, ProcessImageInfo, install_user_image,
-};
+use crate::process::install::{InstallError, UserAddressSpaceBackend, install_user_image};
 use crate::sync::SpinLock;
 
 struct Runtime {
@@ -78,11 +76,13 @@ pub struct Summary {
     pub materialized_bytes: usize,
     pub pid1_entry_point: u64,
     pub pid1_install_generation: u32,
+    pub pid1_page_table_root: Option<u64>,
+    pub pid1_owned_frames: usize,
     pub thermal_model_actionable: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum InitializeError {
+pub enum InitializeError<ProcessError> {
     AlreadyInitialized,
     Timeline(TimelineError),
     Graph(GraphError),
@@ -95,19 +95,24 @@ pub enum InitializeError {
     Tartarus(TartarusError),
     Oureboros(OureborosError),
     UserImage(UserImageError),
-    ProcessInstall(InstallError<DryRunError>),
+    ProcessInstall(InstallError<ProcessError>),
     IncompletePlan,
 }
 
-pub fn initialize(
-    _authority: &Capability<'_, ResonanceControl>,
-    _learning: &Capability<'_, LearningControl>,
-    _memory_sharing: &Capability<'_, MemorySharingControl>,
-    _fault_policy: &Capability<'_, FaultPolicyControl>,
-    _artifact_synthesis: &Capability<'_, ArtifactSynthesisControl>,
-    userland_image: &Capability<'_, UserlandImageControl>,
-    process_install: &Capability<'_, ProcessInstallControl>,
-) -> Result<Summary, InitializeError> {
+pub struct Controls<'authority> {
+    pub resonance: &'authority Capability<'authority, ResonanceControl>,
+    pub learning: &'authority Capability<'authority, LearningControl>,
+    pub memory_sharing: &'authority Capability<'authority, MemorySharingControl>,
+    pub fault_policy: &'authority Capability<'authority, FaultPolicyControl>,
+    pub artifact_synthesis: &'authority Capability<'authority, ArtifactSynthesisControl>,
+    pub userland_image: &'authority Capability<'authority, UserlandImageControl>,
+    pub process_install: &'authority Capability<'authority, ProcessInstallControl>,
+}
+
+pub fn initialize<Backend: UserAddressSpaceBackend>(
+    controls: Controls<'_>,
+    install_backend: &mut Backend,
+) -> Result<Summary, InitializeError<Backend::Error>> {
     let mut runtime = RUNTIME.lock();
     if runtime.initialized {
         return Err(InitializeError::AlreadyInitialized);
@@ -378,29 +383,46 @@ pub fn initialize(
         .artifacts
         .materialize(2, &mut pid1_bytes)
         .map_err(InitializeError::Oureboros)?;
-    let pid1_image =
-        prepare_user_image(pid1_artifact, userland_image).map_err(InitializeError::UserImage)?;
+    let pid1_image = prepare_user_image(pid1_artifact, controls.userland_image)
+        .map_err(InitializeError::UserImage)?;
     if pid1_image.measurement().sha256 != pid1_digest || runtime.artifacts.len() != 2 {
         return Err(InitializeError::IncompletePlan);
     }
-    let mut install_backend = DryRunAddressSpace::<256>::new();
-    let installed_pid1 = install_user_image(pid1_image, &mut install_backend, process_install)
+    let installed_pid1 = install_user_image(pid1_image, install_backend, controls.process_install)
         .map_err(InitializeError::ProcessInstall)?;
     let pid1_entry_point = installed_pid1.entry_point;
-    let pid1_install_generation = installed_pid1.process.generation();
-    if install_backend.resolve_process(&installed_pid1.process)
-        != Some(ProcessImageInfo {
-            entry_point: pid1_entry_point,
-            segment_count: 1,
-        })
+    let process_info = match install_backend.process_info(&installed_pid1.process) {
+        Some(info) => info,
+        None => {
+            install_backend
+                .release_process(&installed_pid1.process)
+                .map_err(|error| InitializeError::ProcessInstall(InstallError::Backend(error)))?;
+            return Err(InitializeError::IncompletePlan);
+        }
+    };
+    let pid1_install_generation = match install_backend.process_generation(&installed_pid1.process)
     {
+        Some(generation) => generation,
+        None => {
+            install_backend
+                .release_process(&installed_pid1.process)
+                .map_err(|error| InitializeError::ProcessInstall(InstallError::Backend(error)))?;
+            return Err(InitializeError::IncompletePlan);
+        }
+    };
+    let pid1_page_table_root = process_info.address_space_root;
+    let pid1_owned_frames = process_info.owned_frames;
+    if process_info.entry_point != pid1_entry_point || process_info.segment_count != 1 {
+        install_backend
+            .release_process(&installed_pid1.process)
+            .map_err(|error| InitializeError::ProcessInstall(InstallError::Backend(error)))?;
         return Err(InitializeError::IncompletePlan);
     }
     install_backend
         .release_process(&installed_pid1.process)
         .map_err(|error| InitializeError::ProcessInstall(InstallError::Backend(error)))?;
     if install_backend
-        .resolve_process(&installed_pid1.process)
+        .process_info(&installed_pid1.process)
         .is_some()
     {
         return Err(InitializeError::IncompletePlan);
@@ -484,6 +506,8 @@ pub fn initialize(
         materialized_bytes,
         pid1_entry_point,
         pid1_install_generation,
+        pid1_page_table_root,
+        pid1_owned_frames,
         thermal_model_actionable: thermal_forecast.validated,
     })
 }
