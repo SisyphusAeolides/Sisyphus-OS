@@ -11,6 +11,7 @@ use crate::shim::{MmioMapping, MmioService};
 use crate::sync::SpinLock;
 
 pub const HIGHER_HALF_DIRECT_MAP_BASE: usize = 0xffff_8000_0000_0000;
+pub const KERNEL_VIRTUAL_BASE: usize = 0xffff_ffff_8000_0000;
 pub const MMIO_WINDOW_BASE: usize = 0xffff_8080_0000_0000;
 pub const EARLY_MAPPED_PHYSICAL_LIMIT: u64 = 1024 * 1024 * 1024;
 

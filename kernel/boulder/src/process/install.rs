@@ -66,6 +66,20 @@ pub trait UserAddressSpaceBackend {
 
     fn process_generation(&self, process: &Self::Process) -> Option<u32>;
 
+    /// Proves that the committed address space can become the active hardware
+    /// translation root while preserving kernel execution.
+    ///
+    /// # Safety
+    ///
+    /// The implementation may install process-owned translation state. The
+    /// caller must invoke this only during a serialized kernel phase in which
+    /// no scheduler or interrupt path can retain the temporary process state.
+    unsafe fn validate_activation(
+        &mut self,
+        process: &Self::Process,
+        authority: &Capability<'_, ProcessInstallControl>,
+    ) -> Result<(), Self::Error>;
+
     fn release_process(&mut self, process: &Self::Process) -> Result<(), Self::Error>;
 }
 
@@ -456,6 +470,16 @@ impl<const BYTES_PER_SEGMENT: usize> UserAddressSpaceBackend
         self.resolve_process(process).map(|_| process.generation())
     }
 
+    unsafe fn validate_activation(
+        &mut self,
+        process: &Self::Process,
+        _authority: &Capability<'_, ProcessInstallControl>,
+    ) -> Result<(), Self::Error> {
+        self.resolve_process(process)
+            .map(|_| ())
+            .ok_or(DryRunError::InvalidHandle)
+    }
+
     fn release_process(&mut self, process: &Self::Process) -> Result<(), Self::Error> {
         self.release(process)
     }
@@ -538,8 +562,20 @@ mod tests {
                 owned_frames: 0,
             })
         );
+        // SAFETY: The dry-run backend has no privileged state and validates
+        // only the committed handle lifecycle.
+        unsafe {
+            backend
+                .validate_activation(&installed.process, &install_control)
+                .unwrap();
+        }
         backend.release(&installed.process).unwrap();
         assert_eq!(backend.resolve_process(&installed.process), None);
+        // SAFETY: This is the same non-privileged dry-run lifecycle check.
+        assert_eq!(
+            unsafe { backend.validate_activation(&installed.process, &install_control) },
+            Err(DryRunError::InvalidHandle)
+        );
     }
 
     #[test]

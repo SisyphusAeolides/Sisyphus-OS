@@ -78,6 +78,7 @@ pub struct Summary {
     pub pid1_install_generation: u32,
     pub pid1_page_table_root: Option<u64>,
     pub pid1_owned_frames: usize,
+    pub pid1_activation_validated: bool,
     pub thermal_model_actionable: bool,
 }
 
@@ -418,6 +419,14 @@ pub fn initialize<Backend: UserAddressSpaceBackend>(
             .map_err(|error| InitializeError::ProcessInstall(InstallError::Backend(error)))?;
         return Err(InitializeError::IncompletePlan);
     }
+    // SAFETY: Black Lab initialization runs as a serialized bootstrap phase.
+    // The backend must restore the kernel root before this call returns and
+    // the process remains owned until the subsequent explicit release.
+    unsafe {
+        install_backend.validate_activation(&installed_pid1.process, controls.process_install)
+    }
+    .map_err(|error| InitializeError::ProcessInstall(InstallError::Backend(error)))?;
+    let pid1_activation_validated = true;
     install_backend
         .release_process(&installed_pid1.process)
         .map_err(|error| InitializeError::ProcessInstall(InstallError::Backend(error)))?;
@@ -508,6 +517,7 @@ pub fn initialize<Backend: UserAddressSpaceBackend>(
         pid1_install_generation,
         pid1_page_table_root,
         pid1_owned_frames,
+        pid1_activation_validated,
         thermal_model_actionable: thermal_forecast.validated,
     })
 }

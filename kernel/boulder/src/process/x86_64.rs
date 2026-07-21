@@ -3,6 +3,10 @@ use core::{mem::size_of, ptr};
 use abyss::frame::{BitmapFrameAllocator, FrameAllocatorError};
 use abyss::paging::{PAGE_SIZE, PhysicalAddress};
 
+#[cfg(target_os = "none")]
+use crate::arch::x86_64::{X86_64, active_page_table_root, load_page_table_root};
+#[cfg(target_os = "none")]
+use crate::capability::InterruptGuard;
 use crate::capability::{Capability, PhysicalMemoryControl, ProcessInstallControl};
 use crate::process::install::{
     MappingPermissions, ProcessImageHandle, ProcessImageInfo, UserAddressSpaceBackend,
@@ -269,9 +273,9 @@ impl PageRecord {
 /// Builds an x86_64 hardware-format user address space from owned frames.
 ///
 /// The root inherits only PML4 entries 256..511 from the active kernel root.
-/// It is intentionally never loaded into CR3 here: Boulder is still linked in
-/// low memory, so activation must wait for a high-half kernel image and a
-/// complete privilege-entry path.
+/// A committed root can be switched into CR3 for a bounded validation while
+/// the kernel remains entirely in its inherited higher-half mappings. Retained
+/// ownership and privilege entry remain responsibilities of the scheduler.
 pub struct FrameBackedAddressSpace<Memory: ProcessFrameMemory> {
     memory: Memory,
     kernel_root: PhysicalAddress,
@@ -756,6 +760,42 @@ impl<Memory: ProcessFrameMemory> UserAddressSpaceBackend for FrameBackedAddressS
         self.process_info(process).map(|_| process.generation())
     }
 
+    unsafe fn validate_activation(
+        &mut self,
+        process: &Self::Process,
+        _authority: &Capability<'_, ProcessInstallControl>,
+    ) -> Result<(), Self::Error> {
+        let root = self
+            .process_info(process)
+            .and_then(|info| info.address_space_root)
+            .ok_or(FrameBackedError::InvalidHandle)?;
+
+        #[cfg(target_os = "none")]
+        {
+            let _interrupt_guard = InterruptGuard::<X86_64>::enter();
+            // SAFETY: The serialized bootstrap phase owns this inactive root.
+            // Its upper PML4 half was copied from the active kernel hierarchy,
+            // so this code, stack, and direct map remain reachable.
+            let original_root = unsafe { active_page_table_root() };
+            unsafe { load_page_table_root(root) };
+            if unsafe { active_page_table_root() } != root {
+                unsafe { load_page_table_root(original_root) };
+                return Err(FrameBackedError::ActivationFailed);
+            }
+            // Reaching this point while the process root is active proves the
+            // inherited higher-half execution mappings are operational.
+            unsafe { load_page_table_root(original_root) };
+            if unsafe { active_page_table_root() } != original_root {
+                return Err(FrameBackedError::RestoreFailed);
+            }
+        }
+
+        #[cfg(not(target_os = "none"))]
+        let _ = root;
+
+        Ok(())
+    }
+
     fn release_process(&mut self, process: &Self::Process) -> Result<(), Self::Error> {
         if self.process_info(process).is_none() {
             return Err(FrameBackedError::InvalidHandle);
@@ -778,6 +818,8 @@ pub enum FrameBackedError<MemoryError> {
     MappingConflict,
     CorruptHierarchy,
     UnsupportedPermissions,
+    ActivationFailed,
+    RestoreFailed,
 }
 
 fn page_indices<MemoryError>(address: u64) -> Result<[usize; 4], FrameBackedError<MemoryError>> {
@@ -976,6 +1018,13 @@ mod tests {
         let image = prepare_user_image(artifact, &image_control).unwrap();
         let installed = install_user_image(image, &mut backend, &install_control).unwrap();
         let info = backend.process_info(&installed.process).unwrap();
+        // SAFETY: Host tests exercise structural activation validation only;
+        // privileged CR3 switching is compiled solely for the bare-metal target.
+        unsafe {
+            backend
+                .validate_activation(&installed.process, &install_control)
+                .unwrap();
+        }
         let root = PhysicalAddress::new(info.address_space_root.unwrap());
         assert_eq!(info.owned_frames, 5);
         assert_eq!(backend.memory().read_entry(root, 256), Ok(inherited));
@@ -1014,6 +1063,12 @@ mod tests {
 
         backend.release_process(&installed.process).unwrap();
         assert_eq!(backend.process_info(&installed.process), None);
+        // SAFETY: This verifies that released handles cannot authorize a later
+        // activation; no privileged operation is compiled into this host test.
+        assert_eq!(
+            unsafe { backend.validate_activation(&installed.process, &install_control) },
+            Err(FrameBackedError::InvalidHandle)
+        );
         assert_eq!(backend.memory().in_use(), 0);
     }
 

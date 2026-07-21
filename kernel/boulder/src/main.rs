@@ -22,7 +22,8 @@ use boulder::hw::pci;
 use boulder::ignition::{BootProtocol, IgnitionSequence};
 use boulder::interrupts;
 use boulder::mmio::{
-    EARLY_MAPPED_PHYSICAL_LIMIT, HIGHER_HALF_DIRECT_MAP_BASE, direct_map_address, kernel_mmio,
+    EARLY_MAPPED_PHYSICAL_LIMIT, HIGHER_HALF_DIRECT_MAP_BASE, KERNEL_VIRTUAL_BASE,
+    direct_map_address, kernel_mmio,
 };
 use boulder::process::x86_64::{DirectMapFrameMemory, FrameBackedAddressSpace};
 use boulder::serial::SerialPort;
@@ -37,6 +38,7 @@ core::arch::global_asm!(include_str!("bootstrap.S"), options(att_syntax));
 
 const COM1: u16 = 0x3f8;
 const IDENTITY_MAP_END: u64 = 1024 * 1024 * 1024;
+const KERNEL_PHYSICAL_LOAD_BASE: u64 = 1024 * 1024;
 const MINIMUM_HEAP_SIZE: u64 = 64 * 1024;
 const MAXIMUM_HEAP_SIZE: u64 = 4 * 1024 * 1024;
 
@@ -67,11 +69,40 @@ fn map_acpi_region(physical_address: u64, length: usize) -> Option<*const u8> {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn boulder_main(multiboot_address: usize) -> ! {
+pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_address: usize) -> ! {
     // SAFETY: The PC-compatible boot environment reserves COM1 for the early
     // kernel console before other drivers are initialized.
     let mut serial = unsafe { SerialPort::initialize(COM1) };
     let _ = writeln!(serial, "Boulder: entering Rust in long mode");
+    // SAFETY: Serialized BSP bootstrap owns CR3, and the bootstrap direct map
+    // covers the physical root frame used for this read-only transition gate.
+    let bootstrap_root = unsafe { active_page_table_root() };
+    let Some(bootstrap_root_virtual) = direct_map_address(bootstrap_root) else {
+        let _ = writeln!(
+            serial,
+            "Boulder: bootstrap page-table root is outside the direct map"
+        );
+        halt();
+    };
+    // SAFETY: The active root frame is mapped for inspection through the
+    // stable higher-half direct map during serialized bootstrap.
+    let low_pml4_entry = unsafe { (bootstrap_root_virtual as *const u64).read_volatile() };
+    let stack_address = core::ptr::addr_of!(serial) as usize;
+    if low_pml4_entry != 0
+        || (boulder_main as *const () as usize) < KERNEL_VIRTUAL_BASE
+        || stack_address < KERNEL_VIRTUAL_BASE
+    {
+        let _ = writeln!(
+            serial,
+            "Boulder: higher-half transition gate failed: low={low_pml4_entry:#x}, code={:#x}, stack={stack_address:#x}",
+            boulder_main as *const () as usize,
+        );
+        halt();
+    }
+    let _ = writeln!(
+        serial,
+        "Boulder: higher-half transition verified, low PML4 entry absent"
+    );
     let mut ignition = IgnitionSequence::new(BootProtocol::Multiboot2);
 
     // SAFETY: Bootstrap assembly enters with interrupts disabled and installs
@@ -91,10 +122,21 @@ pub extern "C" fn boulder_main(multiboot_address: usize) -> ! {
 
     let kernel_start = core::ptr::addr_of!(__kernel_start) as usize;
     let kernel_end = core::ptr::addr_of!(__kernel_end) as usize;
-    let _ = writeln!(serial, "Boulder: kernel {kernel_start:#x}..{kernel_end:#x}");
+    let Some(kernel_physical_start) = kernel_start.checked_sub(KERNEL_VIRTUAL_BASE) else {
+        let _ = writeln!(serial, "Boulder: kernel start is outside the higher half");
+        halt();
+    };
+    let Some(kernel_physical_end) = kernel_end.checked_sub(KERNEL_VIRTUAL_BASE) else {
+        let _ = writeln!(serial, "Boulder: kernel end is outside the higher half");
+        halt();
+    };
+    let _ = writeln!(
+        serial,
+        "Boulder: kernel virtual {kernel_start:#x}..{kernel_end:#x}, physical {kernel_physical_start:#x}..{kernel_physical_end:#x}"
+    );
 
-    // SAFETY: The bootstrap preserves GRUB's Multiboot2 pointer in RDI and
-    // identity-maps the first GiB before calling this function.
+    // SAFETY: The bootstrap preserves GRUB's physical Multiboot2 pointer and
+    // passes its mapped higher-half direct-map alias in the first argument.
     let boot = match unsafe { BootInformation::load(multiboot_address) } {
         Ok(boot) => boot,
         Err(error) => {
@@ -104,9 +146,9 @@ pub extern "C" fn boulder_main(multiboot_address: usize) -> ! {
     };
     let _ = writeln!(
         serial,
-        "Boulder: Multiboot2 data {:#x}..{:#x}",
-        boot.address(),
-        boot.address() + boot.total_size()
+        "Boulder: Multiboot2 physical data {:#x}..{:#x}",
+        multiboot_physical_address,
+        multiboot_physical_address + boot.total_size()
     );
 
     let memory_map = match boot.memory_map() {
@@ -134,7 +176,8 @@ pub extern "C" fn boulder_main(multiboot_address: usize) -> ! {
         usable_bytes / 1024
     );
 
-    let protected_end = (kernel_end as u64).max((boot.address() + boot.total_size()) as u64);
+    let protected_end =
+        (kernel_physical_end as u64).max((multiboot_physical_address + boot.total_size()) as u64);
     let Some(heap_region) =
         memory_map.usable_range(protected_end, IDENTITY_MAP_END, MINIMUM_HEAP_SIZE)
     else {
@@ -143,9 +186,13 @@ pub extern "C" fn boulder_main(multiboot_address: usize) -> ! {
     };
     let heap_size = heap_region.length().min(MAXIMUM_HEAP_SIZE) as usize;
     let heap_start = heap_region.start.as_u64() as usize;
+    let Some(heap_virtual_start) = direct_map_address(heap_start as u64) else {
+        let _ = writeln!(serial, "Abyss: bootstrap heap is outside the direct map");
+        halt();
+    };
     // SAFETY: Abyss selected an identity-mapped usable region above the kernel
     // and boot data. It remains reserved for this allocator after selection.
-    if let Err(error) = unsafe { KERNEL_HEAP.initialize(heap_start, heap_size) } {
+    if let Err(error) = unsafe { KERNEL_HEAP.initialize(heap_virtual_start, heap_size) } {
         let _ = writeln!(serial, "Abyss: heap initialization failed: {error:?}");
         halt();
     }
@@ -176,6 +223,12 @@ pub extern "C" fn boulder_main(multiboot_address: usize) -> ! {
         let _ = writeln!(serial, "Abyss: frame bitmap allocation failed");
         halt();
     }
+    let Some(storage_physical) =
+        (storage_pointer as usize).checked_sub(HIGHER_HALF_DIRECT_MAP_BASE)
+    else {
+        let _ = writeln!(serial, "Abyss: frame bitmap is outside the direct map");
+        halt();
+    };
     // SAFETY: The allocation has exactly this many aligned u64 elements and is
     // not accessed through any other reference afterward.
     let storage =
@@ -189,13 +242,13 @@ pub extern "C" fn boulder_main(multiboot_address: usize) -> ! {
             ReservationKind::LowMemory,
         ),
         Reservation::new(
-            PhysicalAddress::new(kernel_start as u64),
-            PhysicalAddress::new(kernel_end as u64),
+            PhysicalAddress::new(KERNEL_PHYSICAL_LOAD_BASE),
+            PhysicalAddress::new(kernel_physical_end as u64),
             ReservationKind::KernelImage,
         ),
         Reservation::new(
-            PhysicalAddress::new(boot.address() as u64),
-            PhysicalAddress::new((boot.address() + boot.total_size()) as u64),
+            PhysicalAddress::new(multiboot_physical_address as u64),
+            PhysicalAddress::new((multiboot_physical_address + boot.total_size()) as u64),
             ReservationKind::BootInformation,
         ),
         Reservation::new(
@@ -204,8 +257,8 @@ pub extern "C" fn boulder_main(multiboot_address: usize) -> ! {
             ReservationKind::BootstrapHeap,
         ),
         Reservation::new(
-            PhysicalAddress::new(storage_pointer as u64),
-            PhysicalAddress::new(storage_pointer as u64 + storage_layout.size() as u64),
+            PhysicalAddress::new(storage_physical as u64),
+            PhysicalAddress::new(storage_physical as u64 + storage_layout.size() as u64),
             ReservationKind::AllocatorMetadata,
         ),
     ];
@@ -244,7 +297,7 @@ pub extern "C" fn boulder_main(multiboot_address: usize) -> ! {
         test_frame.as_u64()
     );
 
-    let Some(direct_kernel) = direct_map_address(kernel_start as u64) else {
+    let Some(direct_kernel) = direct_map_address(kernel_physical_start as u64) else {
         let _ = writeln!(serial, "Abyss: kernel is outside the direct map");
         halt();
     };
@@ -512,6 +565,7 @@ pub extern "C" fn boulder_main(multiboot_address: usize) -> ! {
     };
     if blacklab.pid1_page_table_root.is_none()
         || blacklab.pid1_owned_frames != 5
+        || !blacklab.pid1_activation_validated
         || frames.free_frames() != process_frames_before
     {
         let _ = writeln!(serial, "Boulder: PID1 frame-backed teardown failed");
@@ -532,7 +586,7 @@ pub extern "C" fn boulder_main(multiboot_address: usize) -> ! {
     );
     let _ = writeln!(
         serial,
-        "Boulder: PID1 page-table root={:#x}, frames={}, reclaimed=true, cr3_activation=false",
+        "Boulder: PID1 page-table root={:#x}, frames={}, reclaimed=true, cr3_activation=validated",
         blacklab.pid1_page_table_root.unwrap_or(0),
         blacklab.pid1_owned_frames,
     );

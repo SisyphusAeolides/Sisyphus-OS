@@ -212,6 +212,26 @@ pub unsafe fn active_page_table_root() -> u64 {
     value & 0x000f_ffff_ffff_f000
 }
 
+/// Installs a level-four page-table root and flushes non-global translations.
+///
+/// # Safety
+///
+/// `root` must be a page-aligned physical address naming a valid x86_64
+/// level-four hierarchy. That hierarchy must map the currently executing
+/// code, stack, and every memory location needed before another root is
+/// installed. The caller must serialize the switch against interrupt and
+/// scheduler entry and must own any required cross-CPU protocol.
+pub unsafe fn load_page_table_root(root: u64) {
+    // SAFETY: The caller establishes the complete CR3-switch contract above.
+    unsafe {
+        core::arch::asm!(
+            "mov cr3, {}",
+            in(reg) root,
+            options(nostack, preserves_flags),
+        );
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ExecuteDisableError {
     Unsupported,

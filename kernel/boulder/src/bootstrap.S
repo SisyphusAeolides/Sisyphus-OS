@@ -11,6 +11,9 @@ multiboot_header:
 multiboot_header_end:
 
 .section .text.boot,"ax"
+.equ KERNEL_VIRTUAL_BASE, 0xffffffff80000000
+.equ HIGHER_HALF_DIRECT_MAP_BASE, 0xffff800000000000
+
 .code32
 .global _start
 .type _start, @function
@@ -44,9 +47,19 @@ _start:
     orl $3, %eax
     movl %eax, mmio_p3_table
 
-    movl $mmio_p1_table, %eax
+    movl $bootstrap_mmio_p1_table, %eax
     orl $3, %eax
     movl %eax, mmio_p2_table
+
+    movl $kernel_p3_table, %eax
+    orl $3, %eax
+    movl %eax, p4_table+4088
+    movl $0, p4_table+4092
+
+    movl $p2_table, %eax
+    orl $3, %eax
+    movl %eax, kernel_p3_table+4080
+    movl $0, kernel_p3_table+4084
 
     xorl %ecx, %ecx
 map_p2:
@@ -91,8 +104,25 @@ long_mode_start:
     xorw %ax, %ax
     movw %ax, %fs
     movw %ax, %gs
-    leaq stack_top(%rip), %rsp
+    lgdt gdt64_high_pointer
+    movabsq $high_half_start, %rax
+    jmp *%rax
+
+.section .text.entry,"ax"
+.code64
+high_half_start:
+    movabsq $(stack_top + KERNEL_VIRTUAL_BASE), %rsp
     xorq %rbp, %rbp
+
+    movq %rdi, %rsi
+    movabsq $HIGHER_HALF_DIRECT_MAP_BASE, %rax
+    addq %rax, %rdi
+
+    movabsq $(p4_table + KERNEL_VIRTUAL_BASE), %rax
+    movq $0, (%rax)
+    movabsq $p4_table, %rax
+    movq %rax, %cr3
+
     call boulder_main
 
 long_mode_hang:
@@ -110,6 +140,9 @@ gdt64_end:
 gdt64_pointer:
     .word gdt64_end - gdt64 - 1
     .quad gdt64
+gdt64_high_pointer:
+    .word gdt64_end - gdt64 - 1
+    .quad gdt64 + KERNEL_VIRTUAL_BASE
 
 .section .bss.boot,"aw",@nobits
 .balign 4096
@@ -123,10 +156,14 @@ mmio_p3_table:
     .skip 4096
 mmio_p2_table:
     .skip 4096
-.global mmio_p1_table
-mmio_p1_table:
+bootstrap_mmio_p1_table:
+    .skip 4096
+kernel_p3_table:
     .skip 4096
 .balign 16
 stack_bottom:
     .skip 65536
 stack_top:
+
+.global mmio_p1_table
+.set mmio_p1_table, bootstrap_mmio_p1_table + KERNEL_VIRTUAL_BASE
