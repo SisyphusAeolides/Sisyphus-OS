@@ -1,5 +1,4 @@
 use crate::module::elf_headers::{RelocationEntry, SymbolEntry};
-use crate::shim::linux_kpi;
 
 const R_X86_64_64: u32 = 1;
 const R_X86_64_PC32: u32 = 2;
@@ -10,19 +9,6 @@ const SECTION_ABSOLUTE: u16 = 0xfff1;
 
 pub trait ExternalSymbolResolver {
     fn resolve(&self, name: &[u8]) -> Option<u64>;
-}
-
-pub struct LinuxKpiResolver;
-
-impl ExternalSymbolResolver for LinuxKpiResolver {
-    fn resolve(&self, name: &[u8]) -> Option<u64> {
-        match name {
-            b"kmalloc" => Some(linux_kpi::kmalloc as *const () as usize as u64),
-            b"kfree" => Some(linux_kpi::kfree as *const () as usize as u64),
-            b"printk" => Some(linux_kpi::printk as *const () as usize as u64),
-            _ => None,
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

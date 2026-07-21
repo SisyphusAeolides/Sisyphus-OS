@@ -39,6 +39,20 @@ Boulder also contains compatibility foundations for externally built C code:
 - serialized C device and network vtable adapters;
 - backend-gated IOMMU domains, deferred hotplug events, and device typestates.
 
+The Mirage personality registry selects a versioned object format, calling
+convention, service table, and external-symbol allowlist for each foreign
+environment. The current Linux personalities expose a deliberately small
+symbol subset. Windows NT and FreeBSD personalities fail closed until their
+native object loaders, structure contracts, and service implementations are
+installed. Mirage thunk pages follow a writable-then-executable lifecycle;
+cross-ABI thunk generation remains disabled until complete register, stack,
+floating-point, and unwind translation is available.
+
+VT-d table support uses 128-bit root and context entries with explicit
+context-cache and IOTLB invalidation hooks. Translation activation remains
+behind a platform backend so firmware DMAR discovery and capability checks
+must succeed before hardware registers are touched.
+
 These components do not claim that an arbitrary foreign kernel module can run
 unchanged. Linux, BSD, and Windows drivers depend on large, version-specific
 kernel interfaces and execution assumptions. Each compatibility personality

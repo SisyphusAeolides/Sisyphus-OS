@@ -6,6 +6,7 @@ pub mod drivers;
 pub mod hw;
 pub mod interrupts;
 pub mod ipc;
+pub mod mirage;
 pub mod mmio;
 pub mod module;
 pub mod serial;
