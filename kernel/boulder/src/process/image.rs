@@ -12,9 +12,9 @@ pub const MAXIMUM_USER_IMAGE_SPAN: u64 = 64 * 1024 * 1024;
 /// A measured image and its validated static load plan.
 ///
 /// The artifact remains immutably borrowed for this object's lifetime. A
-/// future address-space installer must consume this object, copy each segment
-/// into writable non-executable pages, clear BSS, apply any supported static
-/// relocations, remeasure, and only then seal final permissions.
+/// The address-space installer consumes this object, copies each segment into
+/// inaccessible zeroed staging memory, verifies initialized data and BSS, and
+/// only then seals final permissions. Static relocations remain unsupported.
 pub struct PreparedUserImage<'bytes> {
     artifact: VerifiedArtifact<'bytes>,
     plan: LoadPlan,

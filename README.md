@@ -177,17 +177,21 @@ preparation evidence rather than a compressed arbitrary user program. The PID
 1 preparation path rejects dynamic-linker requirements, non-user addresses,
 oversized images, unreadable executable segments, and manifest/ELF entry-point
 disagreement. Executable-class output is never transferred directly to
-control: a future installer must copy it into writable non-executable pages,
-clear BSS, remeasure, and seal final W^X permissions. Manifest measurements
-provide authenticity only when the manifest root is independently protected
-and replicated.
+control. Boulder now defines a transactional address-space backend contract
+that requires zeroed staging mappings, bounded copies, initialized-data and BSS
+verification, final W^X sealing, commit-after-seal ordering, and abort on every
+intermediate failure. Its bootstrap backend is explicitly a bounded software
+dry run: it proves installer ordering and generation-checked stale-handle
+rejection but does not create hardware page tables or isolation. Manifest
+measurements provide authenticity only when the manifest root is independently
+protected and replicated.
 The ignition sequence is a protocol-neutral phase guard around Boulder's
 existing GRUB/Multiboot2 handoff. It requires validated boot information,
 memory, topology, subsystems, and interrupt routing in order before declaring
 the kernel online. A future Limine entry can feed the same guard without adding
 a competing entry symbol. Userland remains explicitly not ready even though a
 measured PID 1 image now passes static executable-format preparation: separate
-user page tables, segment installation, relocation policy, TSS privilege
+user page tables and a physical-frame backend, relocation policy, TSS privilege
 stacks, syscall entry, scheduling, and Ring 3 transfer are not yet complete.
 
 ```sh

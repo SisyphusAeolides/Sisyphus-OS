@@ -26,9 +26,12 @@ use ::blacklab::timeline::{CounterScale, TimelineError, WorkloadTerm, logical_de
 use crate::aether::{event_kind, record};
 use crate::capability::{
     ArtifactSynthesisControl, Capability, FaultPolicyControl, LearningControl,
-    MemorySharingControl, ResonanceControl, UserlandImageControl,
+    MemorySharingControl, ProcessInstallControl, ResonanceControl, UserlandImageControl,
 };
 use crate::process::image::{UserImageError, prepare_user_image};
+use crate::process::install::{
+    DryRunAddressSpace, DryRunError, InstallError, ProcessImageInfo, install_user_image,
+};
 use crate::sync::SpinLock;
 
 struct Runtime {
@@ -74,6 +77,7 @@ pub struct Summary {
     pub quarantined_faults: u64,
     pub materialized_bytes: usize,
     pub pid1_entry_point: u64,
+    pub pid1_install_generation: u32,
     pub thermal_model_actionable: bool,
 }
 
@@ -91,6 +95,7 @@ pub enum InitializeError {
     Tartarus(TartarusError),
     Oureboros(OureborosError),
     UserImage(UserImageError),
+    ProcessInstall(InstallError<DryRunError>),
     IncompletePlan,
 }
 
@@ -101,6 +106,7 @@ pub fn initialize(
     _fault_policy: &Capability<'_, FaultPolicyControl>,
     _artifact_synthesis: &Capability<'_, ArtifactSynthesisControl>,
     userland_image: &Capability<'_, UserlandImageControl>,
+    process_install: &Capability<'_, ProcessInstallControl>,
 ) -> Result<Summary, InitializeError> {
     let mut runtime = RUNTIME.lock();
     if runtime.initialized {
@@ -377,7 +383,28 @@ pub fn initialize(
     if pid1_image.measurement().sha256 != pid1_digest || runtime.artifacts.len() != 2 {
         return Err(InitializeError::IncompletePlan);
     }
-    let pid1_entry_point = pid1_image.plan().entry_point;
+    let mut install_backend = DryRunAddressSpace::<256>::new();
+    let installed_pid1 = install_user_image(pid1_image, &mut install_backend, process_install)
+        .map_err(InitializeError::ProcessInstall)?;
+    let pid1_entry_point = installed_pid1.entry_point;
+    let pid1_install_generation = installed_pid1.process.generation();
+    if install_backend.resolve_process(&installed_pid1.process)
+        != Some(ProcessImageInfo {
+            entry_point: pid1_entry_point,
+            segment_count: 1,
+        })
+    {
+        return Err(InitializeError::IncompletePlan);
+    }
+    install_backend
+        .release_process(&installed_pid1.process)
+        .map_err(|error| InitializeError::ProcessInstall(InstallError::Backend(error)))?;
+    if install_backend
+        .resolve_process(&installed_pid1.process)
+        .is_some()
+    {
+        return Err(InitializeError::IncompletePlan);
+    }
 
     let fault_features = [1, 0, 0, 0, 0, 0, 0, 0];
     NYX_ANOMALY_DETECTOR
@@ -456,6 +483,7 @@ pub fn initialize(
         quarantined_faults,
         materialized_bytes,
         pid1_entry_point,
+        pid1_install_generation,
         thermal_model_actionable: thermal_forecast.validated,
     })
 }
