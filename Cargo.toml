@@ -1,0 +1,34 @@
+[workspace]
+resolver = "3"
+members = [
+    "core/abyss",
+    "kernel/boulder",
+    "libraries/driver-abi",
+    "libraries/slope",
+    "userland/push",
+    "userland/corinth",
+    "userland/crest",
+]
+default-members = [
+    "core/abyss",
+    "kernel/boulder",
+    "libraries/driver-abi",
+    "libraries/slope",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+rust-version = "1.85"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+lto = true
+codegen-units = 1

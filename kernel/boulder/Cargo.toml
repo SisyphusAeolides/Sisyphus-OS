@@ -1,0 +1,29 @@
+[package]
+name = "boulder"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+build = "build.rs"
+
+[features]
+default = ["reference-driver"]
+reference-driver = []
+kernel-bin = []
+
+[dependencies]
+abyss = { path = "../../core/abyss" }
+sisyphus-driver-abi = { path = "../../libraries/driver-abi" }
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "boulder"
+path = "src/main.rs"
+required-features = ["kernel-bin"]
+test = false
+bench = false
+
+[lints]
+workspace = true
