@@ -12,6 +12,7 @@ const MADT_SIGNATURE: &[u8; 4] = b"APIC";
 
 pub const MAXIMUM_IO_APICS: usize = 8;
 pub const MAXIMUM_INTERRUPT_OVERRIDES: usize = 24;
+pub const MAXIMUM_PROCESSORS: usize = 256;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Rsdp {
@@ -111,6 +112,25 @@ impl InterruptSourceOverride {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ProcessorDescriptor {
+    pub firmware_uid: u32,
+    pub apic_id: u32,
+    pub enabled: bool,
+    pub online_capable: bool,
+    pub uses_x2apic: bool,
+}
+
+impl ProcessorDescriptor {
+    const EMPTY: Self = Self {
+        firmware_uid: 0,
+        apic_id: 0,
+        enabled: false,
+        online_capable: false,
+        uses_x2apic: false,
+    };
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MadtInfo {
     pub local_apic_address: u64,
     pub flags: u32,
@@ -118,6 +138,8 @@ pub struct MadtInfo {
     io_apic_count: usize,
     overrides: [InterruptSourceOverride; MAXIMUM_INTERRUPT_OVERRIDES],
     override_count: usize,
+    processors: [ProcessorDescriptor; MAXIMUM_PROCESSORS],
+    processor_count: usize,
 }
 
 impl MadtInfo {
@@ -129,6 +151,8 @@ impl MadtInfo {
             io_apic_count: 0,
             overrides: [InterruptSourceOverride::EMPTY; MAXIMUM_INTERRUPT_OVERRIDES],
             override_count: 0,
+            processors: [ProcessorDescriptor::EMPTY; MAXIMUM_PROCESSORS],
+            processor_count: 0,
         }
     }
 
@@ -138,6 +162,10 @@ impl MadtInfo {
 
     pub fn interrupt_source_overrides(&self) -> &[InterruptSourceOverride] {
         &self.overrides[..self.override_count]
+    }
+
+    pub fn processors(&self) -> &[ProcessorDescriptor] {
+        &self.processors[..self.processor_count]
     }
 
     fn push_io_apic(&mut self, descriptor: IoApicDescriptor) -> Result<(), AcpiError> {
@@ -159,6 +187,23 @@ impl MadtInfo {
         self.override_count += 1;
         Ok(())
     }
+
+    fn push_processor(&mut self, processor: ProcessorDescriptor) -> Result<(), AcpiError> {
+        if self
+            .processors()
+            .iter()
+            .any(|existing| existing.apic_id == processor.apic_id)
+        {
+            return Err(AcpiError::DuplicateProcessor);
+        }
+        let slot = self
+            .processors
+            .get_mut(self.processor_count)
+            .ok_or(AcpiError::CapacityExceeded)?;
+        *slot = processor;
+        self.processor_count += 1;
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -172,6 +217,7 @@ pub enum AcpiError {
     MissingMadt,
     MalformedMadt,
     InvalidInterruptFlags,
+    DuplicateProcessor,
     CapacityExceeded,
 }
 
@@ -276,6 +322,19 @@ fn parse_madt(table: &[u8]) -> Result<MadtInfo, AcpiError> {
         }
         let entry = &table[offset..offset + entry_length];
         match entry_type {
+            0 => {
+                if entry.len() < 8 {
+                    return Err(AcpiError::MalformedMadt);
+                }
+                let processor_flags = read_u32(entry, 4).ok_or(AcpiError::MalformedMadt)?;
+                madt.push_processor(ProcessorDescriptor {
+                    firmware_uid: u32::from(entry[2]),
+                    apic_id: u32::from(entry[3]),
+                    enabled: processor_flags & 1 != 0,
+                    online_capable: processor_flags & 2 != 0,
+                    uses_x2apic: false,
+                })?;
+            }
             1 => {
                 if entry.len() < 12 {
                     return Err(AcpiError::MalformedMadt);
@@ -305,6 +364,19 @@ fn parse_madt(table: &[u8]) -> Result<MadtInfo, AcpiError> {
                     return Err(AcpiError::MalformedMadt);
                 }
                 madt.local_apic_address = read_u64(entry, 4).ok_or(AcpiError::MalformedMadt)?;
+            }
+            9 => {
+                if entry.len() < 16 {
+                    return Err(AcpiError::MalformedMadt);
+                }
+                let processor_flags = read_u32(entry, 8).ok_or(AcpiError::MalformedMadt)?;
+                madt.push_processor(ProcessorDescriptor {
+                    firmware_uid: read_u32(entry, 12).ok_or(AcpiError::MalformedMadt)?,
+                    apic_id: read_u32(entry, 4).ok_or(AcpiError::MalformedMadt)?,
+                    enabled: processor_flags & 1 != 0,
+                    online_capable: processor_flags & 2 != 0,
+                    uses_x2apic: true,
+                })?;
             }
             _ => {}
         }
@@ -395,7 +467,7 @@ mod tests {
             .copy_from_slice(&(MEMORY_BASE + MADT_OFFSET as u64).to_le_bytes());
         set_checksum(xsdt, 9);
 
-        let madt_length = MADT_HEADER_LENGTH + 12 + 10 + 12;
+        let madt_length = MADT_HEADER_LENGTH + 12 + 10 + 12 + 8 + 16;
         let madt = &mut memory[MADT_OFFSET..MADT_OFFSET + madt_length];
         madt[..4].copy_from_slice(MADT_SIGNATURE);
         madt[4..8].copy_from_slice(&(madt_length as u32).to_le_bytes());
@@ -420,6 +492,20 @@ mod tests {
         address_override[0] = 5;
         address_override[1] = 12;
         address_override[4..12].copy_from_slice(&(0xfee0_1000_u64).to_le_bytes());
+
+        let local_apic = &mut madt[78..86];
+        local_apic[0] = 0;
+        local_apic[1] = 8;
+        local_apic[2] = 3;
+        local_apic[3] = 7;
+        local_apic[4..8].copy_from_slice(&(1_u32).to_le_bytes());
+
+        let x2apic = &mut madt[86..102];
+        x2apic[0] = 9;
+        x2apic[1] = 16;
+        x2apic[4..8].copy_from_slice(&(0x123_u32).to_le_bytes());
+        x2apic[8..12].copy_from_slice(&(2_u32).to_le_bytes());
+        x2apic[12..16].copy_from_slice(&(42_u32).to_le_bytes());
         set_checksum(madt, 9);
         memory
     }
@@ -465,6 +551,25 @@ mod tests {
                 polarity: InterruptPolarity::ActiveLow,
                 trigger_mode: InterruptTriggerMode::Level,
             }]
+        );
+        assert_eq!(
+            madt.processors(),
+            &[
+                ProcessorDescriptor {
+                    firmware_uid: 3,
+                    apic_id: 7,
+                    enabled: true,
+                    online_capable: false,
+                    uses_x2apic: false,
+                },
+                ProcessorDescriptor {
+                    firmware_uid: 42,
+                    apic_id: 0x123,
+                    enabled: false,
+                    online_capable: true,
+                    uses_x2apic: true,
+                },
+            ]
         );
     }
 

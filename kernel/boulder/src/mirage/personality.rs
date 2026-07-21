@@ -1,3 +1,4 @@
+use crate::mirage::ntoskrnl::abi;
 use crate::module::relocator::ExternalSymbolResolver;
 use crate::shim::linux_kpi;
 
@@ -102,9 +103,7 @@ impl MirageEnclave {
 
         match personality {
             OsPersonality::Linux(version) => enclave.materialize_linux(version)?,
-            OsPersonality::WindowsNt(_) => {
-                return Err(PersonalityError::UnavailablePersonality);
-            }
+            OsPersonality::WindowsNt(version) => enclave.materialize_windows(version)?,
             OsPersonality::FreeBsd(_) => {
                 return Err(PersonalityError::UnavailablePersonality);
             }
@@ -150,6 +149,22 @@ impl MirageEnclave {
         self.insert_symbol(b"__kmalloc", allocate)?;
         self.insert_symbol(b"kfree", deallocate)?;
         self.insert_symbol(b"printk", log)?;
+        Ok(())
+    }
+
+    fn materialize_windows(&mut self, _version: NtVersion) -> Result<(), PersonalityError> {
+        let allocate = abi::ex_allocate_pool_with_tag as *const () as usize as u64;
+        let deallocate = abi::ex_free_pool_with_tag as *const () as usize as u64;
+        self.object_format = ObjectFormat::PortableExecutable;
+        self.calling_convention = CallingConvention::Windows64;
+        self.virtual_vtable = EnvironmentVTable {
+            allocate: Some(allocate),
+            deallocate: Some(deallocate),
+            log: None,
+            device_control: None,
+        };
+        self.insert_symbol(b"ExAllocatePoolWithTag", allocate)?;
+        self.insert_symbol(b"ExFreePoolWithTag", deallocate)?;
         Ok(())
     }
 
@@ -207,11 +222,17 @@ mod tests {
     }
 
     #[test]
-    fn refuses_unimplemented_personalities() {
-        assert!(matches!(
-            MirageEnclave::materialize(OsPersonality::WindowsNt(NtVersion::Windows11)),
-            Err(PersonalityError::UnavailablePersonality)
-        ));
+    fn materializes_only_the_implemented_windows_subset() {
+        let enclave =
+            MirageEnclave::materialize(OsPersonality::WindowsNt(NtVersion::Windows11)).unwrap();
+        assert_eq!(enclave.object_format(), ObjectFormat::PortableExecutable);
+        assert_eq!(enclave.calling_convention(), CallingConvention::Windows64);
+        assert!(enclave.resolve(b"ExAllocatePoolWithTag").is_some());
+        assert!(enclave.resolve(b"KeInitializeEvent").is_none());
+    }
+
+    #[test]
+    fn refuses_unimplemented_freebsd_personalities() {
         assert!(matches!(
             MirageEnclave::materialize(OsPersonality::FreeBsd(BsdVersion::V14_1)),
             Err(PersonalityError::UnavailablePersonality)

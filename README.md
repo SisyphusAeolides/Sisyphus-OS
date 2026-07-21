@@ -42,9 +42,11 @@ Boulder also contains compatibility foundations for externally built C code:
 The Mirage personality registry selects a versioned object format, calling
 convention, service table, and external-symbol allowlist for each foreign
 environment. The current Linux personalities expose a deliberately small
-symbol subset. Windows NT and FreeBSD personalities fail closed until their
-native object loaders, structure contracts, and service implementations are
-installed. Mirage thunk pages follow a writable-then-executable lifecycle;
+symbol subset. Windows NT personalities expose Win64 pool allocation/free and
+a bounded PE32+ load-plan validator, while IRP layouts remain behind a
+version-specific opaque bridge. FreeBSD personalities fail closed until their
+native contracts and service implementations are installed. Mirage thunk pages
+follow a writable-then-executable lifecycle;
 cross-ABI thunk generation remains disabled until complete register, stack,
 floating-point, and unwind translation is available.
 
@@ -96,6 +98,20 @@ a masked state. The local APIC timer is calibrated against PIT channel 2 and
 must deliver repeated periodic interrupts before boot can complete. Legacy PCI
 configuration-space discovery records all present functions while respecting
 multifunction headers.
+
+MADT processor records retain firmware UIDs, APIC/x2APIC IDs, enabled state,
+and online-capable state. Boulder assigns the boot processor to Aegis, reserves
+up to two discovered APs for Mirage enclaves, and leaves a compute core when
+the machine is large enough. APs remain in the discovered state until a later
+INIT/SIPI startup handshake marks each one online. Role enforcement is an
+explicit execution authorization check; it does not disable the interrupts
+needed for timers, IPIs, or watchdog delivery.
+
+The real-time scheduler implements fixed-capacity EDF admission for independent,
+preemptible, implicit-deadline periodic tasks using conservative integer
+utilization accounting. Runtime budgets, absolute deadlines, missed releases,
+and overruns are reported explicitly. RTM wrappers are CPUID-gated rollback
+aids only and are not treated as memory-security boundaries.
 
 ```sh
 rustup component add rust-src --toolchain nightly

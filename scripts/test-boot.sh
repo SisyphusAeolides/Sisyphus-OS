@@ -12,6 +12,7 @@ status=0
 timeout --signal=TERM 10s qemu-system-x86_64 \
     -cdrom "$image" \
     -m 256M \
+    -smp 4 \
     -no-reboot \
     -no-shutdown \
     -display none \
@@ -24,5 +25,6 @@ if [ "$status" -ne 0 ] && [ "$status" -ne 124 ]; then
 fi
 
 cat "$output"
+grep -Fq "Boulder: CPU topology processors=4, online=1, enclave=2, compute=1" "$output"
 grep -Fq "Boulder: local APIC timer" "$output"
 grep -Fq "Boulder: interrupt-routing milestone complete" "$output"

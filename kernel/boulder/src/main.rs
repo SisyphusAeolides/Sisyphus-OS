@@ -9,6 +9,7 @@ use abyss::reservation::{Reservation, ReservationKind, ReservationTable};
 use boulder::arch::x86_64::{halt, idle};
 use boulder::boot::acpi::discover_madt;
 use boulder::boot::multiboot2::BootInformation;
+use boulder::cpu::topology::{self, ExecutionClass, TopologyPolicy};
 use boulder::hw::pci;
 use boulder::interrupts;
 use boulder::mmio::{EARLY_MAPPED_PHYSICAL_LIMIT, direct_map_address, kernel_mmio};
@@ -332,6 +333,28 @@ pub extern "C" fn boulder_main(multiboot_address: usize) -> ! {
         );
         halt();
     }
+    let cpu_topology =
+        match topology::initialize(&madt, u32::from(local_apic.id), TopologyPolicy::default()) {
+            Ok(info) => info,
+            Err(error) => {
+                let _ = writeln!(serial, "Boulder: CPU topology failed: {error:?}");
+                halt();
+            }
+        };
+    if topology::authorize_execution(u32::from(local_apic.id), ExecutionClass::KernelControl)
+        .is_err()
+    {
+        let _ = writeln!(serial, "Boulder: BSP was not assigned the Aegis role");
+        halt();
+    }
+    let _ = writeln!(
+        serial,
+        "Boulder: CPU topology processors={}, online={}, enclave={}, compute={}",
+        cpu_topology.processor_count,
+        cpu_topology.online_cores,
+        cpu_topology.enclave_cores,
+        cpu_topology.compute_cores
+    );
     // SAFETY: ACPI described the active controllers, the local APIC is live,
     // and interrupts are disabled after the completed self-IPI test.
     let io_apics = match unsafe { interrupts::initialize_io_apics(&madt, mmio, local_apic.id) } {

@@ -1,4 +1,5 @@
 mod apic;
+mod exceptions;
 mod idt;
 mod ioapic;
 mod irq;
@@ -149,6 +150,21 @@ extern "C" fn boulder_interrupt_dispatch(frame: *mut InterruptFrame) {
     match frame.vector {
         3 => {
             BREAKPOINT_HITS.fetch_add(1, Ordering::Relaxed);
+        }
+        14 => {
+            let fault = exceptions::page_fault(frame.error_code);
+            let mut serial = unsafe { SerialPort::initialize(COM1) };
+            let _ = writeln!(
+                serial,
+                "Boulder page fault: address={:#x} error={:#x} present={} write={} user={} execute={}",
+                fault.address,
+                fault.error_code,
+                fault.protection_violation,
+                fault.write,
+                fault.user,
+                fault.instruction_fetch
+            );
+            halt();
         }
         LEGACY_IRQ_VECTOR_BASE..LEGACY_IRQ_VECTOR_END => {
             let irq = (frame.vector - LEGACY_IRQ_VECTOR_BASE) as u8;
