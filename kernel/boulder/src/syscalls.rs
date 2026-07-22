@@ -28,6 +28,8 @@ const ENTRY_PRESENT: u64 = 1 << 0;
 #[cfg(any(target_os = "none", test))]
 const ENTRY_USER: u64 = 1 << 2;
 #[cfg(any(target_os = "none", test))]
+const ENTRY_WRITABLE: u64 = 1 << 1;
+#[cfg(any(target_os = "none", test))]
 const ENTRY_HUGE: u64 = 1 << 7;
 #[cfg(target_os = "none")]
 const MAXIMUM_WRITE_BYTES: usize = 256;
@@ -104,6 +106,8 @@ extern "C" fn boulder_syscall_dispatch(frame: *mut SyscallFrame) {
             EXIT_REQUESTS.fetch_add(1, Ordering::AcqRel);
             ERROR_NOT_IMPLEMENTED
         }
+        grimoire::SYS_DISP_QUERY => kairos_query_to_user(frame.arguments),
+        grimoire::SYS_DISP_LEASE => kairos_abi_to_user(frame.arguments),
         _ => ERROR_NOT_IMPLEMENTED,
     };
     frame.number_or_result = result as u64;
@@ -179,6 +183,118 @@ fn copy_from_user(source: u64, target: &mut [u8]) -> Result<(), UserCopyError> {
 }
 
 #[cfg(target_os = "none")]
+fn copy_to_user(target: u64, source: &[u8]) -> Result<(), UserCopyError> {
+    if source.is_empty() {
+        return Ok(());
+    }
+    let end = target
+        .checked_add(source.len() as u64)
+        .ok_or(UserCopyError::InvalidRange)?;
+    if target < USER_ADDRESS_MINIMUM || end > USER_ADDRESS_LIMIT {
+        return Err(UserCopyError::InvalidRange);
+    }
+
+    // SAFETY: The syscall gate retains the calling process hierarchy for the
+    // duration of this bounded copy.
+    let root = unsafe { active_page_table_root() };
+    let mut copied = 0;
+    while copied < source.len() {
+        let user_address = target + copied as u64;
+        let physical = translate_user_address_for_write(root, user_address, read_active_entry)?;
+        let page_remaining = PAGE_SIZE - (user_address as usize & (PAGE_SIZE - 1));
+        let length = core::cmp::min(page_remaining, source.len() - copied);
+        let physical_end = physical
+            .checked_add(length as u64)
+            .ok_or(UserCopyError::UnmappedPhysicalMemory)?;
+        if physical_end > EARLY_MAPPED_PHYSICAL_LIMIT {
+            return Err(UserCopyError::UnmappedPhysicalMemory);
+        }
+        let target_pointer =
+            direct_map_address(physical).ok_or(UserCopyError::UnmappedPhysicalMemory)? as *mut u8;
+        // SAFETY: The page walk verified a user-writable mapping, the direct
+        // map covers this span, and `source` is kernel-owned memory.
+        unsafe {
+            core::ptr::copy_nonoverlapping(source.as_ptr().add(copied), target_pointer, length);
+        }
+        copied += length;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "none")]
+fn copy_value_to_user<T>(target: u64, value: &T) -> Result<(), UserCopyError> {
+    // SAFETY: All callers use C wire structures whose padding is explicit and
+    // initialized, so their complete object representation may be copied.
+    let bytes = unsafe {
+        core::slice::from_raw_parts((value as *const T).cast::<u8>(), core::mem::size_of::<T>())
+    };
+    copy_to_user(target, bytes)
+}
+
+#[cfg(target_os = "none")]
+fn kairos_query_to_user(arguments: [u64; 6]) -> isize {
+    use ::kairos::wire::{RawCpuEntry, RawDomainEntry, RawTopologyHeader, RawTopologyReply};
+
+    if arguments[1] != core::mem::size_of::<RawTopologyReply>() as u64 {
+        return ERROR_INVALID_ARGUMENT;
+    }
+    let destination = arguments[0];
+    let Ok(header) = crate::kairos::topology_header() else {
+        return ERROR_NOT_IMPLEMENTED;
+    };
+    if copy_value_to_user(destination, &header).is_err() {
+        return ERROR_BAD_ADDRESS;
+    }
+
+    let cpu_base = destination + core::mem::size_of::<RawTopologyHeader>() as u64;
+    for index in 0..header.cpu_count as usize {
+        let Ok(entry) = crate::kairos::cpu_entry(index) else {
+            return ERROR_NOT_IMPLEMENTED;
+        };
+        let target = cpu_base + (index * core::mem::size_of::<RawCpuEntry>()) as u64;
+        if copy_value_to_user(target, &entry).is_err() {
+            return ERROR_BAD_ADDRESS;
+        }
+    }
+
+    let domain_base = destination + core::mem::offset_of!(RawTopologyReply, domains) as u64;
+    for index in 0..header.domain_count as usize {
+        let Ok(entry) = crate::kairos::domain_entry(index) else {
+            return ERROR_NOT_IMPLEMENTED;
+        };
+        let target = domain_base + (index * core::mem::size_of::<RawDomainEntry>()) as u64;
+        if copy_value_to_user(target, &entry).is_err() {
+            return ERROR_BAD_ADDRESS;
+        }
+    }
+    0
+}
+
+#[cfg(target_os = "none")]
+fn kairos_abi_to_user(arguments: [u64; 6]) -> isize {
+    use ::kairos::wire::{AbiReply, AbiRequest};
+
+    if arguments[1] != core::mem::size_of::<AbiRequest>() as u64
+        || arguments[3] != core::mem::size_of::<AbiReply>() as u64
+    {
+        return ERROR_INVALID_ARGUMENT;
+    }
+    let mut bytes = [0_u8; core::mem::size_of::<AbiRequest>()];
+    if copy_from_user(arguments[0], &mut bytes).is_err() {
+        return ERROR_BAD_ADDRESS;
+    }
+    // SAFETY: The byte array contains exactly one fully initialized request;
+    // every field accepts all integer bit patterns. Unaligned access is used
+    // because the byte array itself has alignment one.
+    let request = unsafe { bytes.as_ptr().cast::<AbiRequest>().read_unaligned() };
+    let reply = crate::kairos::negotiate_request(request);
+    if copy_value_to_user(arguments[2], &reply).is_err() {
+        return ERROR_BAD_ADDRESS;
+    }
+    0
+}
+
+#[cfg(target_os = "none")]
 fn read_active_entry(table: u64, index: usize) -> Option<u64> {
     if table & (PAGE_SIZE as u64 - 1) != 0 || index >= 512 {
         return None;
@@ -198,6 +314,25 @@ fn read_active_entry(table: u64, index: usize) -> Option<u64> {
 fn translate_user_address(
     root: u64,
     address: u64,
+    read_entry: impl FnMut(u64, usize) -> Option<u64>,
+) -> Result<u64, UserCopyError> {
+    translate_user_address_with_access(root, address, false, read_entry)
+}
+
+#[cfg(any(target_os = "none", test))]
+fn translate_user_address_for_write(
+    root: u64,
+    address: u64,
+    read_entry: impl FnMut(u64, usize) -> Option<u64>,
+) -> Result<u64, UserCopyError> {
+    translate_user_address_with_access(root, address, true, read_entry)
+}
+
+#[cfg(any(target_os = "none", test))]
+fn translate_user_address_with_access(
+    root: u64,
+    address: u64,
+    write: bool,
     mut read_entry: impl FnMut(u64, usize) -> Option<u64>,
 ) -> Result<u64, UserCopyError> {
     if root == 0 || root & (PAGE_SIZE as u64 - 1) != 0 || !valid_user_control_address(address) {
@@ -219,6 +354,9 @@ fn translate_user_address(
         if entry & (ENTRY_PRESENT | ENTRY_USER) != ENTRY_PRESENT | ENTRY_USER {
             return Err(UserCopyError::PermissionDenied);
         }
+        if write && entry & ENTRY_WRITABLE == 0 {
+            return Err(UserCopyError::PermissionDenied);
+        }
         if entry & ENTRY_HUGE != 0 {
             return Err(UserCopyError::HugePageUnsupported);
         }
@@ -226,6 +364,9 @@ fn translate_user_address(
     }
     let leaf = read_entry(table, indices[3]).ok_or(UserCopyError::MissingMapping)?;
     if leaf & (ENTRY_PRESENT | ENTRY_USER) != ENTRY_PRESENT | ENTRY_USER {
+        return Err(UserCopyError::PermissionDenied);
+    }
+    if write && leaf & ENTRY_WRITABLE == 0 {
         return Err(UserCopyError::PermissionDenied);
     }
     Ok((leaf & PAGE_ADDRESS_MASK) | (address & (PAGE_SIZE as u64 - 1)))
@@ -248,6 +389,10 @@ mod tests {
 
     fn mapped_entry(physical: u64) -> u64 {
         physical | ENTRY_PRESENT | ENTRY_USER
+    }
+
+    fn writable_entry(physical: u64) -> u64 {
+        mapped_entry(physical) | ENTRY_WRITABLE
     }
 
     #[test]
@@ -293,5 +438,28 @@ mod tests {
             _ => None,
         });
         assert_eq!(huge, Err(UserCopyError::HugePageUnsupported));
+    }
+
+    #[test]
+    fn write_translation_requires_writable_hierarchy() {
+        let read_only =
+            translate_user_address_for_write(0x1000, 0x1000, |table, index| match (table, index) {
+                (0x1000, 0) => Some(mapped_entry(0x2000)),
+                (0x2000, 0) => Some(writable_entry(0x3000)),
+                (0x3000, 0) => Some(writable_entry(0x4000)),
+                (0x4000, 1) => Some(writable_entry(0x9000)),
+                _ => None,
+            });
+        assert_eq!(read_only, Err(UserCopyError::PermissionDenied));
+
+        let writable =
+            translate_user_address_for_write(0x1000, 0x1234, |table, index| match (table, index) {
+                (0x1000, 0) => Some(writable_entry(0x2000)),
+                (0x2000, 0) => Some(writable_entry(0x3000)),
+                (0x3000, 0) => Some(writable_entry(0x4000)),
+                (0x4000, 1) => Some(writable_entry(0x9000)),
+                _ => None,
+            });
+        assert_eq!(writable, Ok(0x9234));
     }
 }

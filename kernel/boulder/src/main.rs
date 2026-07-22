@@ -56,6 +56,7 @@ const PUSH_ENTRY_FILE_OFFSET: usize = parse_decimal(env!("SISYPHUS_PUSH_ENTRY_FI
 #[cfg(not(target_os = "none"))]
 const PUSH_ENTRY_FILE_OFFSET: usize = 0;
 
+#[global_allocator]
 static KERNEL_HEAP: BumpAllocator = BumpAllocator::empty();
 static IRQ_TEST_HITS: AtomicUsize = AtomicUsize::new(0);
 

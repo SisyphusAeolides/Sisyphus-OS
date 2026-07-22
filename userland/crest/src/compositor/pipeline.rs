@@ -202,6 +202,8 @@ pub enum CompositorError {
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec;
+
     use super::*;
     use crate::manifold::PixelFormat;
     use crate::obsidian::{Fixed, ObsidianShell, SemanticAppNode, SdfInstruction, SdfProgram, Vector3};
@@ -215,11 +217,16 @@ mod tests {
         let prog = SdfProgram::new(&[SdfInstruction::Sphere {
             center: Vector3::ZERO, radius: Fixed::ONE,
         }]).unwrap();
-        shell.assimilate_app(SemanticAppNode {
-            app_id: 1, heat_signature: 1000,
-            center_x: Fixed::ZERO, center_y: Fixed::ZERO,
-            color: [200, 100, 50, 255], program: prog,
-        }).unwrap();
+        shell
+            .assimilate_app(SemanticAppNode::new(
+                1,
+                1000,
+                Fixed::ZERO,
+                Fixed::ZERO,
+                [200, 100, 50, 255],
+                prog,
+            ))
+            .unwrap();
         shell
     }
 

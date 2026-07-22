@@ -155,7 +155,7 @@ impl OuroborosExecutor {
             let bit  = mask.trailing_zeros() as usize;
             mask    &= !(1u64 << bit);
             let slot = &mut self.slots[bit];
-            if slot.state != SLOT_READY { continue; }
+            if slot.state != SLOT_READY && slot.state != SLOT_PARKED { continue; }
             slot.state = SLOT_RUNNING;
             let wd = WakerData {
                 ready_mask: &self.ready_mask,

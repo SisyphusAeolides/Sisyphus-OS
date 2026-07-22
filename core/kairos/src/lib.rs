@@ -5,3 +5,4 @@ pub mod object;
 pub mod profile;
 mod sync;
 pub mod topology;
+pub mod wire;

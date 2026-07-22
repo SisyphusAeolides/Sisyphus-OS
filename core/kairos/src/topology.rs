@@ -59,7 +59,10 @@ impl DomainGraph {
         self.count = 1;
         self.domains[0].id = 0;
         self.domains[0].kind = DomainKind::Machine;
-        for (logical_id, cpu) in profile.cpus().iter().filter(|cpu| cpu.enabled).enumerate() {
+        for (logical_id, cpu) in profile.cpus().iter().enumerate() {
+            if !cpu.enabled {
+                continue;
+            }
             let logical_id =
                 u16::try_from(logical_id).map_err(|_| TopologyError::CapacityExceeded)?;
             self.domains[0].push(logical_id)?;
@@ -144,5 +147,28 @@ mod tests {
         assert_eq!(graph.domains()[0].members(), &[0, 1, 2, 3]);
         assert_eq!(graph.domains()[1].members(), &[0, 1]);
         assert_eq!(graph.domains()[2].members(), &[2, 3]);
+    }
+
+    #[test]
+    fn preserves_profile_logical_ids_when_a_cpu_is_disabled() {
+        let mut profile = MachineProfile::new();
+        for id in 0..3 {
+            profile
+                .push_cpu(CpuProfile {
+                    hardware_id: id,
+                    firmware_id: id,
+                    package: 0,
+                    cluster: 0,
+                    core: id as u16,
+                    thread: 0,
+                    numa_domain: 0,
+                    kind: CpuKind::Symmetric,
+                    enabled: id != 1,
+                })
+                .unwrap();
+        }
+        let graph = DomainGraph::synthesize(&profile).unwrap();
+        assert_eq!(graph.domains()[0].members(), &[0, 2]);
+        assert_eq!(graph.domains()[1].members(), &[0, 2]);
     }
 }

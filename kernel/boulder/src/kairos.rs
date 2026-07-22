@@ -1,10 +1,15 @@
-use ::kairos::abi::{ABI_KIND_DRIVER, AbiDescriptor, NegotiationError, negotiate};
+use ::kairos::abi::{
+    ABI_KIND_DRIVER, ABI_MAGIC, ABI_VERSION, AbiDescriptor, NegotiationError, negotiate,
+};
 use ::kairos::object::{ObjectKind, ObjectTable, Rights};
 use ::kairos::profile::{
     CpuKind, CpuProfile, IoProfile, MachineProfile, MachineTraits, MemoryKind, MemoryProfile,
     ProfileError,
 };
 use ::kairos::topology::{DomainGraph, TopologyError};
+use ::kairos::wire::{
+    AbiReply, AbiRequest, RawCpuEntry, RawDomainEntry, RawTopologyHeader, features, trait_flags,
+};
 use abyss::memory::{MemoryMap, MemoryRegionKind};
 
 use crate::boot::acpi::MadtInfo;
@@ -47,6 +52,139 @@ pub enum InitializeError {
     Topology(TopologyError),
     Abi(NegotiationError),
     ObjectSelfTest,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum QueryError {
+    NotInitialized,
+    IndexOutOfRange,
+}
+
+pub fn topology_header() -> Result<RawTopologyHeader, QueryError> {
+    let state = STATE.lock();
+    if !state.initialized {
+        return Err(QueryError::NotInitialized);
+    }
+    let traits = state.profile.traits();
+    Ok(RawTopologyHeader {
+        cpu_count: state.profile.cpus().len() as u32,
+        domain_count: state.graph.domains().len() as u32,
+        trait_flags: encode_traits(traits),
+        _pad: 0,
+    })
+}
+
+pub fn cpu_entry(index: usize) -> Result<RawCpuEntry, QueryError> {
+    let state = STATE.lock();
+    if !state.initialized {
+        return Err(QueryError::NotInitialized);
+    }
+    let cpu = state
+        .profile
+        .cpus()
+        .get(index)
+        .ok_or(QueryError::IndexOutOfRange)?;
+    Ok(RawCpuEntry {
+        logical_id: u16::try_from(index).map_err(|_| QueryError::IndexOutOfRange)?,
+        _pad0: 0,
+        hardware_id: cpu.hardware_id,
+        package: cpu.package,
+        core: cpu.core,
+        thread: cpu.thread,
+        numa_domain: cpu.numa_domain,
+        kind: cpu.kind as u8,
+        enabled: u8::from(cpu.enabled),
+        _pad1: [0; 2],
+    })
+}
+
+pub fn domain_entry(index: usize) -> Result<RawDomainEntry, QueryError> {
+    let state = STATE.lock();
+    if !state.initialized {
+        return Err(QueryError::NotInitialized);
+    }
+    let domain = state
+        .graph
+        .domains()
+        .get(index)
+        .ok_or(QueryError::IndexOutOfRange)?;
+    let mut entry = RawDomainEntry::ZERO;
+    entry.id = domain.id;
+    entry.kind = domain.kind as u8;
+    if let Some(parent) = domain.parent {
+        entry.parent_valid = 1;
+        entry.parent_id = parent;
+    }
+    entry.member_count = domain.members().len() as u16;
+    entry.members[..domain.members().len()].copy_from_slice(domain.members());
+    Ok(entry)
+}
+
+pub fn negotiate_request(request: AbiRequest) -> AbiReply {
+    if request.magic != ABI_MAGIC
+        || request.version != ABI_VERSION
+        || usize::from(request.structure_size) != core::mem::size_of::<AbiRequest>()
+    {
+        return invalid_abi_reply();
+    }
+
+    let requested_low = request.features_lo_req | request.features_lo_opt;
+    let requested_high = request.features_hi_req | request.features_hi_opt;
+    let requested = AbiDescriptor {
+        magic: request.magic,
+        version: request.version,
+        structure_size: core::mem::size_of::<AbiDescriptor>() as u16,
+        endian: request.endian,
+        word_bits: request.word_bits,
+        pointer_bits: request.pointer_bits,
+        abi_kind: request.abi_kind,
+        page_size: request.page_size,
+        syscall_style: request.syscall_style,
+        object_handle_bits: request.object_bits,
+        features_low: requested_low,
+        features_high: requested_high,
+    };
+    let native = AbiDescriptor::native(features::SYSCALL_BASIC, 0);
+    let Ok(negotiated) = negotiate(native, requested) else {
+        return invalid_abi_reply();
+    };
+    AbiReply {
+        features_lo_granted: negotiated.descriptor.features_low,
+        features_hi_granted: negotiated.descriptor.features_high,
+        features_lo_unavailable: negotiated.unavailable_features_low,
+        features_hi_unavailable: negotiated.unavailable_features_high,
+        status: 0,
+        _pad: 0,
+    }
+}
+
+const fn invalid_abi_reply() -> AbiReply {
+    let mut reply = AbiReply::ZERO;
+    reply.status = 1;
+    reply
+}
+
+const fn encode_traits(traits: MachineTraits) -> u32 {
+    let mut flags = 0;
+    if traits.symmetric_multiprocessing {
+        flags |= trait_flags::SMP;
+    }
+    if traits.numa {
+        flags |= trait_flags::NUMA;
+    }
+    if traits.heterogeneous {
+        flags |= trait_flags::HETEROGENEOUS;
+    }
+    if traits.offload {
+        flags |= trait_flags::OFFLOAD;
+    }
+    if traits.persistent_memory {
+        flags |= trait_flags::PERSISTENT_MEM;
+    }
+    if traits.shared_memory {
+        flags |= trait_flags::SHARED_MEM;
+    }
+    flags
 }
 
 pub fn initialize(
@@ -148,4 +286,50 @@ pub fn initialize(
         domains: state.graph.domains().len(),
         traits,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn request(required: u64, optional: u64) -> AbiRequest {
+        AbiRequest {
+            magic: ABI_MAGIC,
+            version: ABI_VERSION,
+            structure_size: core::mem::size_of::<AbiRequest>() as u16,
+            endian: if cfg!(target_endian = "little") { 1 } else { 2 },
+            word_bits: usize::BITS as u8,
+            pointer_bits: usize::BITS as u8,
+            abi_kind: ::kairos::abi::ABI_KIND_NATIVE,
+            page_size: 4096,
+            syscall_style: 1,
+            object_bits: 64,
+            _pad: 0,
+            features_lo_req: required,
+            features_hi_req: 0,
+            features_lo_opt: optional,
+            features_hi_opt: 0,
+        }
+    }
+
+    #[test]
+    fn abi_reply_reports_granted_and_unavailable_features() {
+        let reply = negotiate_request(request(
+            features::SYSCALL_BASIC,
+            features::ASYNC_IO | features::HOLOGRAM_FS,
+        ));
+        assert_eq!(reply.status, 0);
+        assert_eq!(reply.features_lo_granted, features::SYSCALL_BASIC);
+        assert_eq!(
+            reply.features_lo_unavailable,
+            features::ASYNC_IO | features::HOLOGRAM_FS
+        );
+    }
+
+    #[test]
+    fn abi_reply_rejects_an_invalid_wire_version() {
+        let mut invalid = request(features::SYSCALL_BASIC, 0);
+        invalid.version = ABI_VERSION + 1;
+        assert_ne!(negotiate_request(invalid).status, 0);
+    }
 }

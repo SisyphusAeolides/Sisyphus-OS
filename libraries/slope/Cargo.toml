@@ -10,6 +10,7 @@ path = "src/lib.rs"
 
 [dependencies]
 aether = { path = "../../core/aether" }
+kairos = { path = "../../core/kairos" }
 
 [lints]
 workspace = true

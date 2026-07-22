@@ -120,7 +120,8 @@ cargo kernel
 
 The custom target is intentionally not the workspace default, which keeps host
 tests usable. Current Rust releases require nightly for JSON targets. Boot-target
-builds use `x86_64-sisyphus.json` with a custom `core` and `compiler_builtins`;
+builds use `x86_64-sisyphus.json` with custom `core`, `alloc`, and
+`compiler_builtins`;
 that stage also requires the `rust-src` component.
 
 ## Booting Boulder
@@ -182,11 +183,23 @@ cross-CPU ownership and revocation models are complete.
 Kairos strictly negotiates self-describing ABI layouts and feature
 intersections, constructs bounded machine profiles from Boulder's real ACPI,
 boot-memory, and PCI observations, and synthesizes immutable machine and NUMA
-domain snapshots. Its internal object table uses non-cloneable,
-generation-checked handles with rights attenuation and opaque payload handles.
-Raw-pointer message transport, mutable global profile publication, and a
-user-visible syscall token encoding remain disabled pending per-process handle
-tables and revocation-safe ownership transfer.
+domain snapshots. Its shared C wire layouts are defined once in `core/kairos`.
+Boulder exposes bounded topology-query and ABI-negotiation syscalls that copy
+through validated user-writable mappings without placing the 70 KiB topology
+reply on the kernel entry stack. Slope retains the raw reply in process-wide
+storage, validates counts, domain membership, parents, and feature grants, and
+provides zero-allocation CPU/domain iterators, workload affinity hints, and
+CPU-proportional NUMA work partitions. The kernel advertises only implemented
+features, so required capabilities fail closed while optional capabilities are
+reported as unavailable. Slope also centralizes argv/environment collapse and
+Kairos setup in `ProcessRuntime` for binaries using the process-entry stack ABI.
+The current PID 1 entry still uses its existing minimal stack contract; adopting
+the canonical runtime entry requires Boulder to populate argv/envp and pass the
+entry stack pointer explicitly. Kairos's internal object table uses
+non-cloneable, generation-checked handles with rights attenuation and opaque
+payload handles. Raw-pointer message transport and mutable global profile
+publication remain disabled pending per-process handle tables and
+revocation-safe ownership transfer.
 
 Black Lab evaluates a checked rational logical-time model, stores bounded
 semantic memory relationships through object handles and page numbers, ranks

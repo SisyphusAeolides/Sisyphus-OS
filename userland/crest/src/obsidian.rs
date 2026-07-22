@@ -245,6 +245,26 @@ pub struct SemanticAppNode {
     program: SdfProgram,
 }
 
+impl SemanticAppNode {
+    pub const fn new(
+        app_id: u32,
+        heat_signature: u32,
+        center_x: Fixed,
+        center_y: Fixed,
+        color: [u8; 4],
+        program: SdfProgram,
+    ) -> Self {
+        Self {
+            app_id,
+            heat_signature,
+            center_x,
+            center_y,
+            color,
+            program,
+        }
+    }
+}
+
 pub struct ObsidianShell {
     active_nodes: [Option<SemanticAppNode>; MAXIMUM_APP_NODES],
     node_count: usize,

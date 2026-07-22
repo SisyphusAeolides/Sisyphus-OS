@@ -249,10 +249,9 @@ unsafe impl GlobalAlloc for GlobalSlabHeap {
     }
 }
 
-/// Declare the global allocator. Call `HEAP.init()` in `_start` before any alloc.
-// Wait, I can't declare `#[global_allocator]` here without removing it from elsewhere?
-// I will just declare it here as requested.
-#[global_allocator]
+/// Sisyphus binaries call `HEAP.init()` in `_start` before allocating.
+/// Host tests retain their platform allocator.
+#[cfg_attr(target_os = "none", global_allocator)]
 pub static HEAP: GlobalSlabHeap = GlobalSlabHeap::new();
 
 // ─── SLAB TOKEN — capability-safe allocation identity ──────────────────────

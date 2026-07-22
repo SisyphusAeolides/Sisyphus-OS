@@ -134,13 +134,7 @@ impl GestureRecognizer {
 
     pub fn feed(&mut self, event: InputEvent) {
         match event {
-            InputEvent::TouchDown { x, y, .. } |
-            InputEvent::PointerAbs { x, y, .. } if matches!(event,
-                InputEvent::PointerAbs { buttons, .. } if buttons & 1 != 0) =>
-            {
-                let id = if let InputEvent::TouchDown { id, .. } = event { id } else { 0 };
-                self.on_down(id, x, y);
-            }
+            InputEvent::TouchDown { id, x, y } => self.on_down(id, x, y),
             InputEvent::PointerAbs { x, y, buttons } => {
                 if buttons & 1 != 0 { self.on_down(0, x, y); }
                 else                { self.on_move(0, x, y); }

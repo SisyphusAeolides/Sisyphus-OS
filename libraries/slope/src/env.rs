@@ -113,6 +113,8 @@ macro_rules! phase_key {
     };
 }
 
+pub use crate::phase_key;
+
 // ─── QUANTUM ENV ───────────────────────────────────────────────────────────
 
 pub struct QuantumEnv {
@@ -240,7 +242,7 @@ mod tests {
         assert_eq!(fnv1a_const(b""), FNV_OFFSET);
         // FNV-1a of "a" = 0xe40c292c
         // (64-bit variant — this is the known 64-bit result)
-        assert_eq!(fnv1a_const(b"a"), 0x84310_8f7_38_ac_c3_5c);
+        assert_eq!(fnv1a_const(b"a"), 0xaf63_dc4c_8601_ec8c);
     }
 
     #[test]
