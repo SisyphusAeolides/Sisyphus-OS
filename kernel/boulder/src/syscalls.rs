@@ -7,9 +7,7 @@ use crate::mmio::{EARLY_MAPPED_PHYSICAL_LIMIT, direct_map_address};
 #[cfg(target_os = "none")]
 use crate::serial::SerialPort;
 
-pub const SYSCALL_WRITE: usize = 1;
-pub const SYSCALL_EXIT: usize = 2;
-pub const SYSCALL_YIELD: usize = 3;
+use aether::grimoire;
 
 const ERROR_BAD_FILE_DESCRIPTOR: isize = -9;
 #[cfg(target_os = "none")]
@@ -55,13 +53,13 @@ const _: () = assert!(core::mem::size_of::<SyscallFrame>() == 80);
 
 pub fn dispatch(number: usize, arguments: [usize; 6]) -> isize {
     match number {
-        SYSCALL_YIELD => 0,
-        SYSCALL_WRITE if arguments[0] != 1 => ERROR_BAD_FILE_DESCRIPTOR,
-        SYSCALL_WRITE => ERROR_NOT_IMPLEMENTED,
+        grimoire::SYS_YIELD => 0,
+        grimoire::SYS_WRITE if arguments[0] != 1 => ERROR_BAD_FILE_DESCRIPTOR,
+        grimoire::SYS_WRITE => ERROR_NOT_IMPLEMENTED,
         // Process destruction requires a scheduler-owned continuation. Until
         // that exists, returning ENOSYS is safer than returning to code that
         // reasonably believes its process has terminated.
-        SYSCALL_EXIT => ERROR_NOT_IMPLEMENTED,
+        grimoire::SYS_EXIT => ERROR_NOT_IMPLEMENTED,
         _ => ERROR_NOT_IMPLEMENTED,
     }
 }
@@ -96,13 +94,13 @@ extern "C" fn boulder_syscall_dispatch(frame: *mut SyscallFrame) {
 
     let number = frame.number_or_result as usize;
     let result = match number {
-        SYSCALL_WRITE => write_from_user(frame.arguments),
-        SYSCALL_YIELD => {
+        grimoire::SYS_WRITE => write_from_user(frame.arguments),
+        grimoire::SYS_YIELD => {
             LAST_YIELD_HINT.store(frame.arguments[0], Ordering::Release);
             YIELD_HITS.fetch_add(1, Ordering::AcqRel);
             0
         }
-        SYSCALL_EXIT => {
+        grimoire::SYS_EXIT => {
             EXIT_REQUESTS.fetch_add(1, Ordering::AcqRel);
             ERROR_NOT_IMPLEMENTED
         }
@@ -254,11 +252,11 @@ mod tests {
 
     #[test]
     fn dispatch_exposes_only_implemented_non_pointer_work() {
-        assert_eq!(dispatch(SYSCALL_YIELD, [0; 6]), 0);
-        assert_eq!(dispatch(SYSCALL_EXIT, [0; 6]), ERROR_NOT_IMPLEMENTED);
+        assert_eq!(dispatch(grimoire::SYS_YIELD, [0; 6]), 0);
+        assert_eq!(dispatch(grimoire::SYS_EXIT, [0; 6]), ERROR_NOT_IMPLEMENTED);
         assert_eq!(dispatch(99, [0; 6]), ERROR_NOT_IMPLEMENTED);
         assert_eq!(
-            dispatch(SYSCALL_WRITE, [2, 0, 0, 0, 0, 0]),
+            dispatch(grimoire::SYS_WRITE, [2, 0, 0, 0, 0, 0]),
             ERROR_BAD_FILE_DESCRIPTOR
         );
     }

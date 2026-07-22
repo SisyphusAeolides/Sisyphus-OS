@@ -363,12 +363,12 @@ fn unfold_minimal_x86_64_elf(recipe: FractalRecipe, image: &mut [u8; MINIMAL_X86
     image[120..128]
         .copy_from_slice(&(recipe.base_entropy ^ recipe.structural_mutator).to_le_bytes());
     image[128..162].copy_from_slice(&[
-        0xb8, 0x01, 0x00, 0x00, 0x00, // mov eax, 1 (SYSCALL_WRITE)
+        0xb8, 0x01, 0x00, 0x00, 0x00, // mov eax, 1 (SYS_WRITE)
         0xbf, 0x01, 0x00, 0x00, 0x00, // mov edi, 1 (stdout)
         0x48, 0x8d, 0x35, 0x11, 0x00, 0x00, 0x00, // lea rsi, [rip + 17]
         0xba, 0x13, 0x00, 0x00, 0x00, // mov edx, 19
         0x0f, 0x05, // syscall
-        0xb8, 0x03, 0x00, 0x00, 0x00, // mov eax, 3 (SYSCALL_YIELD)
+        0xb8, 0x11, 0x00, 0x00, 0x00, // mov eax, 17 (SYS_YIELD)
         0x0f, 0x05, // syscall
         0xcc, // int3
         0xeb, 0xfe, // jmp $-2
@@ -716,7 +716,7 @@ mod tests {
         assert_eq!(artifact.bytes()[..4], *b"\x7fELF");
         assert_eq!(&artifact.bytes()[162..], b"PID1 syscall write\n");
         assert_eq!(&artifact.bytes()[128..133], &[0xb8, 1, 0, 0, 0]);
-        assert_eq!(&artifact.bytes()[152..157], &[0xb8, 3, 0, 0, 0]);
+        assert_eq!(&artifact.bytes()[152..157], &[0xb8, 17, 0, 0, 0]);
         assert_eq!(artifact.measurement().sha256, digest);
     }
 

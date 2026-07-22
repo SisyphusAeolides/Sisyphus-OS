@@ -2,8 +2,7 @@ use crate::{SyscallError, syscall};
 
 pub mod tachyon;
 
-const SYSCALL_EXIT: usize = 2;
-const SYSCALL_YIELD: usize = 3;
+use aether::grimoire;
 
 /// Cooperatively yields the current process while preserving its execution
 /// context.
@@ -18,7 +17,7 @@ pub fn yield_now() -> Result<(), SyscallError> {
 pub fn yield_with_hint(unfinished_work: u64) -> Result<(), SyscallError> {
     // SAFETY: Yield carries no pointer arguments and follows Slope's native
     // six-register syscall convention.
-    unsafe { syscall(SYSCALL_YIELD, [unfinished_work as usize, 0, 0, 0, 0, 0]) }.map(|_| ())
+    unsafe { syscall(grimoire::SYS_YIELD, [unfinished_work as usize, 0, 0, 0, 0, 0]) }.map(|_| ())
 }
 
 /// Requests termination of the current process.
@@ -30,5 +29,5 @@ pub fn request_exit(status: i32) -> Result<(), SyscallError> {
     let arguments = [status as isize as usize, 0, 0, 0, 0, 0];
     // SAFETY: Exit carries only a scalar status and follows Slope's native
     // six-register syscall convention.
-    unsafe { syscall(SYSCALL_EXIT, arguments) }.map(|_| ())
+    unsafe { syscall(grimoire::SYS_EXIT, arguments) }.map(|_| ())
 }

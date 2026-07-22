@@ -8,5 +8,8 @@ rust-version.workspace = true
 [lib]
 path = "src/lib.rs"
 
+[dependencies]
+aether = { path = "../../core/aether" }
+
 [lints]
 workspace = true
