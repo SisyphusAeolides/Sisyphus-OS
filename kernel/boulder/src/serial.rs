@@ -32,16 +32,24 @@ impl SerialPort {
         }
         unsafe { outb(self.base, byte) };
     }
-}
 
-impl Write for SerialPort {
-    fn write_str(&mut self, text: &str) -> fmt::Result {
-        for byte in text.bytes() {
+    /// Writes an arbitrary byte sequence to the UART.
+    ///
+    /// Newlines receive the same carriage-return translation as formatted
+    /// kernel output; bytes do not need to be valid UTF-8.
+    pub fn write_bytes(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
             if byte == b'\n' {
                 self.write_byte(b'\r');
             }
             self.write_byte(byte);
         }
+    }
+}
+
+impl Write for SerialPort {
+    fn write_str(&mut self, text: &str) -> fmt::Result {
+        self.write_bytes(text.as_bytes());
         Ok(())
     }
 }

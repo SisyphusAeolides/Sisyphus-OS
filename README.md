@@ -192,10 +192,17 @@ transition before initializing the IDT. During serialized bootstrap it also
 switches to PID 1's frame-backed CR3, confirms execution survives solely on the
 inherited higher-half mappings, and restores the kernel root. The process
 hierarchy is now retained with a separate zeroed RW+NX user stack. A higher-half
-GDT and 64-bit TSS provide DPL3 selectors and a dedicated RSP0 entry stack; the
-measured probe enters Ring 3, raises a user breakpoint, returns through RSP0,
-and restores the kernel CR3 before boot continues. This proves one serialized
-privilege round trip, not scheduling or a functional init process. Manifest
+GDT and 64-bit TSS provide SYSRET-compatible DPL3 selectors and a dedicated
+RSP0 entry stack. The kernel programs EFER/STAR/LSTAR/FMASK and enters native
+syscalls on a separate 16 KiB kernel stack. The bounded write path walks every
+user page through the active hierarchy, requires user permission at all four
+levels, copies at most 256 bytes through the retained direct map, and never
+dereferences a raw user pointer. The measured probe enters Ring 3, completes
+real bounded-write and yield syscall/SYSRET round trips, raises a user
+breakpoint, returns through
+RSP0, and restores the kernel CR3 before boot continues. This proves one
+serialized syscall and privilege round trip, not scheduling or a functional
+init process. Manifest
 measurements provide authenticity only when the manifest root is independently
 protected and replicated.
 The ignition sequence is a protocol-neutral phase guard around Boulder's
@@ -204,10 +211,10 @@ memory, topology, subsystems, and interrupt routing in order before declaring
 the kernel online. A future Limine entry can feed the same guard without adding
 a competing entry symbol. Userland remains explicitly not ready even though a
 measured PID 1 image now passes static executable-format preparation and a
-controlled Ring 3 round trip. The probe remains deliberately non-functional;
-relocation policy, validated user-pointer copying, syscall entry, process exit,
-preemptive scheduling, and transfer to the real `push` image are not yet
-complete.
+controlled Ring 3 round trip. The probe remains deliberately minimal;
+relocation policy, scheduler-owned process exit, preemptive scheduling,
+per-process syscall capabilities, and transfer to the real `push` image are
+not yet complete.
 
 ```sh
 rustup component add rust-src --toolchain nightly

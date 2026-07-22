@@ -612,6 +612,8 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
         halt();
     }
     let probe_before = interrupts::user_probe_hits();
+    let write_before = boulder::syscalls::write_hits();
+    let yield_before = boulder::syscalls::yield_hits();
     {
         let _interrupt_guard = InterruptGuard::<X86_64>::enter();
         // SAFETY: PID1's measured entry and stack are mapped with user
@@ -631,6 +633,8 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
     // SAFETY: The probe assembly must restore the serialized BSP root before
     // returning; this read verifies that postcondition directly.
     if interrupts::user_probe_hits() != probe_before + 1
+        || boulder::syscalls::write_hits() != write_before + 1
+        || boulder::syscalls::yield_hits() != yield_before + 1
         || unsafe { active_page_table_root() } != kernel_page_table_root.as_u64()
     {
         let _ = writeln!(serial, "Boulder: Ring 3 return evidence is incomplete");
@@ -651,7 +655,7 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
     );
     let _ = writeln!(
         serial,
-        "Boulder: PID1 page-table root={:#x}, frames={}, retained=true, cr3_activation=validated, ring3_probe=returned",
+        "Boulder: PID1 page-table root={:#x}, frames={}, retained=true, cr3_activation=validated, syscall_write=returned, syscall_yield=returned, ring3_probe=returned",
         pid1_root, pid1_info.owned_frames,
     );
 

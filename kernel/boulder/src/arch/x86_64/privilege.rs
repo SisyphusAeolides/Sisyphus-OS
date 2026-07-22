@@ -3,8 +3,8 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 pub const KERNEL_CODE_SELECTOR: u16 = 0x08;
 pub const KERNEL_DATA_SELECTOR: u16 = 0x10;
-pub const USER_CODE_SELECTOR: u16 = 0x1b;
-pub const USER_DATA_SELECTOR: u16 = 0x23;
+pub const USER_DATA_SELECTOR: u16 = 0x1b;
+pub const USER_CODE_SELECTOR: u16 = 0x23;
 #[cfg(target_os = "none")]
 const TSS_SELECTOR: u16 = 0x28;
 #[cfg(target_os = "none")]
@@ -16,6 +16,8 @@ const USER_ADDRESS_LIMIT: usize = 0x0000_8000_0000_0000;
 
 #[cfg(target_os = "none")]
 core::arch::global_asm!(include_str!("ring3.S"), options(att_syntax));
+#[cfg(target_os = "none")]
+core::arch::global_asm!(include_str!("syscall.S"), options(att_syntax));
 
 #[repr(C, packed)]
 struct TaskStateSegment {
@@ -97,6 +99,8 @@ pub enum PrivilegeError {
     ProbeBusy,
     ProbeDidNotReturn,
     DescriptorLoadFailed,
+    SyscallUnavailable,
+    SyscallConfigurationFailed,
     UnsupportedHost,
 }
 
@@ -136,8 +140,11 @@ pub unsafe fn initialize() -> Result<PrivilegeInfo, PrivilegeError> {
         entries.add(0).write(0);
         entries.add(1).write(0x00af_9a00_0000_ffff);
         entries.add(2).write(0x00cf_9200_0000_ffff);
-        entries.add(3).write(0x00af_fa00_0000_ffff);
-        entries.add(4).write(0x00cf_f200_0000_ffff);
+        // SYSRET derives SS from STAR[63:48] + 8 and CS from +16. Keeping
+        // user data immediately before user code makes those architectural
+        // selectors exactly 0x1b and 0x23.
+        entries.add(3).write(0x00cf_f200_0000_ffff);
+        entries.add(4).write(0x00af_fa00_0000_ffff);
         entries.add(5).write(tss_low);
         entries.add(6).write(tss_high);
     }
@@ -181,11 +188,66 @@ pub unsafe fn initialize() -> Result<PrivilegeInfo, PrivilegeError> {
         return Err(PrivilegeError::DescriptorLoadFailed);
     }
 
+    if let Err(error) = unsafe { configure_syscall_entry() } {
+        INITIALIZED.store(false, Ordering::Release);
+        return Err(error);
+    }
+
     Ok(PrivilegeInfo {
         kernel_stack_top: stack_top,
         user_code_selector: USER_CODE_SELECTOR,
         user_data_selector: USER_DATA_SELECTOR,
     })
+}
+
+/// Enables the native SYSCALL/SYSRET gate for the bootstrap CPU.
+///
+/// # Safety
+///
+/// The GDT above must be active, `boulder_syscall_entry` and its dedicated
+/// stack must remain mapped in every process address space, and callers must
+/// serialize MSR programming on the target hardware thread.
+#[cfg(target_os = "none")]
+unsafe fn configure_syscall_entry() -> Result<(), PrivilegeError> {
+    const EFER: u32 = 0xc000_0080;
+    const STAR: u32 = 0xc000_0081;
+    const LSTAR: u32 = 0xc000_0082;
+    const FMASK: u32 = 0xc000_0084;
+    const EFER_SCE: u64 = 1;
+    const RFLAGS_TRAP: u64 = 1 << 8;
+    const RFLAGS_INTERRUPT: u64 = 1 << 9;
+    const RFLAGS_DIRECTION: u64 = 1 << 10;
+    const RFLAGS_ALIGNMENT_CHECK: u64 = 1 << 18;
+
+    let maximum_extended_leaf = core::arch::x86_64::__cpuid(0x8000_0000).eax;
+    if maximum_extended_leaf < 0x8000_0001
+        || core::arch::x86_64::__cpuid(0x8000_0001).edx & (1 << 11) == 0
+    {
+        return Err(PrivilegeError::SyscallUnavailable);
+    }
+
+    unsafe extern "C" {
+        fn boulder_syscall_entry();
+    }
+    let entry_address = boulder_syscall_entry as *const () as usize as u64;
+    let star = (u64::from(KERNEL_CODE_SELECTOR) << 32) | (0x10_u64 << 48);
+    let mask = RFLAGS_TRAP | RFLAGS_INTERRUPT | RFLAGS_DIRECTION | RFLAGS_ALIGNMENT_CHECK;
+    let efer = unsafe { super::read_msr(EFER) };
+    unsafe {
+        super::write_msr(STAR, star);
+        super::write_msr(LSTAR, entry_address);
+        super::write_msr(FMASK, mask);
+        super::write_msr(EFER, efer | EFER_SCE);
+    }
+
+    if unsafe { super::read_msr(STAR) } != star
+        || unsafe { super::read_msr(LSTAR) } != entry_address
+        || unsafe { super::read_msr(FMASK) } != mask
+        || unsafe { super::read_msr(EFER) } & EFER_SCE == 0
+    {
+        return Err(PrivilegeError::SyscallConfigurationFailed);
+    }
+    Ok(())
 }
 
 /// Reports that descriptor installation is unavailable in host tests.
@@ -319,5 +381,11 @@ mod tests {
         assert_eq!(USER_CODE_SELECTOR & 3, 3);
         assert_eq!(USER_DATA_SELECTOR & 3, 3);
         assert_eq!(KERNEL_CODE_SELECTOR & 3, 0);
+    }
+
+    #[test]
+    fn user_selectors_have_the_sysret_required_order() {
+        assert_eq!(USER_DATA_SELECTOR, 0x1b);
+        assert_eq!(USER_CODE_SELECTOR, USER_DATA_SELECTOR + 8);
     }
 }

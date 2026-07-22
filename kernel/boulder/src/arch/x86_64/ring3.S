@@ -1,8 +1,8 @@
 .section .text,"ax"
 .code64
 
-.equ USER_CODE_SELECTOR, 0x1b
-.equ USER_DATA_SELECTOR, 0x23
+.equ USER_DATA_SELECTOR, 0x1b
+.equ USER_CODE_SELECTOR, 0x23
 
 .global boulder_enter_ring3_probe
 .type boulder_enter_ring3_probe, @function

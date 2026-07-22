@@ -132,7 +132,9 @@ mod tests {
         let prepared = prepare_user_image(artifact, &image_control).unwrap();
         assert_eq!(prepared.plan().entry_point, 0x1000);
         assert_eq!(prepared.plan().entry_file_offset(), Ok(128));
-        assert_eq!(prepared.bytes()[128..], [0xcc, 0xeb, 0xfe, 0x90]);
+        assert_eq!(&prepared.bytes()[162..], b"PID1 syscall write\n");
+        assert_eq!(&prepared.bytes()[128..133], &[0xb8, 1, 0, 0, 0]);
+        assert_eq!(&prepared.bytes()[152..157], &[0xb8, 3, 0, 0, 0]);
     }
 
     #[test]

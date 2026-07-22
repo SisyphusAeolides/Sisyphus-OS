@@ -1,6 +1,6 @@
 pub const MAXIMUM_FRACTAL_INODES: usize = 1024;
 pub const MAXIMUM_ARTIFACT_BYTES: usize = 1024 * 1024;
-pub const MINIMAL_X86_64_ELF_BYTES: usize = 132;
+pub const MINIMAL_X86_64_ELF_BYTES: usize = 181;
 
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -275,9 +275,10 @@ fn unfold(recipe: FractalRecipe, output: &mut [u8]) -> Result<(), OureborosError
     Ok(())
 }
 
-/// Emits a minimal static ET_DYN image containing `int3; jmp $-2; nop`.
+/// Emits a minimal static ET_DYN image containing bounded write and yield
+/// syscalls followed by `int3; jmp $-2`.
 ///
-/// The image is preparation evidence only. Its loop has no syscall or exit
+/// The image is measured syscall-entry evidence only. It has no process exit
 /// path and must not be treated as a functional init process.
 fn unfold_minimal_x86_64_elf(recipe: FractalRecipe, image: &mut [u8; MINIMAL_X86_64_ELF_BYTES]) {
     image.fill(0);
@@ -299,13 +300,24 @@ fn unfold_minimal_x86_64_elf(recipe: FractalRecipe, image: &mut [u8; MINIMAL_X86
     header[4..8].copy_from_slice(&5_u32.to_le_bytes());
     header[8..16].copy_from_slice(&128_u64.to_le_bytes());
     header[16..24].copy_from_slice(&0x1000_u64.to_le_bytes());
-    header[32..40].copy_from_slice(&4_u64.to_le_bytes());
-    header[40..48].copy_from_slice(&4_u64.to_le_bytes());
+    header[32..40].copy_from_slice(&53_u64.to_le_bytes());
+    header[40..48].copy_from_slice(&53_u64.to_le_bytes());
     header[48..56].copy_from_slice(&1_u64.to_le_bytes());
 
     image[120..128]
         .copy_from_slice(&(recipe.base_entropy ^ recipe.structural_mutator).to_le_bytes());
-    image[128..132].copy_from_slice(&[0xcc, 0xeb, 0xfe, 0x90]);
+    image[128..162].copy_from_slice(&[
+        0xb8, 0x01, 0x00, 0x00, 0x00, // mov eax, 1 (SYSCALL_WRITE)
+        0xbf, 0x01, 0x00, 0x00, 0x00, // mov edi, 1 (stdout)
+        0x48, 0x8d, 0x35, 0x11, 0x00, 0x00, 0x00, // lea rsi, [rip + 17]
+        0xba, 0x13, 0x00, 0x00, 0x00, // mov edx, 19
+        0x0f, 0x05, // syscall
+        0xb8, 0x03, 0x00, 0x00, 0x00, // mov eax, 3 (SYSCALL_YIELD)
+        0x0f, 0x05, // syscall
+        0xcc, // int3
+        0xeb, 0xfe, // jmp $-2
+    ]);
+    image[162..181].copy_from_slice(b"PID1 syscall write\n");
 }
 
 struct Generator {
@@ -645,7 +657,9 @@ mod tests {
         let mut output = [0_u8; MINIMAL_X86_64_ELF_BYTES];
         let artifact = catalog.materialize(3, &mut output).unwrap();
         assert_eq!(artifact.bytes()[..4], *b"\x7fELF");
-        assert_eq!(artifact.bytes()[128..], [0xcc, 0xeb, 0xfe, 0x90]);
+        assert_eq!(&artifact.bytes()[162..], b"PID1 syscall write\n");
+        assert_eq!(&artifact.bytes()[128..133], &[0xb8, 1, 0, 0, 0]);
+        assert_eq!(&artifact.bytes()[152..157], &[0xb8, 3, 0, 0, 0]);
         assert_eq!(artifact.measurement().sha256, digest);
     }
 }

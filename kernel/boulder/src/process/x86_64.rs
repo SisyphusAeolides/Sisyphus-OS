@@ -1127,11 +1127,11 @@ mod tests {
         assert_eq!(
             backend
                 .memory()
-                .bytes_equal(data, 0, &[0xcc, 0xeb, 0xfe, 0x90]),
+                .bytes_equal(data, 34, b"PID1 syscall write\n"),
             Ok(true)
         );
         assert_eq!(
-            backend.memory().bytes_zero(data, 4, PAGE_SIZE - 4),
+            backend.memory().bytes_zero(data, 53, PAGE_SIZE - 53),
             Ok(true)
         );
         let stack_leaf = backend
