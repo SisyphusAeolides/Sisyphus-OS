@@ -1,6 +1,9 @@
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SurfaceId(pub u64);
 pub mod riemann;
+pub mod pipeline;
+pub mod tween;
+pub mod gesture;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Rectangle {
