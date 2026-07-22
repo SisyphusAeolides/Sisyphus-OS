@@ -12,6 +12,7 @@ use slope::capability::{
 use slope::env::EnvSnapshot;
 use slope::executor::Spawner;
 use slope::scheduler::{self, PhaseHint, Priority};
+use crate::nexus_reactor::NexusReactor;
 
 static INSTALLED: AtomicBool = AtomicBool::new(false);
 
@@ -96,6 +97,7 @@ impl Future for NexusTask {
 }
 
 static NEXUS_TASK: TaskCell<NexusTask> = TaskCell::uninitialized();
+static NEXUS_REACTOR: TaskCell<NexusReactor> = TaskCell::uninitialized();
 
 #[derive(Debug, Eq, PartialEq)]
 pub enum InstallError<SpawnError> {
@@ -116,6 +118,19 @@ pub fn install<S: Spawner>(
 
     // SAFETY: NEXUS_TASK has static storage and is never moved after this point.
     if let Err(error) = unsafe { spawner.spawn(task) } {
+        INSTALLED.store(false, Ordering::Release);
+        return Err(InstallError::Spawn(error));
+    }
+
+    // SAFETY: INSTALLED serializes initialization and the storage is static.
+    let reactor = unsafe {
+        NEXUS_REACTOR.initialize(
+            NexusReactor::new(capabilities.resonance.as_raw()),
+        )
+    };
+
+    // SAFETY: NEXUS_REACTOR has static storage and remains pinned.
+    if let Err(error) = unsafe { spawner.spawn(reactor) } {
         INSTALLED.store(false, Ordering::Release);
         return Err(InstallError::Spawn(error));
     }

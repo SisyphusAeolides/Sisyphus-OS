@@ -2,6 +2,7 @@
 #![no_main]
 
 mod quantum_runtime;
+mod nexus_reactor;
 
 #[cfg(not(target_os = "none"))]
 #[global_allocator]
