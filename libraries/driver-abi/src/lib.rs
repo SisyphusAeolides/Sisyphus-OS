@@ -1,5 +1,9 @@
 #![no_std]
 
+pub mod prometheus;
+pub mod golem;
+pub mod lazarus;
+
 use core::ffi::c_void;
 
 pub type Status = i32;

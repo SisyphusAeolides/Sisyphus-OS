@@ -29,6 +29,9 @@ Sisyphus OS embraces chaotic, biological, and quantum-mechanical metaphors for o
 - **Fractal Page Tables**: An iterated function system (IFS) memory space where virtual addresses are mapped to physical frames via Mandelbrot-like chaotic dynamics on the complex plane, rendering ROP chains mathematically impossible.
 - **Macrophage IPC Firewall**: A biological immune system where patrolling white blood cells inspect IPC channels, phagocytize malicious packets, and broadcast extracted antigens to trigger apoptosis in rogue processes.
 - **Symbiosis Scheduler**: Inspired by mitochondrial evolution, this module forces highly communicative processes into endosymbiosis—quantum-entangling their page tables and permanently collapsing their IPC overhead into a single eukaryotic host.
+- **Prometheus Morphic Transpiler**: Auto-detects foreign C driver ABIs via machine-code prologue analysis and generates live JIT trampolines to seamlessly bridge Windows/Linux/BSD calling conventions to the kernel on the fly.
+- **Golem Behavioral Fingerprinter**: A no_std Naive Bayes classifier that watches a transpiled driver's first 1000 syscalls to deduce its hardware class (GPU, NIC, Storage) without source code, automatically granting exactly the right capability subsets.
+- **Lazarus Membrane**: A self-healing transactional barrier surrounding the driver ABI. If a closed-source driver crashes mid-execution, Lazarus rolls back the kernel state and re-animates the driver from its last known-good checkpoint—literally bringing dead code back to life.
 
 ## C driver contract
 
