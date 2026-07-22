@@ -60,6 +60,12 @@ pub const SYS_CAP_GRANT:      usize = 82;
 pub const SYS_CAP_REVOKE:     usize = 83;
 pub const SYS_CHANNEL:        usize = 84;
 
+pub const SYS_NEXUS_ENTANGLE:   usize = 90;
+pub const SYS_NEXUS_STATS:      usize = 91;
+pub const SYS_NEXUS_EXPERIMENT: usize = 92;
+pub const SYS_NEXUS_TELEMETRY:  usize = 93;
+pub const SYS_NEXUS_CONTROL:    usize = 94;
+
 pub const SYS_DISP_QUERY:     usize = 96;
 pub const SYS_DISP_LEASE:     usize = 97;
 pub const SYS_DISP_PRESENT:   usize = 98;

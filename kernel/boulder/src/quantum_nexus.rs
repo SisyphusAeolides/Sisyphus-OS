@@ -144,11 +144,10 @@ impl Amplitude {
     }
 
     /// Rotate by a phase bin index (0..PHASE_BINS).
-    /// Uses a baked cos/sin LUT in Q16.16.
-    #[inline]
+    /// Uses a compact 64-bin rotor in Q16.16.
+    #[inline(always)]
     pub fn rotate_bin(self, bin: u8) -> Self {
-        let (c, s) = PHASE_LUT[(bin as usize) & (PHASE_BINS - 1)];
-        self.mul(Amplitude { re: c, im: s })
+        crate::phase_rotor::rotate(self, bin)
     }
 
     /// Collapse: if mag_sq below threshold, snap to ZERO (decoherence).
@@ -161,28 +160,6 @@ impl Amplitude {
         }
     }
 }
-
-// Cos/sin LUT for 64 phase bins. Generated offline: angle = 2π·k/64.
-// Values are Q16.16 (cos(0)=65536, cos(π/2)=0, …).
-static PHASE_LUT: [(i32, i32); PHASE_BINS] = [
-    ( 65536,      0), ( 64277,   6393), ( 60547,  12540), ( 54491,  18205),
-    ( 46341,  23170), ( 36410,  27246), ( 25080,  30274), ( 12785,  32138),
-    (     0,  32768), (-12785,  32138), (-25080,  30274), (-36410,  27246),
-    (-46341,  23170), (-54491,  18205), (-60547,  12540), (-64277,   6393),
-    (-65536,      0), (-64277,  -6393), (-60547, -12540), (-54491, -18205),
-    (-46341, -23170), (-36410, -27246), (-25080, -30274), (-12785, -32138),
-    (     0, -32768), ( 12785, -32138), ( 25080, -30274), ( 36410, -27246),
-    ( 46341, -23170), ( 54491, -18205), ( 60547, -12540), ( 64277,  -6393),
-    // mirrored second half (bins 32..63) — same as 0..31 with sign flip on imag
-    ( 65536,      0), ( 64277,   6393), ( 60547,  12540), ( 54491,  18205),
-    ( 46341,  23170), ( 36410,  27246), ( 25080,  30274), ( 12785,  32138),
-    (     0,  32768), (-12785,  32138), (-25080,  30274), (-36410,  27246),
-    (-46341,  23170), (-54491,  18205), (-60547,  12540), (-64277,   6393),
-    (-65536,      0), (-64277,  -6393), (-60547, -12540), (-54491, -18205),
-    (-46341, -23170), (-36410, -27246), (-25080, -30274), (-12785, -32138),
-    (     0, -32768), ( 12785, -32138), ( 25080, -30274), ( 36410, -27246),
-    ( 46341, -23170), ( 54491, -18205), ( 60547, -12540), ( 64277,  -6393),
-];
 
 // ─── LORENTZ γ TABLE ─────────────────────────────────────────────────────────
 //
@@ -349,6 +326,7 @@ pub struct Experiment {
     pub result_code: i32,
     pub lattice_idx: u16,
     pub generation:  u32,
+    pub baseline_threshold: u64,
 }
 
 impl Experiment {
@@ -364,6 +342,7 @@ impl Experiment {
         result_code: 0,
         lattice_idx: 0,
         generation: 0,
+        baseline_threshold: 64,
     };
 }
 
@@ -644,6 +623,7 @@ impl QuantumNexus {
             result_code: 0,
             lattice_idx,
             generation: g,
+            baseline_threshold: self.collapse_threshold.load(Ordering::Acquire),
         };
         self.stats_experiments.fetch_add(1, Ordering::Relaxed);
         Ok(slot)
@@ -723,9 +703,10 @@ impl QuantumNexus {
                     let _ = self.ring.push(superpos, tick_now, exp.lattice_idx as u32);
                 }
                 ExperimentKind::CollapseStress => {
-                    // Temporarily lower collapse threshold to force decoherence.
-                    let thr = self.collapse_threshold.load(Ordering::Relaxed);
-                    self.collapse_threshold.store(thr.saturating_add(128), Ordering::Relaxed);
+                    self.collapse_threshold.store(
+                        exp.baseline_threshold.saturating_add(128),
+                        Ordering::Release,
+                    );
                 }
             }
 
@@ -734,8 +715,10 @@ impl QuantumNexus {
                 exp.active = false;
                 // Restore collapse threshold if we stressed it.
                 if matches!(exp.kind, ExperimentKind::CollapseStress) {
-                    let thr = self.collapse_threshold.load(Ordering::Relaxed);
-                    self.collapse_threshold.store(thr.saturating_sub(128).max(64), Ordering::Relaxed);
+                    self.collapse_threshold.store(
+                        exp.baseline_threshold,
+                        Ordering::Release,
+                    );
                 }
             }
         }

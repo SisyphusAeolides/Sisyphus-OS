@@ -13,6 +13,7 @@ use slope::executor::OuroborosExecutor;
 use slope::kairos::{features, WorkloadClass};
 use slope::runtime::ProcessRuntime;
 
+#[cfg(not(test))]
 core::arch::global_asm!(
     ".section .text._start,\"ax\"",
     ".global _start",
@@ -23,6 +24,10 @@ core::arch::global_asm!(
     ".size _start, .-_start",
     options(att_syntax)
 );
+
+#[cfg(test)]
+#[unsafe(no_mangle)]
+pub extern "C" fn main() -> i32 { 0 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn cerebral_start_with_stack(stack_ptr: *const u8) -> ! {
@@ -74,6 +79,7 @@ fn terminate(status: i32) -> ! {
     }
 }
 
+#[cfg(not(test))]
 #[panic_handler]
 fn panic(_information: &PanicInfo<'_>) -> ! {
     terminate(127)
