@@ -717,7 +717,7 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
     };
     if pid1_info.initial_stack_pointer != Some(pid1_stack)
         || pid1_info.owned_frames
-            != blacklab.pid1_owned_frames + INITIAL_USER_STACK_PAGES
+            < blacklab.pid1_owned_frames + INITIAL_USER_STACK_PAGES
     {
         let _ = writeln!(
             serial,

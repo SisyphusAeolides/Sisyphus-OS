@@ -195,10 +195,11 @@ reported as unavailable. Slope also centralizes argv/environment collapse and
 Kairos setup in `ProcessRuntime` for binaries using the process-entry stack ABI.
 Boulder now allocates a retained multi-page user stack, materializes
 `[argc][argv][envp]` with C strings, and passes its base through the Ring 3
-entry trampoline. The remaining integration seam is the kernel ABI-reply
-user-copy path; until that is corrected, Push reports the accepted entry ABI
-and continues its bounded supervisor loop without claiming topology negotiation
-succeeded. Kairos's internal object table uses
+entry trampoline. Push now negotiates ABI features, queries the topology, and
+dispatches a bounded NUMA-aware executor probe before entering supervision.
+The large topology snapshot is retained in process-lifetime storage so nested
+aggregate return paths never turn user stack data into kernel addresses.
+Kairos's internal object table uses
 non-cloneable, generation-checked handles with rights attenuation and opaque
 payload handles. Raw-pointer message transport and mutable global profile
 publication remain disabled pending per-process handle tables and

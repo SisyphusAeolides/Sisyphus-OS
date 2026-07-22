@@ -5,6 +5,7 @@
 //! storage initialized before worker threads are started.
 
 use core::cell::UnsafeCell;
+use core::mem::MaybeUninit;
 use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, Ordering};
 
 pub use ::kairos::abi::{ABI_KIND_DRIVER, ABI_KIND_NATIVE, ABI_MAGIC, ABI_VERSION};
@@ -245,6 +246,7 @@ impl Drop for RawQueryGuard<'_> {
 }
 
 static RAW_QUERY_SLOT: RawQuerySlot = RawQuerySlot::new();
+static mut SNAPSHOT_STORAGE: MaybeUninit<TopologySnapshot> = MaybeUninit::uninit();
 
 impl TopologySnapshot {
     const fn empty() -> Self {
@@ -275,6 +277,29 @@ impl TopologySnapshot {
         // writable for the advertised length, and alive for the entire call.
         unsafe { syscall(SYS_KAIROS_QUERY, arguments) }.map_err(KairosError::Syscall)?;
         Self::from_raw(slot.reply())
+    }
+
+    /// Queries into process-lifetime storage so the large topology value does
+    /// not travel through nested aggregate return slots on the entry stack.
+    pub fn query_ref() -> Result<&'static Self, KairosError> {
+        let mut slot = RAW_QUERY_SLOT.acquire().ok_or(KairosError::Busy)?;
+        let arguments = [
+            slot.as_mut_ptr() as usize,
+            core::mem::size_of::<RawTopologyReply>(),
+            0,
+            0,
+            0,
+            0,
+        ];
+        unsafe { syscall(SYS_KAIROS_QUERY, arguments) }.map_err(KairosError::Syscall)?;
+        let snapshot = Self::from_raw(slot.reply())?;
+        let storage = core::ptr::addr_of_mut!(SNAPSHOT_STORAGE);
+        // SAFETY: Kairos initialization is single-shot before worker startup;
+        // the process-lifetime storage is never concurrently replaced.
+        unsafe {
+            (*storage).write(snapshot);
+            Ok(&*(*storage).as_ptr())
+        }
     }
 
     fn from_raw(reply: &RawTopologyReply) -> Result<Self, KairosError> {
@@ -338,7 +363,11 @@ impl TopologySnapshot {
                 DomainKind::Machine
             };
             domain.parent = (raw.parent_valid != 0).then_some(raw.parent_id);
-            domain.members[..member_count].copy_from_slice(&raw.members[..member_count]);
+            let mut member_index = 0;
+            while member_index < member_count {
+                domain.members[member_index] = raw.members[member_index];
+                member_index += 1;
+            }
             domain.member_count = member_count;
             snapshot.domains[index] = domain;
         }
@@ -738,7 +767,7 @@ pub enum KairosError {
 }
 
 pub struct KairosInit {
-    pub topology: TopologySnapshot,
+    pub topology: &'static TopologySnapshot,
     pub features: NegotiatedFeatures,
 }
 
@@ -772,7 +801,7 @@ impl KairosInit {
             .want(optional_features)
             .negotiate()
             .map_err(KairosBootError::Abi)?;
-        let topology = TopologySnapshot::query().map_err(KairosBootError::Topology)?;
+        let topology = TopologySnapshot::query_ref().map_err(KairosBootError::Topology)?;
         Ok(Self { topology, features })
     }
 }
