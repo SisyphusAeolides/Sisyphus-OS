@@ -3,6 +3,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use aether::nexus_wire::{
     NexusCommand, NexusReply, NexusStatus, NexusTelemetry,
 };
+use aether::resonance_policy::ResonancePolicy;
 
 use crate::capability::{Capability, ResonanceRight};
 use crate::nexus_gateway::{
@@ -134,23 +135,21 @@ pub fn control(
         ),
     }
 }
+pub fn telemetry(sequence: u64, _wall_tick: u64) -> NexusTelemetry {
+    let mut telemetry = MATRIX.lock().snapshot_telemetry();
+    telemetry.sequence = sequence;
+    telemetry
+}
 
-pub fn telemetry(
-    sequence: u64,
+pub fn apply_policy(
+    policy: ResonancePolicy,
     wall_tick: u64,
-) -> NexusTelemetry {
-    let matrix = MATRIX.lock();
-    let stats = matrix.stats();
+) {
+    if !READY.load(Ordering::Acquire) {
+        return;
+    }
 
-    NexusTelemetry::new(
-        sequence,
-        stats.logical_tick.max(wall_tick),
-        u64::from(stats.global_phase),
-        stats.pairs_live,
-        stats.generation,
-        stats.heat,
-        stats.collapses,
-    )
+    MATRIX.lock().apply_policy(policy, wall_tick);
 }
 
 pub fn heartbeat(wall_tick: u64) {

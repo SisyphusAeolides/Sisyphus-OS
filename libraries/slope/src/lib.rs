@@ -11,6 +11,7 @@ pub mod kairos;
 pub mod memory;
 pub mod net;
 pub mod process;
+pub mod resonance_plane;
 pub mod runtime;
 pub mod signal;
 pub mod storage;
