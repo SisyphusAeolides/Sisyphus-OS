@@ -41,3 +41,4 @@ pub mod singularity;
 pub mod many_worlds;
 pub mod policy_chamber;
 pub mod ghost_chronicle;
+pub mod lab_capsule;
