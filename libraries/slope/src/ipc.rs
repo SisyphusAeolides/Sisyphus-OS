@@ -213,6 +213,150 @@ pub enum ChannelError {
     CapabilityRevoked,
 }
 
+// ─── TYPED ENDPOINT ─────────────────────────────────────────────────────────
+
+use core::cell::Cell;
+use core::marker::PhantomData;
+
+use crate::capability::{CapHandle, FabricRight};
+
+pub const ENDPOINT_PAYLOAD_BYTES: usize = PAYLOAD_BYTES - 2;
+
+pub trait WireMessage: Sized {
+    const TAG: u32;
+
+    fn encode(
+        &self,
+        destination: &mut [u8; ENDPOINT_PAYLOAD_BYTES],
+    ) -> Result<usize, CodecError>;
+
+    fn decode(bytes: &[u8]) -> Result<Self, CodecError>;
+}
+
+pub trait EndpointTransport {
+    fn transport_send(&self, message: ChannelMessage) -> Result<(), ChannelError>;
+    fn transport_recv(&self) -> Option<ChannelMessage>;
+}
+
+impl EndpointTransport for ChannelEndpointA<'_> {
+    fn transport_send(&self, message: ChannelMessage) -> Result<(), ChannelError> {
+        ChannelEndpointA::send(self, message)
+    }
+
+    fn transport_recv(&self) -> Option<ChannelMessage> {
+        ChannelEndpointA::recv(self)
+    }
+}
+
+impl EndpointTransport for ChannelEndpointB<'_> {
+    fn transport_send(&self, message: ChannelMessage) -> Result<(), ChannelError> {
+        ChannelEndpointB::send(self, message)
+    }
+
+    fn transport_recv(&self) -> Option<ChannelMessage> {
+        ChannelEndpointB::recv(self)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CodecError {
+    TooLarge,
+    InvalidFrame,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EndpointError {
+    Channel(ChannelError),
+    Codec(CodecError),
+    UnexpectedTag,
+    CapabilityMismatch,
+}
+
+pub struct Endpoint<Transport, Message> {
+    transport: Transport,
+    capability: CapHandle<FabricRight>,
+    sequence: Cell<u32>,
+    _message: PhantomData<Message>,
+}
+
+impl<Transport, Message> Endpoint<Transport, Message>
+where
+    Transport: EndpointTransport,
+    Message: WireMessage,
+{
+    pub const fn new(
+        transport: Transport,
+        capability: CapHandle<FabricRight>,
+    ) -> Self {
+        Self {
+            transport,
+            capability,
+            sequence: Cell::new(0),
+            _message: PhantomData,
+        }
+    }
+
+    pub fn send(&self, value: &Message) -> Result<u32, EndpointError> {
+        let mut message = ChannelMessage::with_tag(Message::TAG);
+        message.capability = self.capability.as_raw();
+
+        let length = value
+            .encode(
+                (&mut message.payload[2..])
+                    .try_into()
+                    .map_err(|_| EndpointError::Codec(CodecError::InvalidFrame))?,
+            )
+            .map_err(EndpointError::Codec)?;
+
+        if length > ENDPOINT_PAYLOAD_BYTES {
+            return Err(EndpointError::Codec(CodecError::TooLarge));
+        }
+
+        message.payload[..2].copy_from_slice(&(length as u16).to_le_bytes());
+
+        let sequence = self.sequence.get().wrapping_add(1).max(1);
+        self.sequence.set(sequence);
+        message.sequence = sequence;
+
+        self.transport
+            .transport_send(message)
+            .map_err(EndpointError::Channel)?;
+
+        Ok(sequence)
+    }
+
+    pub fn receive(&self) -> Result<Option<Message>, EndpointError> {
+        let Some(message) = self.transport.transport_recv() else {
+            return Ok(None);
+        };
+
+        if message.tag != Message::TAG {
+            return Err(EndpointError::UnexpectedTag);
+        }
+
+        if message.capability != self.capability.as_raw() {
+            return Err(EndpointError::CapabilityMismatch);
+        }
+
+        let length = usize::from(u16::from_le_bytes([
+            message.payload[0],
+            message.payload[1],
+        ]));
+
+        if length > ENDPOINT_PAYLOAD_BYTES {
+            return Err(EndpointError::Codec(CodecError::InvalidFrame));
+        }
+
+        Message::decode(&message.payload[2..2 + length])
+            .map(Some)
+            .map_err(EndpointError::Codec)
+    }
+
+    pub fn into_transport(self) -> Transport {
+        self.transport
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

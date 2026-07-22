@@ -514,3 +514,219 @@ pub struct QuantumPageStats {
     pub interference_events: u64,
     pub system_entropy: f64,
 }
+
+// ─── ZERO-AMPLITUDE QUARANTINE PLANE ────────────────────────────────────────
+
+use crate::ouroboros::TaskId;
+
+pub const QUARANTINE_DECAY_TICKS: u64 = 4096;
+pub const MAX_PROBE_FAILURES: u8 = 8;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum QuarantineLevel {
+    None = 0,
+    Soft = 1,
+    Probe = 2,
+    Sealed = 3,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DecoherenceEvent {
+    pub pair_id: u64,
+    pub task: TaskId,
+    pub amplitude_q31: i32,
+    pub tick: u64,
+    pub phase_bin: u16,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct QuarantineDecision {
+    pub level: QuarantineLevel,
+    pub resume_tick: u64,
+    pub probe_budget: u8,
+}
+
+impl QuarantineDecision {
+    const CLEAR: Self = Self {
+        level: QuarantineLevel::None,
+        resume_tick: 0,
+        probe_budget: 0,
+    };
+}
+
+#[derive(Clone, Copy)]
+struct CageRecord {
+    active: bool,
+    pair_id: u64,
+    task: TaskId,
+    strikes: u8,
+    last_tick: u64,
+    level: QuarantineLevel,
+    resume_tick: u64,
+    probe_budget: u8,
+}
+
+impl CageRecord {
+    const EMPTY: Self = Self {
+        active: false,
+        pair_id: 0,
+        task: TaskId::INVALID,
+        strikes: 0,
+        last_tick: 0,
+        level: QuarantineLevel::None,
+        resume_tick: 0,
+        probe_budget: 0,
+    };
+}
+
+pub struct TartarusCage<const N: usize> {
+    records: [CageRecord; N],
+}
+
+impl<const N: usize> TartarusCage<N> {
+    pub const fn new() -> Self {
+        Self {
+            records: [CageRecord::EMPTY; N],
+        }
+    }
+
+    pub fn observe(&mut self, event: DecoherenceEvent) -> QuarantineDecision {
+        if event.amplitude_q31 != 0 {
+            self.clear(event.pair_id, event.task);
+            return QuarantineDecision::CLEAR;
+        }
+
+        let index = self
+            .records
+            .iter()
+            .position(|record| {
+                record.active
+                    && record.pair_id == event.pair_id
+                    && record.task == event.task
+            })
+            .or_else(|| self.records.iter().position(|record| !record.active))
+            .unwrap_or_else(|| {
+                self.records
+                    .iter()
+                    .enumerate()
+                    .min_by_key(|(_, record)| record.last_tick)
+                    .map(|(index, _)| index)
+                    .unwrap_or(0)
+            });
+
+        let record = &mut self.records[index];
+
+        if !record.active
+            || event.tick.saturating_sub(record.last_tick) > QUARANTINE_DECAY_TICKS
+        {
+            *record = CageRecord {
+                active: true,
+                pair_id: event.pair_id,
+                task: event.task,
+                strikes: 0,
+                last_tick: event.tick,
+                level: QuarantineLevel::None,
+                resume_tick: event.tick,
+                probe_budget: 0,
+            };
+        }
+
+        record.strikes = record.strikes.saturating_add(1);
+        record.last_tick = event.tick;
+
+        if record.strikes == 1 {
+            record.level = QuarantineLevel::Soft;
+            record.resume_tick = event.tick.saturating_add(8);
+            record.probe_budget = 0;
+        } else if record.strikes < MAX_PROBE_FAILURES {
+            record.level = QuarantineLevel::Probe;
+            record.resume_tick = event.tick.saturating_add(2);
+            record.probe_budget = 4_u8.saturating_sub(record.strikes / 2).max(1);
+        } else {
+            record.level = QuarantineLevel::Sealed;
+            record.resume_tick = u64::MAX;
+            record.probe_budget = 0;
+        }
+
+        QuarantineDecision {
+            level: record.level,
+            resume_tick: record.resume_tick,
+            probe_budget: record.probe_budget,
+        }
+    }
+
+    pub fn probe_result(
+        &mut self,
+        pair_id: u64,
+        task: TaskId,
+        coherent: bool,
+        tick: u64,
+    ) -> QuarantineDecision {
+        let Some(record) = self.records.iter_mut().find(|record| {
+            record.active && record.pair_id == pair_id && record.task == task
+        }) else {
+            return QuarantineDecision::CLEAR;
+        };
+
+        if coherent {
+            *record = CageRecord::EMPTY;
+            return QuarantineDecision::CLEAR;
+        }
+
+        record.probe_budget = record.probe_budget.saturating_sub(1);
+        record.last_tick = tick;
+
+        if record.probe_budget == 0 {
+            record.strikes = record.strikes.saturating_add(1);
+            record.level = if record.strikes >= MAX_PROBE_FAILURES {
+                QuarantineLevel::Sealed
+            } else {
+                QuarantineLevel::Soft
+            };
+            record.resume_tick = if record.level == QuarantineLevel::Sealed {
+                u64::MAX
+            } else {
+                tick.saturating_add(16)
+            };
+        }
+
+        QuarantineDecision {
+            level: record.level,
+            resume_tick: record.resume_tick,
+            probe_budget: record.probe_budget,
+        }
+    }
+
+    pub fn decision(
+        &self,
+        pair_id: u64,
+        task: TaskId,
+    ) -> QuarantineDecision {
+        self.records
+            .iter()
+            .find(|record| {
+                record.active && record.pair_id == pair_id && record.task == task
+            })
+            .map(|record| QuarantineDecision {
+                level: record.level,
+                resume_tick: record.resume_tick,
+                probe_budget: record.probe_budget,
+            })
+            .unwrap_or(QuarantineDecision::CLEAR)
+    }
+
+    fn clear(&mut self, pair_id: u64, task: TaskId) {
+        if let Some(record) = self.records.iter_mut().find(|record| {
+            record.active && record.pair_id == pair_id && record.task == task
+        }) {
+            *record = CageRecord::EMPTY;
+        }
+    }
+}
+
+impl<const N: usize> Default for TartarusCage<N> {
+    fn default() -> Self {
+        Self::new()
+    }
+}

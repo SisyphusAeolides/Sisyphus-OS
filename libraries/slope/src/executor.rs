@@ -180,6 +180,41 @@ impl OuroborosExecutor {
     pub const fn task_count(&self) -> usize { self.count }
 }
 
+// ─── CEREBRAL SPAWNER ABI ───────────────────────────────────────────────────
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(transparent)]
+pub struct TaskId(pub u16);
+
+pub trait Task: Future<Output = ()> {}
+
+impl<T> Task for T where T: Future<Output = ()> {}
+
+pub trait Spawner {
+    type Error;
+
+    /// # Safety
+    ///
+    /// `storage` must remain valid and pinned until the task completes.
+    unsafe fn spawn<T: Task>(
+        &mut self,
+        storage: *mut T,
+    ) -> Result<TaskId, Self::Error>;
+}
+
+impl Spawner for OuroborosExecutor {
+    type Error = ExecutorError;
+
+    unsafe fn spawn<T: Task>(
+        &mut self,
+        storage: *mut T,
+    ) -> Result<TaskId, Self::Error> {
+        // SAFETY: Forwarded from the Spawner contract.
+        let slot = unsafe { self.spawn_raw(storage) }?;
+        Ok(TaskId(slot as u16))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -128,6 +128,27 @@ pub struct InterruptsDisabled<'guard> {
     _guard: PhantomData<&'guard mut ()>,
 }
 
+// Nexus-facing names. These are aliases, not parallel authority classes.
+// Every token still originates from Authority::grant().
+
+pub type FabricRight = FabricControl;
+pub type ResonanceRight = ResonanceControl;
+pub type SchedulerRight = SchedulerControl;
+pub type LearningRight = LearningControl;
+pub type DmaRight = DmaControl;
+pub type DeviceMemoryRight = DeviceMemoryControl;
+
+impl<'authority, R: Right> Capability<'authority, R> {
+    /// Narrows a capability borrow without minting new authority.
+    #[inline(always)]
+    pub const fn reborrow<'borrow>(&'borrow self) -> Capability<'borrow, R> {
+        Capability {
+            _authority: PhantomData,
+            _right: PhantomData,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use core::sync::atomic::{AtomicBool, Ordering};

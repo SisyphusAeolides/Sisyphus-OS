@@ -453,6 +453,265 @@ const fn next_generation(current: u32) -> u32 {
 
 pub static KERNEL_FABRIC: Fabric = Fabric::new();
 
+// ─── NEXUS CONTROL WEAVE ────────────────────────────────────────────────────
+
+pub const CONTROL_ENDPOINTS: usize = 32;
+pub const CONTROL_QUEUE_DEPTH: usize = 64;
+pub const CONTROL_PAYLOAD_BYTES: usize = 36;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(C)]
+pub struct FabricEndpoint {
+    index: u16,
+    _reserved: u16,
+    generation: u32,
+}
+
+impl FabricEndpoint {
+    pub const INVALID: Self = Self {
+        index: u16::MAX,
+        _reserved: 0,
+        generation: 0,
+    };
+
+    #[inline(always)]
+    pub const fn raw(self) -> u64 {
+        ((self.generation as u64) << 32) | (self.index as u64 + 1)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(C, align(64))]
+pub struct FabricMessage {
+    pub route: u32,
+    pub flags: u32,
+    pub source: u64,
+    pub sequence: u64,
+    pub payload_len: u16,
+    pub reserved: u16,
+    pub payload: [u8; CONTROL_PAYLOAD_BYTES],
+}
+
+impl FabricMessage {
+    pub const EMPTY: Self = Self {
+        route: 0,
+        flags: 0,
+        source: 0,
+        sequence: 0,
+        payload_len: 0,
+        reserved: 0,
+        payload: [0; CONTROL_PAYLOAD_BYTES],
+    };
+
+    pub fn new(route: u32, flags: u32, bytes: &[u8]) -> Self {
+        let mut message = Self::EMPTY;
+        let length = bytes.len().min(CONTROL_PAYLOAD_BYTES);
+        message.route = route;
+        message.flags = flags;
+        message.payload_len = length as u16;
+        message.payload[..length].copy_from_slice(&bytes[..length]);
+        message
+    }
+
+    pub fn bytes(&self) -> &[u8] {
+        let length = usize::from(self.payload_len).min(CONTROL_PAYLOAD_BYTES);
+        &self.payload[..length]
+    }
+}
+
+const _: () = assert!(core::mem::size_of::<FabricMessage>() == 64);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WeaveToken {
+    pub destination: FabricEndpoint,
+    pub sequence: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WeaveError {
+    EndpointCapacity,
+    QueueFull,
+    StaleEndpoint,
+}
+
+#[derive(Clone, Copy)]
+struct ControlQueue {
+    entries: [FabricMessage; CONTROL_QUEUE_DEPTH],
+    head: usize,
+    length: usize,
+}
+
+impl ControlQueue {
+    const fn new() -> Self {
+        Self {
+            entries: [FabricMessage::EMPTY; CONTROL_QUEUE_DEPTH],
+            head: 0,
+            length: 0,
+        }
+    }
+
+    fn push(&mut self, message: FabricMessage) -> Result<(), WeaveError> {
+        if self.length == CONTROL_QUEUE_DEPTH {
+            return Err(WeaveError::QueueFull);
+        }
+
+        let tail = (self.head + self.length) % CONTROL_QUEUE_DEPTH;
+        self.entries[tail] = message;
+        self.length += 1;
+        Ok(())
+    }
+
+    fn pop(&mut self) -> Option<FabricMessage> {
+        if self.length == 0 {
+            return None;
+        }
+
+        let message = self.entries[self.head];
+        self.entries[self.head] = FabricMessage::EMPTY;
+        self.head = (self.head + 1) % CONTROL_QUEUE_DEPTH;
+        self.length -= 1;
+        Some(message)
+    }
+}
+
+#[derive(Clone, Copy)]
+struct EndpointSlot {
+    active: bool,
+    generation: u32,
+    queue: ControlQueue,
+}
+
+impl EndpointSlot {
+    const EMPTY: Self = Self {
+        active: false,
+        generation: 0,
+        queue: ControlQueue::new(),
+    };
+}
+
+struct ControlWeaveState {
+    endpoints: [EndpointSlot; CONTROL_ENDPOINTS],
+    next_sequence: u64,
+}
+
+impl ControlWeaveState {
+    const fn new() -> Self {
+        Self {
+            endpoints: [EndpointSlot::EMPTY; CONTROL_ENDPOINTS],
+            next_sequence: 1,
+        }
+    }
+
+    fn valid(&self, endpoint: FabricEndpoint) -> bool {
+        self.endpoints
+            .get(usize::from(endpoint.index))
+            .is_some_and(|slot| slot.active && slot.generation == endpoint.generation)
+    }
+
+    fn endpoint_mut(
+        &mut self,
+        endpoint: FabricEndpoint,
+    ) -> Result<&mut EndpointSlot, WeaveError> {
+        let slot = self
+            .endpoints
+            .get_mut(usize::from(endpoint.index))
+            .ok_or(WeaveError::StaleEndpoint)?;
+
+        if !slot.active || slot.generation != endpoint.generation {
+            return Err(WeaveError::StaleEndpoint);
+        }
+
+        Ok(slot)
+    }
+}
+
+pub struct ControlWeave {
+    state: SpinLock<ControlWeaveState>,
+}
+
+impl ControlWeave {
+    pub const fn new() -> Self {
+        Self {
+            state: SpinLock::new(ControlWeaveState::new()),
+        }
+    }
+
+    pub fn bind(
+        &self,
+        _authority: &Capability<'_, crate::capability::FabricRight>,
+    ) -> Result<FabricEndpoint, WeaveError> {
+        let mut state = self.state.lock();
+        let (index, slot) = state
+            .endpoints
+            .iter_mut()
+            .enumerate()
+            .find(|(_, slot)| !slot.active)
+            .ok_or(WeaveError::EndpointCapacity)?;
+
+        slot.generation = slot.generation.wrapping_add(1).max(1);
+        slot.active = true;
+        slot.queue = ControlQueue::new();
+
+        Ok(FabricEndpoint {
+            index: index as u16,
+            _reserved: 0,
+            generation: slot.generation,
+        })
+    }
+
+    pub fn unbind(
+        &self,
+        endpoint: FabricEndpoint,
+        _authority: &Capability<'_, crate::capability::FabricRight>,
+    ) -> Result<(), WeaveError> {
+        let mut state = self.state.lock();
+        let slot = state.endpoint_mut(endpoint)?;
+        slot.active = false;
+        slot.queue = ControlQueue::new();
+        Ok(())
+    }
+
+    pub fn route(
+        &self,
+        source: FabricEndpoint,
+        destination: FabricEndpoint,
+        mut message: FabricMessage,
+        _authority: &Capability<'_, crate::capability::FabricRight>,
+    ) -> Result<WeaveToken, WeaveError> {
+        let mut state = self.state.lock();
+
+        if !state.valid(source) {
+            return Err(WeaveError::StaleEndpoint);
+        }
+
+        let sequence = state.next_sequence;
+        state.next_sequence = state.next_sequence.wrapping_add(1).max(1);
+
+        message.source = source.raw();
+        message.sequence = sequence;
+        state.endpoint_mut(destination)?.queue.push(message)?;
+
+        Ok(WeaveToken {
+            destination,
+            sequence,
+        })
+    }
+
+    pub fn receive(
+        &self,
+        endpoint: FabricEndpoint,
+        _authority: &Capability<'_, crate::capability::FabricRight>,
+    ) -> Result<Option<FabricMessage>, WeaveError> {
+        Ok(self.state.lock().endpoint_mut(endpoint)?.queue.pop())
+    }
+}
+
+impl Default for ControlWeave {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

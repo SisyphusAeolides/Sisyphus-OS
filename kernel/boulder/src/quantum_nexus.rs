@@ -31,12 +31,6 @@ use core::ptr::NonNull;
 use core::marker::PhantomData;
 
 // ─── STUBS FOR EXPERIMENTAL SUBSYSTEMS ───────────────────────────────────────
-pub struct Authority;
-pub struct Capability<'a, T>(&'a T, PhantomData<T>);
-pub struct FabricRight; pub struct ResonanceRight; pub struct SchedulerRight; pub struct LearningRight; pub struct DmaRight; pub struct DeviceMemoryRight;
-pub struct FabricEndpoint;
-pub struct FabricMessage { pub tag: u32, pub len: usize, pub payload: [u8; 64] }
-pub struct WeaveToken;
 #[derive(Clone, Copy, PartialEq, Eq)] pub struct TaskId(u64);
 impl TaskId { pub const INVALID: Self = Self(0); pub fn from_raw(raw: u64) -> Self { Self(raw) } }
 pub struct WakerToken;
@@ -67,6 +61,7 @@ pub struct MmioWindow;
 impl MmioWindow { pub unsafe fn read_u32(&self, _offset: usize) -> u32 { 0 } pub fn id(&self) -> WindowId { WindowId(0) } }
 pub struct WindowId(u32);
 use crate::sync::SpinLock;
+use crate::capability::{Authority, Capability, FabricRight, ResonanceRight, SchedulerRight, LearningRight, DmaRight, DeviceMemoryRight};
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ─── CONSTANTS ───────────────────────────────────────────────────────────────
@@ -749,7 +744,7 @@ impl QuantumNexus {
     // ── FABRIC BRIDGE ────────────────────────────────────────────────────────
 
     /// Encode nexus telemetry into a fabric message for crest/cerebral.
-    pub fn telemetry_frame(&self) -> FabricMessage {
+    pub fn telemetry_frame(&self) -> [u8; 64] {
         let mut payload = [0u8; 64];
         payload[0..8].copy_from_slice(
             &self.global_phase.load(Ordering::Acquire).to_le_bytes()
@@ -781,24 +776,16 @@ impl QuantumNexus {
         payload[60] = if self.armed.load(Ordering::Acquire) { 1 } else { 0 };
         payload[61] = (self.collapse_threshold.load(Ordering::Acquire) & 0xFF) as u8;
 
-        FabricMessage {
-            tag: 0x4E_58_54_4C, // 'NXTL' nexus telemetry
-            len: 64,
-            payload,
-        }
+        payload
     }
 
     /// Handle an inbound fabric control frame from crest (experiment requests).
     pub fn handle_fabric_control(
         &mut self,
-        msg: &FabricMessage,
+        payload: &[u8; 64],
         thermal: &mut ThermalBudget,
     ) -> Result<(), NexusError> {
-        if msg.tag != 0x4E_58_43_54 {
-            // 'NXCT' nexus control
-            return Err(NexusError::BadMessage);
-        }
-        let kind_byte = msg.payload[0];
+        let kind_byte = payload[0];
         let kind = match kind_byte {
             0 => ExperimentKind::PhaseDrift,
             1 => ExperimentKind::EntangleBurst,
@@ -812,11 +799,11 @@ impl QuantumNexus {
             9 => ExperimentKind::CollapseStress,
             _ => return Err(NexusError::BadMessage),
         };
-        let priority    = msg.payload[1];
-        let phase_seed  = msg.payload[2];
-        let budget_heat = u32::from_le_bytes(msg.payload[4..8].try_into().unwrap_or([0;4]));
-        let budget_ticks = u64::from_le_bytes(msg.payload[8..16].try_into().unwrap_or([0;8]));
-        let lattice_idx = u16::from_le_bytes(msg.payload[16..18].try_into().unwrap_or([0;2]));
+        let priority    = payload[1];
+        let phase_seed  = payload[2];
+        let budget_heat = u32::from_le_bytes(payload[4..8].try_into().unwrap());
+        let budget_ticks = u64::from_le_bytes(payload[8..16].try_into().unwrap());
+        let lattice_idx = u16::from_le_bytes(payload[16..18].try_into().unwrap());
 
         self.start_experiment(kind, priority, phase_seed, budget_heat, budget_ticks, lattice_idx, thermal)?;
         Ok(())
@@ -1009,7 +996,7 @@ pub mod sys {
                 }
                 unsafe {
                     core::ptr::copy_nonoverlapping(
-                        frame.payload.as_ptr(),
+                        frame.as_ptr(),
                         dst,
                         64,
                     );
@@ -1025,12 +1012,7 @@ pub mod sys {
                 unsafe {
                     core::ptr::copy_nonoverlapping(src, payload.as_mut_ptr(), 64);
                 }
-                let msg = FabricMessage {
-                    tag: 0x4E_58_43_54,
-                    len: 64,
-                    payload,
-                };
-                with_nexus(|nx| nx.handle_fabric_control(&msg, thermal))?;
+                with_nexus(|nx| nx.handle_fabric_control(&payload, thermal))?;
                 Ok(0)
             }
             _ => Err(NexusError::BadMessage),
@@ -1039,6 +1021,47 @@ pub mod sys {
 }
 
 // ─── UNIT SMOKE (host cfg only) ──────────────────────────────────────────────
+
+pub mod direct_calls {
+    use crate::fabric::{ControlWeave, FabricEndpoint, FabricMessage, WeaveError};
+    use crate::ouroboros::{
+        ExecutorHook, PhaseHint, ScheduleError, TaskId,
+    };
+    use crate::tartarus_deep::{
+        DecoherenceEvent, QuarantineDecision, TartarusCage,
+    };
+
+    pub fn ingest_scheduler_hint<H: ExecutorHook>(
+        executor: &mut H,
+        task: TaskId,
+        packed_hint: u64,
+        now_tick: u64,
+    ) -> Result<(), ScheduleError> {
+        executor.offer(task, PhaseHint::from_packed(packed_hint), now_tick)
+    }
+
+    pub fn quarantine_zero_amplitude<const N: usize>(
+        cage: &mut TartarusCage<N>,
+        event: DecoherenceEvent,
+    ) -> QuarantineDecision {
+        cage.observe(event)
+    }
+
+    pub fn route_control_frame(
+        weave: &ControlWeave,
+        source: FabricEndpoint,
+        destination: FabricEndpoint,
+        frame: FabricMessage,
+        authority: &crate::capability::Capability<
+            '_,
+            crate::capability::FabricRight,
+        >,
+    ) -> Result<(), WeaveError> {
+        weave
+            .route(source, destination, frame, authority)
+            .map(|_| ())
+    }
+}
 
 #[cfg(test)]
 mod tests {

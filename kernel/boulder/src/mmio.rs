@@ -227,3 +227,108 @@ pub fn direct_map_address(physical_address: u64) -> Option<usize> {
     }
     HIGHER_HALF_DIRECT_MAP_BASE.checked_add(physical_address as usize)
 }
+
+// ─── TYPED DEVICE WINDOW ────────────────────────────────────────────────────
+
+use crate::capability::{Capability, DeviceMemoryRight};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(transparent)]
+pub struct WindowId(Handle);
+
+impl WindowId {
+    pub const fn raw(self) -> Handle {
+        self.0
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MmioAccessError {
+    Map(Status),
+    OutOfBounds,
+    Misaligned,
+}
+
+pub struct MmioWindow {
+    id: WindowId,
+    base: NonNull<u8>,
+    length: usize,
+}
+
+impl MmioWindow {
+    pub fn map(
+        physical_address: u64,
+        length: usize,
+        _authority: &Capability<'_, DeviceMemoryRight>,
+    ) -> Result<Self, MmioAccessError> {
+        let mapping = kernel_mmio()
+            .map(physical_address, length, 0)
+            .map_err(MmioAccessError::Map)?;
+
+        Ok(Self {
+            id: WindowId(mapping.handle),
+            base: mapping.pointer,
+            length,
+        })
+    }
+
+    pub const fn id(&self) -> WindowId {
+        self.id
+    }
+
+    pub const fn length(&self) -> usize {
+        self.length
+    }
+
+    pub fn read_u32(&self, offset: usize) -> Result<u32, MmioAccessError> {
+        let pointer = self.checked_pointer::<u32>(offset)?;
+        compiler_fence(Ordering::SeqCst);
+
+        // SAFETY: checked_pointer verified range and alignment, and the mapping
+        // remains owned by this non-Copy MmioWindow.
+        let value = unsafe { pointer.read_volatile() };
+
+        compiler_fence(Ordering::SeqCst);
+        Ok(value)
+    }
+
+    pub fn write_u32(
+        &self,
+        offset: usize,
+        value: u32,
+    ) -> Result<(), MmioAccessError> {
+        let pointer = self.checked_pointer::<u32>(offset)?;
+        compiler_fence(Ordering::SeqCst);
+
+        // SAFETY: checked_pointer verified range and alignment, and the mapping
+        // remains owned by this non-Copy MmioWindow.
+        unsafe { pointer.write_volatile(value) };
+
+        compiler_fence(Ordering::SeqCst);
+        Ok(())
+    }
+
+    pub fn close(
+        self,
+        _authority: &Capability<'_, DeviceMemoryRight>,
+    ) -> Status {
+        kernel_mmio().unmap(self.id.0)
+    }
+
+    fn checked_pointer<T>(&self, offset: usize) -> Result<*mut T, MmioAccessError> {
+        let end = offset
+            .checked_add(core::mem::size_of::<T>())
+            .ok_or(MmioAccessError::OutOfBounds)?;
+
+        if end > self.length {
+            return Err(MmioAccessError::OutOfBounds);
+        }
+
+        let address = self.base.as_ptr() as usize + offset;
+        if address % core::mem::align_of::<T>() != 0 {
+            return Err(MmioAccessError::Misaligned);
+        }
+
+        Ok(address as *mut T)
+    }
+}

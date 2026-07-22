@@ -288,6 +288,191 @@ pub fn initialize(
     })
 }
 
+// ─── CRITICAL-MOMENT SCHEDULER ──────────────────────────────────────────────
+
+use crate::ouroboros::{
+    ExecutorHook, PhaseHint, ScheduleError, TaskId,
+};
+
+pub const FLAG_KAIROS: u32 = 1 << 0;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct KairosWindow {
+    pub opens_at: u64,
+    pub closes_at: u64,
+}
+
+impl KairosWindow {
+    pub const EMPTY: Self = Self {
+        opens_at: 0,
+        closes_at: 0,
+    };
+
+    pub const fn contains(self, tick: u64) -> bool {
+        tick >= self.opens_at && tick <= self.closes_at
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum MomentPriority {
+    Background = 0,
+    Normal = 1,
+    Urgent = 2,
+    Critical = 3,
+    Singularity = 4,
+}
+
+impl MomentPriority {
+    pub const fn mass(self) -> u16 {
+        match self {
+            Self::Background => 0x2000,
+            Self::Normal => 0x5000,
+            Self::Urgent => 0x9000,
+            Self::Critical => 0xd000,
+            Self::Singularity => 0xffff,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CriticalMoment {
+    pub task: TaskId,
+    pub pair_id: u64,
+    pub window: KairosWindow,
+    pub priority: MomentPriority,
+    pub phase_bin: u16,
+    pub coherence: u16,
+    pub entanglement_q15: i16,
+    pub flags: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct KairosBoost {
+    pub task: TaskId,
+    pub priority_mass: u16,
+    pub expires_at: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum KairosError {
+    FlagMissing,
+    InvalidWindow,
+    Capacity,
+    Scheduler(ScheduleError),
+}
+
+#[derive(Clone, Copy)]
+struct MomentSlot {
+    active: bool,
+    moment: CriticalMoment,
+}
+
+impl MomentSlot {
+    const EMPTY: Self = Self {
+        active: false,
+        moment: CriticalMoment {
+            task: TaskId::INVALID,
+            pair_id: 0,
+            window: KairosWindow::EMPTY,
+            priority: MomentPriority::Background,
+            phase_bin: 0,
+            coherence: 0,
+            entanglement_q15: 0,
+            flags: 0,
+        },
+    };
+}
+
+pub struct KairosScheduler<const N: usize> {
+    slots: [MomentSlot; N],
+}
+
+impl<const N: usize> KairosScheduler<N> {
+    pub const fn new() -> Self {
+        Self {
+            slots: [MomentSlot::EMPTY; N],
+        }
+    }
+
+    pub fn offer<H: ExecutorHook>(
+        &mut self,
+        moment: CriticalMoment,
+        now_tick: u64,
+        executor: &mut H,
+    ) -> Result<KairosBoost, KairosError> {
+        if moment.flags & FLAG_KAIROS == 0 {
+            return Err(KairosError::FlagMissing);
+        }
+
+        if moment.window.closes_at < moment.window.opens_at
+            || moment.window.closes_at < now_tick
+        {
+            return Err(KairosError::InvalidWindow);
+        }
+
+        let index = self
+            .slots
+            .iter()
+            .position(|slot| slot.active && slot.moment.task == moment.task)
+            .or_else(|| self.slots.iter().position(|slot| !slot.active))
+            .ok_or(KairosError::Capacity)?;
+
+        let slot = &mut self.slots[index];
+
+        slot.active = true;
+        slot.moment = moment;
+
+        let correlation = i32::from(moment.entanglement_q15)
+            .unsigned_abs()
+            .min(i16::MAX as u32);
+
+        let entanglement_boost = ((correlation as u64 * 0x3000) / i16::MAX as u64) as u16;
+        let priority_mass = moment
+            .priority
+            .mass()
+            .saturating_add(entanglement_boost);
+
+        executor
+            .offer(
+                moment.task,
+                PhaseHint {
+                    phase_bin: moment.phase_bin,
+                    coherence: moment.coherence,
+                    priority_mass,
+                    flags: moment.flags as u16,
+                },
+                now_tick,
+            )
+            .map_err(KairosError::Scheduler)?;
+
+        Ok(KairosBoost {
+            task: moment.task,
+            priority_mass,
+            expires_at: moment.window.closes_at,
+        })
+    }
+
+    pub fn retire_expired<H: ExecutorHook>(
+        &mut self,
+        now_tick: u64,
+        executor: &mut H,
+    ) {
+        for slot in &mut self.slots {
+            if slot.active && slot.moment.window.closes_at < now_tick {
+                executor.complete(slot.moment.task);
+                *slot = MomentSlot::EMPTY;
+            }
+        }
+    }
+}
+
+impl<const N: usize> Default for KairosScheduler<N> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

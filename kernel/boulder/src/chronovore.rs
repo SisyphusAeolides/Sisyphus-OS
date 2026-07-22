@@ -379,3 +379,88 @@ pub struct ChronovoreStats {
     pub mean_jitter_tsc:     u64,
     pub ca_steps:            u64,
 }
+
+// ─── PRIORITY-MASS TICK DILATION ────────────────────────────────────────────
+
+const Q16_ONE: u64 = 1 << 16;
+
+// Lorentz-style γ values in Q16.16.
+// Mass is mapped into sixteen monotonic bands.
+const GAMMA_Q16: [u64; 16] = [
+    65_536,  66_560,  67_584,  69_632,
+    71_680,  73_728,  77_824,  81_920,
+    86_016,  90_112,  98_304, 106_496,
+   114_688, 122_880, 131_072, 147_456,
+];
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+#[repr(transparent)]
+pub struct ChronoTick(pub u64);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(transparent)]
+pub struct DilatedDuration(pub u64);
+
+impl DilatedDuration {
+    pub const ZERO: Self = Self(0);
+
+    pub const fn ticks(self) -> u64 {
+        self.0
+    }
+}
+
+pub struct TickDevourer {
+    wall_origin: ChronoTick,
+    logical_origin: ChronoTick,
+    priority_mass: u16,
+}
+
+impl TickDevourer {
+    pub const fn new(wall_origin: ChronoTick, logical_origin: ChronoTick) -> Self {
+        Self {
+            wall_origin,
+            logical_origin,
+            priority_mass: 0,
+        }
+    }
+
+    pub const fn priority_mass(&self) -> u16 {
+        self.priority_mass
+    }
+
+    pub fn set_priority_mass(&mut self, mass: u16, wall_now: ChronoTick) {
+        // Rebase first so changing mass never makes logical time jump backward.
+        let logical_now = self.now_tick(wall_now);
+        self.wall_origin = wall_now;
+        self.logical_origin = logical_now;
+        self.priority_mass = mass;
+    }
+
+    pub fn now_tick(&self, wall_now: ChronoTick) -> ChronoTick {
+        let wall_delta = wall_now.0.saturating_sub(self.wall_origin.0);
+        let logical_delta = dilate_ticks(wall_delta, self.priority_mass);
+        ChronoTick(self.logical_origin.0.saturating_add(logical_delta))
+    }
+
+    pub fn dilate(
+        &self,
+        wall_duration: DilatedDuration,
+    ) -> DilatedDuration {
+        DilatedDuration(dilate_ticks(
+            wall_duration.0,
+            self.priority_mass,
+        ))
+    }
+}
+
+#[inline(always)]
+pub fn gamma_q16(priority_mass: u16) -> u64 {
+    GAMMA_Q16[usize::from(priority_mass >> 12)]
+}
+
+#[inline(always)]
+fn dilate_ticks(wall_ticks: u64, priority_mass: u16) -> u64 {
+    let gamma = gamma_q16(priority_mass).max(Q16_ONE);
+    let numerator = (wall_ticks as u128) << 16;
+    (numerator / gamma as u128).min(u64::MAX as u128) as u64
+}

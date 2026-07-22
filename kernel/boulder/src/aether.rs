@@ -72,3 +72,104 @@ pub fn record(kind: u16, argument_zero: u64, argument_one: u64) -> u64 {
 pub fn recorded_events() -> usize {
     FLIGHT_RECORDER.lock().retained()
 }
+
+// ─── AMBIENT MEDIUM ─────────────────────────────────────────────────────────
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(C)]
+pub struct AmbientPulse {
+    pub tick: u64,
+    pub source: u64,
+    pub magnitude: i32,
+    pub phase_bin: u16,
+    pub kind: u16,
+    pub flags: u32,
+    pub reserved: u32,
+}
+
+impl AmbientPulse {
+    pub const ZERO: Self = Self {
+        tick: 0,
+        source: 0,
+        magnitude: 0,
+        phase_bin: 0,
+        kind: 0,
+        flags: 0,
+        reserved: 0,
+    };
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AetherChannelError {
+    Full,
+}
+
+#[derive(Clone, Copy)]
+struct PulseQueue<const N: usize> {
+    entries: [AmbientPulse; N],
+    head: usize,
+    length: usize,
+}
+
+impl<const N: usize> PulseQueue<N> {
+    const fn new() -> Self {
+        Self {
+            entries: [AmbientPulse::ZERO; N],
+            head: 0,
+            length: 0,
+        }
+    }
+
+    fn push(&mut self, pulse: AmbientPulse) -> Result<(), AetherChannelError> {
+        if N == 0 || self.length == N {
+            return Err(AetherChannelError::Full);
+        }
+
+        let tail = (self.head + self.length) % N;
+        self.entries[tail] = pulse;
+        self.length += 1;
+        Ok(())
+    }
+
+    fn pop(&mut self) -> Option<AmbientPulse> {
+        if self.length == 0 {
+            return None;
+        }
+
+        let pulse = self.entries[self.head];
+        self.entries[self.head] = AmbientPulse::ZERO;
+        self.head = (self.head + 1) % N;
+        self.length -= 1;
+        Some(pulse)
+    }
+}
+
+pub struct AetherChannel<const N: usize> {
+    queue: SpinLock<PulseQueue<N>>,
+}
+
+impl<const N: usize> AetherChannel<N> {
+    pub const fn new() -> Self {
+        Self {
+            queue: SpinLock::new(PulseQueue::new()),
+        }
+    }
+
+    pub fn publish(
+        &self,
+        pulse: AmbientPulse,
+        _authority: &Capability<'_, PolicyControl>,
+    ) -> Result<(), AetherChannelError> {
+        self.queue.lock().push(pulse)
+    }
+
+    pub fn sample(&self) -> Option<AmbientPulse> {
+        self.queue.lock().pop()
+    }
+}
+
+impl<const N: usize> Default for AetherChannel<N> {
+    fn default() -> Self {
+        Self::new()
+    }
+}

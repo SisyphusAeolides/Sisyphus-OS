@@ -315,6 +315,9 @@ pub struct Thermogenesis {
     pub total_divided:   AtomicU64,
     pub total_necrotic:  AtomicU64,
     pub heat_events:     AtomicU64,
+    pub thermal_charge:  AtomicU64,
+    pub entropy_state:   AtomicU64,
+    pub collapse_rebates: AtomicU64,
 }
 
 impl Thermogenesis {
@@ -333,6 +336,9 @@ impl Thermogenesis {
             total_divided: AtomicU64::new(0),
             total_necrotic: AtomicU64::new(0),
             heat_events: AtomicU64::new(0),
+            thermal_charge: AtomicU64::new(0),
+            entropy_state: AtomicU64::new(0x6a09_e667_f3bc_c909),
+            collapse_rebates: AtomicU64::new(0),
         }
     }
 
@@ -361,6 +367,11 @@ impl Thermogenesis {
     /// Master metabolic tick: run all cell metabolism + immune system
     pub fn tick(&mut self) {
         self.tick += 1;
+
+        let charge = self.thermal_charge.load(Ordering::Relaxed);
+        let cooling = (charge / 16).max(u64::from(charge != 0));
+        self.thermal_charge
+            .store(charge.saturating_sub(cooling), Ordering::Release);
 
         // Metabolize all cells
         let tick = self.tick;
@@ -467,4 +478,95 @@ pub struct ThermogenesisStats {
     pub total_died: u64,
     pub total_divided: u64,
     pub heat_events: u64,
+}
+
+pub const MAX_THERMAL_CHARGE: u64 = 1_000_000;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ThermalChargeError {
+    BudgetExceeded {
+        current: u64,
+        requested: u64,
+        maximum: u64,
+    },
+}
+
+impl Thermogenesis {
+    pub fn current_heat(&self) -> u64 {
+        let base = if self.system_temp <= 0.0 {
+            0
+        } else {
+            (self.system_temp * 1_000.0) as u64
+        };
+
+        base.saturating_add(self.thermal_charge.load(Ordering::Acquire))
+    }
+
+    pub fn entropy_sample(&self) -> u64 {
+        let mut state = self.entropy_state.load(Ordering::Relaxed);
+
+        state ^= self.tick.rotate_left(17);
+        state ^= self.current_heat().rotate_left(31);
+        state ^= self.heat_events.load(Ordering::Relaxed).rotate_left(47);
+        state ^= self.total_died.load(Ordering::Relaxed);
+
+        // Xorshift64* state transition.
+        state ^= state >> 12;
+        state ^= state << 25;
+        state ^= state >> 27;
+        state = state.wrapping_mul(0x2545_f491_4f6c_dd1d);
+
+        self.entropy_state.store(state, Ordering::Release);
+        state
+    }
+
+    pub fn charge(&self, amount: u64) -> Result<u64, ThermalChargeError> {
+        let mut current = self.thermal_charge.load(Ordering::Acquire);
+
+        loop {
+            let next = current
+                .checked_add(amount)
+                .filter(|next| *next <= MAX_THERMAL_CHARGE)
+                .ok_or(ThermalChargeError::BudgetExceeded {
+                    current,
+                    requested: amount,
+                    maximum: MAX_THERMAL_CHARGE,
+                })?;
+
+            match self.thermal_charge.compare_exchange_weak(
+                current,
+                next,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return Ok(next),
+                Err(observed) => current = observed,
+            }
+        }
+    }
+
+    pub fn credit_collapse_rebate(&self, amount: u64) -> u64 {
+        self.collapse_rebates.fetch_add(amount, Ordering::AcqRel);
+
+        let mut current = self.thermal_charge.load(Ordering::Acquire);
+        loop {
+            let next = current.saturating_sub(amount);
+            match self.thermal_charge.compare_exchange_weak(
+                current,
+                next,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return next,
+                Err(observed) => current = observed,
+            }
+        }
+    }
+
+    pub fn inject_spike(&mut self, amount: u64) {
+        let accepted = amount.min(MAX_THERMAL_CHARGE);
+        let _ = self.charge(accepted);
+        self.system_temp += accepted as f64 / 1_000.0;
+        self.heat_events.fetch_add(1, Ordering::AcqRel);
+    }
 }

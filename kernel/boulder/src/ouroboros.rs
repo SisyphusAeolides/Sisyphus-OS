@@ -655,3 +655,228 @@ pub struct OuroborosStats {
     pub thermal_throttle: f64,
     pub paused: bool,
 }
+
+// ─── CONSTRUCTIVE-INTERFERENCE TASK RING ────────────────────────────────────
+
+pub const PHASE_BIN_COUNT: usize = 1024;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+#[repr(C)]
+pub struct TaskId {
+    pub slot: u16,
+    pub generation: u16,
+}
+
+impl TaskId {
+    pub const INVALID: Self = Self {
+        slot: u16::MAX,
+        generation: 0,
+    };
+
+    pub const fn new(slot: u16, generation: u16) -> Self {
+        Self { slot, generation }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(C)]
+pub struct WakerToken {
+    pub task: TaskId,
+    pub epoch: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(C)]
+pub struct PhaseHint {
+    pub phase_bin: u16,
+    pub coherence: u16,
+    pub priority_mass: u16,
+    pub flags: u16,
+}
+
+impl PhaseHint {
+    pub const ZERO: Self = Self {
+        phase_bin: 0,
+        coherence: 0,
+        priority_mass: 0,
+        flags: 0,
+    };
+
+    /// Wire layout:
+    /// 0..10 phase, 10..20 coherence, 20..36 priority mass, 36..52 flags.
+    pub const fn from_packed(word: u64) -> Self {
+        Self {
+            phase_bin: (word & 0x03ff) as u16,
+            coherence: ((word >> 10) & 0x03ff) as u16,
+            priority_mass: ((word >> 20) & 0xffff) as u16,
+            flags: ((word >> 36) & 0xffff) as u16,
+        }
+    }
+
+    pub const fn packed(self) -> u64 {
+        (self.phase_bin as u64 & 0x03ff)
+            | ((self.coherence as u64 & 0x03ff) << 10)
+            | ((self.priority_mass as u64) << 20)
+            | ((self.flags as u64) << 36)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ScheduleError {
+    RingFull,
+}
+
+pub trait ExecutorHook {
+    fn offer(
+        &mut self,
+        task: TaskId,
+        hint: PhaseHint,
+        now_tick: u64,
+    ) -> Result<(), ScheduleError>;
+
+    fn wake(&mut self, token: WakerToken);
+
+    fn select(&mut self, reference: PhaseHint, now_tick: u64) -> Option<TaskId>;
+
+    fn complete(&mut self, task: TaskId);
+}
+
+#[derive(Clone, Copy)]
+struct RingEntry {
+    active: bool,
+    task: TaskId,
+    hint: PhaseHint,
+    last_tick: u64,
+    last_wake_epoch: u32,
+    wake_credit: u16,
+}
+
+impl RingEntry {
+    const EMPTY: Self = Self {
+        active: false,
+        task: TaskId::INVALID,
+        hint: PhaseHint::ZERO,
+        last_tick: 0,
+        last_wake_epoch: 0,
+        wake_credit: 0,
+    };
+}
+
+pub struct ConstructiveRing<const N: usize> {
+    entries: [RingEntry; N],
+}
+
+impl<const N: usize> ConstructiveRing<N> {
+    pub const fn new() -> Self {
+        Self {
+            entries: [RingEntry::EMPTY; N],
+        }
+    }
+
+    fn score(entry: &RingEntry, reference: PhaseHint, now_tick: u64) -> u64 {
+        let distance = phase_distance(entry.hint.phase_bin, reference.phase_bin) as u64;
+        let phase_alignment = PHASE_BIN_COUNT as u64 - distance;
+
+        let coherence = u64::from(entry.hint.coherence.min(1023));
+        let mass = u64::from(entry.hint.priority_mass);
+        let age = now_tick.saturating_sub(entry.last_tick).min(4096);
+        let wake = u64::from(entry.wake_credit);
+
+        phase_alignment * phase_alignment
+            + coherence * 32
+            + mass * 8
+            + age
+            + wake * 256
+    }
+}
+
+impl<const N: usize> ExecutorHook for ConstructiveRing<N> {
+    fn offer(
+        &mut self,
+        task: TaskId,
+        hint: PhaseHint,
+        now_tick: u64,
+    ) -> Result<(), ScheduleError> {
+        if let Some(entry) = self
+            .entries
+            .iter_mut()
+            .find(|entry| entry.active && entry.task == task)
+        {
+            entry.hint = hint;
+            entry.last_tick = now_tick;
+            return Ok(());
+        }
+
+        let entry = self
+            .entries
+            .iter_mut()
+            .find(|entry| !entry.active)
+            .ok_or(ScheduleError::RingFull)?;
+
+        *entry = RingEntry {
+            active: true,
+            task,
+            hint,
+            last_tick: now_tick,
+            last_wake_epoch: 0,
+            wake_credit: 1,
+        };
+
+        Ok(())
+    }
+
+    fn wake(&mut self, token: WakerToken) {
+        let Some(entry) = self
+            .entries
+            .iter_mut()
+            .find(|entry| entry.active && entry.task == token.task)
+        else {
+            return;
+        };
+
+        if token.epoch >= entry.last_wake_epoch {
+            entry.last_wake_epoch = token.epoch;
+            entry.wake_credit = entry.wake_credit.saturating_add(1);
+        }
+    }
+
+    fn select(&mut self, reference: PhaseHint, now_tick: u64) -> Option<TaskId> {
+        let best = self
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| entry.active)
+            .max_by_key(|(_, entry)| Self::score(entry, reference, now_tick))
+            .map(|(index, _)| index)?;
+
+        let task = self.entries[best].task;
+        self.entries[best].last_tick = now_tick;
+        self.entries[best].wake_credit =
+            self.entries[best].wake_credit.saturating_sub(1);
+
+        Some(task)
+    }
+
+    fn complete(&mut self, task: TaskId) {
+        if let Some(entry) = self
+            .entries
+            .iter_mut()
+            .find(|entry| entry.active && entry.task == task)
+        {
+            *entry = RingEntry::EMPTY;
+        }
+    }
+}
+
+impl<const N: usize> Default for ConstructiveRing<N> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+fn phase_distance(a: u16, b: u16) -> usize {
+    let a = usize::from(a) % PHASE_BIN_COUNT;
+    let b = usize::from(b) % PHASE_BIN_COUNT;
+    let direct = a.abs_diff(b);
+    direct.min(PHASE_BIN_COUNT - direct)
+}

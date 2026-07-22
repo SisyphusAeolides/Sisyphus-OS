@@ -532,3 +532,184 @@ pub fn initialize<Backend: UserAddressSpaceBackend>(
         }
     }
 }
+
+// ─── RESONANCE FIELD ────────────────────────────────────────────────────────
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LearningGradient {
+    pub phase_delta: i16,
+    pub gain_q16: u16,
+    pub confidence_q16: u16,
+}
+
+impl LearningGradient {
+    pub const ZERO: Self = Self {
+        phase_delta: 0,
+        gain_q16: 0,
+        confidence_q16: 0,
+    };
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LatticeCell {
+    re_q31: i64,
+    im_q31: i64,
+    observations: u32,
+    pub gradient: LearningGradient,
+    epoch: u32,
+}
+
+impl LatticeCell {
+    pub const ZERO: Self = Self {
+        re_q31: 0,
+        im_q31: 0,
+        observations: 0,
+        gradient: LearningGradient::ZERO,
+        epoch: 0,
+    };
+
+    fn accumulate(&mut self, re_q31: i64, im_q31: i64, epoch: u32) {
+        self.re_q31 = self.re_q31.saturating_add(re_q31);
+        self.im_q31 = self.im_q31.saturating_add(im_q31);
+        self.observations = self.observations.saturating_add(1);
+        self.epoch = epoch;
+    }
+
+    fn energy(&self) -> u64 {
+        let re = self.re_q31 as i128;
+        let im = self.im_q31 as i128;
+        let energy = re * re + im * im;
+        energy.min(u64::MAX as i128) as u64
+    }
+
+    fn score(&self) -> u64 {
+        let gain = 65_536_u128 + u128::from(self.gradient.gain_q16);
+        ((self.energy() as u128 * gain) >> 16)
+            .min(u64::MAX as u128) as u64
+    }
+}
+
+pub struct ResonanceField<const BINS: usize> {
+    cells: [LatticeCell; BINS],
+    epoch: u32,
+    total_samples: u64,
+}
+
+impl<const BINS: usize> ResonanceField<BINS> {
+    pub const fn new() -> Self {
+        Self {
+            cells: [LatticeCell::ZERO; BINS],
+            epoch: 0,
+            total_samples: 0,
+        }
+    }
+
+    /// `phase_bin` spans the full u16 phase circle.
+    /// `weight_q16` is 1.0 at 65535.
+    pub fn accumulate(
+        &mut self,
+        phase_bin: u16,
+        re_q31: i32,
+        im_q31: i32,
+        weight_q16: u16,
+    ) {
+        if BINS == 0 {
+            return;
+        }
+
+        self.epoch = self.epoch.wrapping_add(1).max(1);
+        self.total_samples = self.total_samples.saturating_add(1);
+
+        let center = phase_to_index::<BINS>(phase_bin);
+        let left = center.checked_sub(1).unwrap_or(BINS - 1);
+        let right = (center + 1) % BINS;
+
+        let re = (i64::from(re_q31) * i64::from(weight_q16)) >> 16;
+        let im = (i64::from(im_q31) * i64::from(weight_q16)) >> 16;
+
+        self.cells[center].accumulate(re, im, self.epoch);
+
+        // Small neighboring contribution prevents hard bin-edge discontinuities.
+        if left != center {
+            self.cells[left].accumulate(re >> 3, im >> 3, self.epoch);
+        }
+        if right != center && right != left {
+            self.cells[right].accumulate(re >> 3, im >> 3, self.epoch);
+        }
+    }
+
+    pub fn eigenphase_bin(&self) -> Option<u16> {
+        if BINS == 0 || self.total_samples == 0 {
+            return None;
+        }
+
+        let index = self
+            .cells
+            .iter()
+            .enumerate()
+            .max_by_key(|(_, cell)| cell.score())
+            .map(|(index, _)| index)?;
+
+        Some(index_to_phase::<BINS>(index))
+    }
+
+    pub fn learn(&mut self, target_phase: u16, rate_q16: u16) {
+        let Some(current_phase) = self.eigenphase_bin() else {
+            return;
+        };
+
+        let current_index = phase_to_index::<BINS>(current_phase);
+        let delta = wrapped_phase_delta(current_phase, target_phase);
+        let cell = &mut self.cells[current_index];
+
+        let scaled_delta =
+            ((i64::from(delta) * i64::from(rate_q16)) >> 16)
+                .clamp(i16::MIN as i64, i16::MAX as i64) as i16;
+
+        cell.gradient.phase_delta =
+            cell.gradient.phase_delta.saturating_add(scaled_delta);
+        cell.gradient.gain_q16 =
+            cell.gradient.gain_q16.saturating_add(rate_q16 >> 3);
+        cell.gradient.confidence_q16 =
+            cell.gradient.confidence_q16.saturating_add(rate_q16 >> 2);
+    }
+
+    pub fn decay(&mut self, shift: u32) {
+        let shift = shift.min(31);
+        for cell in &mut self.cells {
+            cell.re_q31 >>= shift;
+            cell.im_q31 >>= shift;
+            cell.gradient.gain_q16 >>= 1;
+            cell.gradient.confidence_q16 >>= 1;
+        }
+    }
+
+    pub const fn total_samples(&self) -> u64 {
+        self.total_samples
+    }
+}
+
+impl<const BINS: usize> Default for ResonanceField<BINS> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+fn phase_to_index<const BINS: usize>(phase: u16) -> usize {
+    (usize::from(phase) * BINS) >> 16
+}
+
+fn index_to_phase<const BINS: usize>(index: usize) -> u16 {
+    (((index as u64 * 65_536) + (BINS as u64 / 2)) / BINS as u64) as u16
+}
+
+fn wrapped_phase_delta(from: u16, to: u16) -> i32 {
+    let raw = i32::from(to) - i32::from(from);
+    if raw > 32_767 {
+        raw - 65_536
+    } else if raw < -32_768 {
+        raw + 65_536
+    } else {
+        raw
+    }
+}
