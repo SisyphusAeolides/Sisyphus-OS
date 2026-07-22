@@ -7,7 +7,7 @@ use aether::resonance_policy::ResonancePolicy;
 
 use crate::capability::{Capability, ResonanceRight};
 use crate::nexus_gateway::{
-    GatewayError, NexusGateway, NexusRights,
+    GatewayError, NexusGateway,
 };
 use crate::nexus_matrix::{
     MatrixError, NexusMatrix,
@@ -52,25 +52,25 @@ pub enum InitializeError {
 }
 
 pub fn initialize(
-    cerebral_resonance_handle: u64,
     authority: &Capability<'_, ResonanceRight>,
-) -> Result<(), InitializeError> {
+) -> Result<crate::lease_lattice::LeaseToken, InitializeError> {
     if READY.swap(true, Ordering::AcqRel) {
         return Err(InitializeError::AlreadyInitialized);
     }
 
-    if let Err(error) = GATEWAY.install_grant(
-        cerebral_resonance_handle,
-        NexusRights::ALL,
+    let seed = <crate::arch::Active as crate::arch::Architecture>::counter_sample();
+    crate::nexus_gateway::LEASES.init(seed);
+
+    let token = crate::nexus_gateway::LEASES.issue_root(
+        crate::lease_lattice::LeaseRights::ALL,
         0,
+        u64::MAX,
+        u32::MAX,
         authority,
-    ) {
-        READY.store(false, Ordering::Release);
-        return Err(InitializeError::Gateway(error));
-    }
+    ).map_err(|_| InitializeError::Gateway(GatewayError::Capacity))?;
 
     *THERMAL.lock() = Some(Thermogenesis::new(4));
-    Ok(())
+    Ok(token)
 }
 
 pub fn control(

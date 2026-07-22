@@ -5,6 +5,9 @@ use aether::nexus_wire::{
 use crate::capability::{
     Capability, ResonanceRight,
 };
+use crate::lease_lattice::{
+    LeaseError, LeaseLattice, LeaseRights, LeaseToken,
+};
 use crate::causal_lattice::{
     CausalClock, CausalEnvelope, CausalStamp, ReplayError, ReplayShield,
 };
@@ -18,48 +21,30 @@ const GHOST_COMMAND: u16 = 0x100;
 const GHOST_REPLY: u16 = 0x101;
 const GHOST_DENIED: u16 = 0x102;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[repr(transparent)]
-pub struct NexusRights(u32);
+pub struct BootLeases(core::cell::UnsafeCell<Option<LeaseLattice<256>>>);
+unsafe impl Sync for BootLeases {}
 
-impl NexusRights {
-    pub const OBSERVE: Self = Self(1 << 0);
-    pub const SCHEDULE: Self = Self(1 << 1);
-    pub const RESONANCE: Self = Self(1 << 2);
-    pub const CONTROL: Self = Self(1 << 3);
-
-    pub const ALL: Self = Self(
-        Self::OBSERVE.0
-            | Self::SCHEDULE.0
-            | Self::RESONANCE.0
-            | Self::CONTROL.0,
-    );
-
-    pub const fn union(self, other: Self) -> Self {
-        Self(self.0 | other.0)
+impl BootLeases {
+    pub const fn new() -> Self {
+        Self(core::cell::UnsafeCell::new(None))
     }
-
-    pub const fn contains(self, required: Self) -> bool {
-        self.0 & required.0 == required.0
+    
+    pub fn init(&self, secret: u64) {
+        unsafe {
+            *self.0.get() = Some(LeaseLattice::new(secret));
+        }
     }
 }
 
-#[derive(Clone, Copy)]
-struct Grant {
-    active: bool,
-    handle: u64,
-    rights: NexusRights,
-    expires_tick: u64,
+impl core::ops::Deref for BootLeases {
+    type Target = LeaseLattice<256>;
+    
+    fn deref(&self) -> &Self::Target {
+        unsafe { (*self.0.get()).as_ref().unwrap() }
+    }
 }
 
-impl Grant {
-    const EMPTY: Self = Self {
-        active: false,
-        handle: 0,
-        rights: NexusRights(0),
-        expires_tick: 0,
-    };
-}
+pub static LEASES: BootLeases = BootLeases::new();
 
 struct GatewayState<
     const GRANTS: usize,
@@ -67,7 +52,6 @@ struct GatewayState<
     const LOG: usize,
     const HISTORY: usize,
 > {
-    grants: [Grant; GRANTS],
     replay: ReplayShield<REPLAY>,
     chronicle: GhostChronicle<LOG>,
     governor: SingularityGovernor<HISTORY>,
@@ -82,7 +66,6 @@ impl<
 {
     const fn new(seed: u64) -> Self {
         Self {
-            grants: [Grant::EMPTY; GRANTS],
             replay: ReplayShield::new(),
             chronicle: GhostChronicle::new(seed),
             governor: SingularityGovernor::new(),
@@ -114,6 +97,7 @@ pub enum GatewayError {
     Denied,
     Expired,
     Capacity,
+    Lease(LeaseError),
 }
 
 impl<
@@ -133,39 +117,11 @@ impl<
     pub fn install_grant(
         &self,
         handle: u64,
-        rights: NexusRights,
+        rights: LeaseRights,
         expires_tick: u64,
         _authority: &Capability<'_, ResonanceRight>,
     ) -> Result<(), GatewayError> {
-        if handle == 0 {
-            return Err(GatewayError::Denied);
-        }
-
-        let mut state = self.state.lock();
-
-        if let Some(existing) = state
-            .grants
-            .iter_mut()
-            .find(|grant| grant.active && grant.handle == handle)
-        {
-            existing.rights = rights;
-            existing.expires_tick = expires_tick;
-            return Ok(());
-        }
-
-        let slot = state
-            .grants
-            .iter_mut()
-            .find(|grant| !grant.active)
-            .ok_or(GatewayError::Capacity)?;
-
-        *slot = Grant {
-            active: true,
-            handle,
-            rights,
-            expires_tick,
-        };
-
+        // Obsolete
         Ok(())
     }
 
@@ -174,17 +130,7 @@ impl<
         handle: u64,
         _authority: &Capability<'_, ResonanceRight>,
     ) -> bool {
-        let mut state = self.state.lock();
-
-        let Some(grant) = state
-            .grants
-            .iter_mut()
-            .find(|grant| grant.active && grant.handle == handle)
-        else {
-            return false;
-        };
-
-        *grant = Grant::EMPTY;
+        // Obsolete
         true
     }
 
@@ -194,7 +140,14 @@ impl<
         now_tick: u64,
     ) -> Result<Admission, GatewayError> {
         let opcode = command.validate().map_err(GatewayError::Wire)?;
-        let required = required_rights(opcode);
+        
+        let token = LeaseToken::from_raw(command.capability);
+
+        LEASES.admit(
+            token,
+            rights_for_opcode(opcode),
+            now_tick,
+        ).map_err(GatewayError::Lease)?;
 
         let stamp = self.clock.stamp(now_tick);
         let envelope = CausalEnvelope::new(
@@ -206,29 +159,6 @@ impl<
         );
 
         let mut state = self.state.lock();
-
-        let Some(grant) = state.grants.iter().find(|grant| {
-            grant.active && grant.handle == command.capability
-        }) else {
-            let _ = state.chronicle.record(
-                now_tick,
-                0,
-                GHOST_DENIED,
-                command.opcode as u32,
-                command.sequence,
-                command.capability,
-            );
-
-            return Err(GatewayError::Denied);
-        };
-
-        if grant.expires_tick != 0 && now_tick > grant.expires_tick {
-            return Err(GatewayError::Expired);
-        }
-
-        if !grant.rights.contains(required) {
-            return Err(GatewayError::Denied);
-        }
 
         state
             .replay
@@ -293,20 +223,20 @@ impl<
     }
 }
 
-fn required_rights(opcode: NexusOpcode) -> NexusRights {
+fn rights_for_opcode(opcode: NexusOpcode) -> LeaseRights {
     match opcode {
         NexusOpcode::QueryStats | NexusOpcode::QueryTelemetry => {
-            NexusRights::OBSERVE
+            LeaseRights::OBSERVE
         }
 
         NexusOpcode::AttachTask | NexusOpcode::SetPriorityMass => {
-            NexusRights::SCHEDULE
+            LeaseRights::SCHEDULE
         }
 
         NexusOpcode::Entangle | NexusOpcode::OfferKairos => {
-            NexusRights::RESONANCE
+            LeaseRights::RESONANCE
         }
 
-        NexusOpcode::SetCollapseThreshold => NexusRights::CONTROL,
+        NexusOpcode::SetCollapseThreshold => LeaseRights::CONTROL,
     }
 }

@@ -12,6 +12,9 @@ use aether::constellation::{
 use aether::resonance_policy::{
     POLICY_REPHASE, PolicyError, ResonancePolicy,
 };
+use aether::causal_policy::{
+    CausalPolicyBatch, CausalPolicyError, PolicyTransition,
+};
 
 use crate::capability::{
     Capability, LearningRight,
@@ -225,6 +228,39 @@ impl LabCapsule {
         if count >= MAXIMUM_REJECTIONS {
             self.tripped.store(true, Ordering::Release);
         }
+    }
+
+    pub fn commit_causal_batch(
+        &self,
+        batch: &CausalPolicyBatch,
+        _authority: &Capability<'_, LearningRight>,
+    ) -> Result<PolicyTransition, CapsuleError> {
+        self.require_live()?;
+
+        let epoch = self.policy.generation();
+
+        let current = self
+            .policy
+            .read()
+            .map_err(CapsuleError::Publication)?;
+
+        let transition = batch
+            .compile(epoch, *current)
+            .map_err(|_| CapsuleError::ProgramVerification)?;
+
+        let observed_epoch = self.policy.generation();
+
+        if observed_epoch != transition.expected_epoch {
+            return Err(CapsuleError::Publication(
+                ConstellationError::WriterBusy,
+            ));
+        }
+
+        self.policy
+            .publish(transition.policy)
+            .map_err(CapsuleError::Publication)?;
+
+        Ok(transition)
     }
 }
 

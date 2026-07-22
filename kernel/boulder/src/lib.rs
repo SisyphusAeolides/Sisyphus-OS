@@ -44,3 +44,4 @@ pub mod ghost_chronicle;
 pub mod lab_capsule;
 pub mod nexus_plane;
 pub mod nexus_deferred;
+pub mod lease_lattice;
