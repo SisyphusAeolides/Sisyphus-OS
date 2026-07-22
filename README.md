@@ -35,6 +35,28 @@ Sisyphus OS embraces chaotic, biological, and quantum-mechanical metaphors for o
 
 ## C driver contract
 
+```text
+C DRIVER BLOB (.so / .ko / .dll / .elf)
+  │
+  ▼
+PROMETHEUS: scan_elf64_for_entry() → PrologueDecoder → CallingConv detected
+  │  if MsX64: gen_msx64_to_sysv thunk (live x86 machine code)
+  │  if SysV:  gen_passthrough thunk
+  ▼
+KernelApi vtable handed to driver with all fn pointers wrapped through...
+  │
+  ▼
+LAZARUS: arm_watchdog() → driver calls mmio_map / dma_alloc / irq_register
+  │  each call journaled → on crash: rollback() → resurrect() → re-probe
+  │
+  ▼
+GOLEM: records every KernelApi call → after 1024 calls: classify()
+  │  NaiveBayes → DriverArchetype → recommended_caps() + irq_core_hint()
+  │  kernel auto-updates DriverDescriptor.required_capabilities
+  ▼
+DRIVER IS ALIVE, CLASSIFIED, CRASH-PROOF — ZERO SOURCE CODE REQUIRED
+```
+
 The kernel exposes a versioned function table to drivers. Drivers receive no
 Rust types and no direct access to kernel data structures. Every public
 structure starts with ABI metadata, all resources use opaque handles, and
