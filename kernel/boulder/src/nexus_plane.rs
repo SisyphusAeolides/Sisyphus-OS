@@ -53,7 +53,7 @@ pub fn initialize(
     Ok(())
 }
 
-pub fn drive(wall_tick: u64) {
+pub fn drive_once(wall_tick: u64, _pending: u64) {
     drain_commands(wall_tick);
 
     nexus_runtime::heartbeat(wall_tick);

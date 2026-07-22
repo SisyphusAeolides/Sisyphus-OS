@@ -899,6 +899,7 @@ pub fn nexus_heartbeat(
     kairos:   &mut KairosWindow,
     ouro:     &mut dyn ExecutorHook,
 ) -> PhaseHint {
+    crate::nexus_deferred::run_deferred(4);
     with_nexus(|nx| nx.tick(chrono, thermal, field, tartarus, kairos, ouro))
 }
 
