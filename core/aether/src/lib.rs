@@ -11,3 +11,4 @@ pub mod resonance_plane;
 pub mod constellation;
 pub mod resonance_policy;
 pub mod blacklab_vm;
+pub mod event_horizon;
