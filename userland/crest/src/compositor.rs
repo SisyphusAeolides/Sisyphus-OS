@@ -4,6 +4,8 @@ pub mod riemann;
 pub mod pipeline;
 pub mod tween;
 pub mod gesture;
+pub mod panel;
+pub mod settings;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Rectangle {
