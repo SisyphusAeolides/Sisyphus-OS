@@ -31,6 +31,7 @@ pub mod thermogenesis;
 pub mod chronovore;
 pub mod fabric_weave;
 pub mod quantum_nexus;
+pub mod nexus_matrix;
 pub mod phase_rotor;
 pub mod paradox;
 pub mod causal_lattice;
