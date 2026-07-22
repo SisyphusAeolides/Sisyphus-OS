@@ -275,7 +275,7 @@ fn unfold(recipe: FractalRecipe, output: &mut [u8]) -> Result<(), OureborosError
     Ok(())
 }
 
-/// Emits a minimal static ET_DYN image containing `pause; jmp $-2`.
+/// Emits a minimal static ET_DYN image containing `int3; jmp $-2; nop`.
 ///
 /// The image is preparation evidence only. Its loop has no syscall or exit
 /// path and must not be treated as a functional init process.
@@ -305,7 +305,7 @@ fn unfold_minimal_x86_64_elf(recipe: FractalRecipe, image: &mut [u8; MINIMAL_X86
 
     image[120..128]
         .copy_from_slice(&(recipe.base_entropy ^ recipe.structural_mutator).to_le_bytes());
-    image[128..132].copy_from_slice(&[0xf3, 0x90, 0xeb, 0xfc]);
+    image[128..132].copy_from_slice(&[0xcc, 0xeb, 0xfe, 0x90]);
 }
 
 struct Generator {
@@ -645,7 +645,7 @@ mod tests {
         let mut output = [0_u8; MINIMAL_X86_64_ELF_BYTES];
         let artifact = catalog.materialize(3, &mut output).unwrap();
         assert_eq!(artifact.bytes()[..4], *b"\x7fELF");
-        assert_eq!(artifact.bytes()[128..], [0xf3, 0x90, 0xeb, 0xfc]);
+        assert_eq!(artifact.bytes()[128..], [0xcc, 0xeb, 0xfe, 0x90]);
         assert_eq!(artifact.measurement().sha256, digest);
     }
 }

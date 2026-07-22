@@ -82,6 +82,11 @@ pub struct Summary {
     pub thermal_model_actionable: bool,
 }
 
+pub struct Initialization<Process> {
+    pub summary: Summary,
+    pub pid1: Process,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum InitializeError<ProcessError> {
     AlreadyInitialized,
@@ -113,7 +118,7 @@ pub struct Controls<'authority> {
 pub fn initialize<Backend: UserAddressSpaceBackend>(
     controls: Controls<'_>,
     install_backend: &mut Backend,
-) -> Result<Summary, InitializeError<Backend::Error>> {
+) -> Result<Initialization<Backend::Process>, InitializeError<Backend::Error>> {
     let mut runtime = RUNTIME.lock();
     if runtime.initialized {
         return Err(InitializeError::AlreadyInitialized);
@@ -420,104 +425,111 @@ pub fn initialize<Backend: UserAddressSpaceBackend>(
         return Err(InitializeError::IncompletePlan);
     }
     // SAFETY: Black Lab initialization runs as a serialized bootstrap phase.
-    // The backend must restore the kernel root before this call returns and
-    // the process remains owned until the subsequent explicit release.
+    // The backend must restore the kernel root before this call returns. The
+    // committed process handle is transferred in `Initialization` on success.
     unsafe {
         install_backend.validate_activation(&installed_pid1.process, controls.process_install)
     }
     .map_err(|error| InitializeError::ProcessInstall(InstallError::Backend(error)))?;
     let pid1_activation_validated = true;
-    install_backend
-        .release_process(&installed_pid1.process)
-        .map_err(|error| InitializeError::ProcessInstall(InstallError::Backend(error)))?;
-    if install_backend
-        .process_info(&installed_pid1.process)
-        .is_some()
-    {
-        return Err(InitializeError::IncompletePlan);
-    }
+    let completion = (|| -> Result<Summary, InitializeError<Backend::Error>> {
+        let fault_features = [1, 0, 0, 0, 0, 0, 0, 0];
+        NYX_ANOMALY_DETECTOR
+            .learn(&fault_features, Label::Benign)
+            .map_err(InitializeError::Classifier)?;
+        if NYX_ANOMALY_DETECTOR
+            .classify(&fault_features)
+            .map_err(InitializeError::Classifier)?
+            .label
+            != Label::Benign
+        {
+            return Err(InitializeError::IncompletePlan);
+        }
 
-    let fault_features = [1, 0, 0, 0, 0, 0, 0, 0];
-    NYX_ANOMALY_DETECTOR
-        .learn(&fault_features, Label::Benign)
-        .map_err(InitializeError::Classifier)?;
-    if NYX_ANOMALY_DETECTOR
-        .classify(&fault_features)
-        .map_err(InitializeError::Classifier)?
-        .label
-        != Label::Benign
-    {
-        return Err(InitializeError::IncompletePlan);
-    }
+        let walkers = [WalkerSnapshot {
+            walker_id: 1,
+            state: WalkerState::Active,
+            realm_mode: RealmMode::Eclipse,
+            address_space_handle: 3,
+            current_page: 10,
+            capability_fingerprint: 0xa5,
+            source_node: arena.as_u16(),
+        }];
+        let plan = plan_cascade(
+            CascadeInput {
+                counter_sample: 1_000,
+                global_flux: 6_000,
+                semantic_heat,
+                logic_weight: -1,
+                epoch: 1,
+                source_personality: pci,
+                walkers: &walkers,
+            },
+            CascadeThresholds {
+                flux: 5_000,
+                semantic_heat: 10_000,
+                maximum_lane_skew: 500,
+                prediction_confidence_percent: 85,
+            },
+        )
+        .map_err(InitializeError::Cascade)?;
+        let prediction = plan
+            .predictions()
+            .first()
+            .ok_or(InitializeError::IncompletePlan)?;
+        runtime
+            .graph
+            .add_prediction(PagePrediction {
+                source_node: arena,
+                address_space_handle: prediction.address_space_handle,
+                page_number: prediction.page_number,
+                replay_epoch: prediction.replay_epoch,
+                semantic_hash: prediction.semantic_hash,
+                confidence_percent: prediction.confidence_percent,
+            })
+            .map_err(InitializeError::Graph)?;
+        let morph = plan.morph.ok_or(InitializeError::IncompletePlan)?;
+        if plan.barrier.is_none()
+            || plan.anomaly.is_none()
+            || runtime
+                .dialects
+                .best_transform(morph.source, morph.desired_bus)
+                .is_none()
+        {
+            return Err(InitializeError::IncompletePlan);
+        }
 
-    let walkers = [WalkerSnapshot {
-        walker_id: 1,
-        state: WalkerState::Active,
-        realm_mode: RealmMode::Eclipse,
-        address_space_handle: 3,
-        current_page: 10,
-        capability_fingerprint: 0xa5,
-        source_node: arena.as_u16(),
-    }];
-    let plan = plan_cascade(
-        CascadeInput {
-            counter_sample: 1_000,
-            global_flux: 6_000,
+        runtime.initialized = true;
+        record(event_kind::RESONANCE_PLAN, semantic_heat, plan.next_epoch);
+        Ok(Summary {
+            logical_nanoseconds,
             semantic_heat,
-            logic_weight: -1,
-            epoch: 1,
-            source_personality: pci,
-            walkers: &walkers,
-        },
-        CascadeThresholds {
-            flux: 5_000,
-            semantic_heat: 10_000,
-            maximum_lane_skew: 500,
-            prediction_confidence_percent: 85,
-        },
-    )
-    .map_err(InitializeError::Cascade)?;
-    let prediction = plan
-        .predictions()
-        .first()
-        .ok_or(InitializeError::IncompletePlan)?;
-    runtime
-        .graph
-        .add_prediction(PagePrediction {
-            source_node: arena,
-            address_space_handle: prediction.address_space_handle,
-            page_number: prediction.page_number,
-            replay_epoch: prediction.replay_epoch,
-            semantic_hash: prediction.semantic_hash,
-            confidence_percent: prediction.confidence_percent,
+            predictions: runtime.graph.predictions().len(),
+            next_epoch: plan.next_epoch,
+            evolution_generation,
+            quarantined_faults,
+            materialized_bytes,
+            pid1_entry_point,
+            pid1_install_generation,
+            pid1_page_table_root,
+            pid1_owned_frames,
+            pid1_activation_validated,
+            thermal_model_actionable: thermal_forecast.validated,
         })
-        .map_err(InitializeError::Graph)?;
-    let morph = plan.morph.ok_or(InitializeError::IncompletePlan)?;
-    if plan.barrier.is_none()
-        || plan.anomaly.is_none()
-        || runtime
-            .dialects
-            .best_transform(morph.source, morph.desired_bus)
-            .is_none()
-    {
-        return Err(InitializeError::IncompletePlan);
-    }
+    })();
 
-    runtime.initialized = true;
-    record(event_kind::RESONANCE_PLAN, semantic_heat, plan.next_epoch);
-    Ok(Summary {
-        logical_nanoseconds,
-        semantic_heat,
-        predictions: runtime.graph.predictions().len(),
-        next_epoch: plan.next_epoch,
-        evolution_generation,
-        quarantined_faults,
-        materialized_bytes,
-        pid1_entry_point,
-        pid1_install_generation,
-        pid1_page_table_root,
-        pid1_owned_frames,
-        pid1_activation_validated,
-        thermal_model_actionable: thermal_forecast.validated,
-    })
+    match completion {
+        Ok(summary) => Ok(Initialization {
+            summary,
+            pid1: installed_pid1.process,
+        }),
+        Err(error) => {
+            install_backend
+                .release_process(&installed_pid1.process)
+                .map_err(|cleanup| {
+                    InitializeError::ProcessInstall(InstallError::Cleanup(cleanup))
+                })?;
+            Err(error)
+        }
+    }
 }

@@ -1,5 +1,7 @@
 use crate::arch::{Architecture, InterruptState};
 
+pub mod privilege;
+
 pub struct X86_64;
 
 impl Architecture for X86_64 {

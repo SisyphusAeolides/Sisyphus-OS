@@ -23,6 +23,8 @@ const TABLE_ENTRIES: usize = 512;
 
 pub const MAXIMUM_PROCESS_PAGES: usize = 64;
 pub const MAXIMUM_OWNED_FRAMES: usize = 128;
+pub const INITIAL_USER_STACK_BASE: u64 = 0x7000;
+pub const INITIAL_USER_STACK_POINTER: u64 = 0x8000;
 
 /// Physical-memory operations required by the process page-table builder.
 ///
@@ -322,6 +324,7 @@ impl<Memory: ProcessFrameMemory> FrameBackedAddressSpace<Memory> {
                 segment_count: 0,
                 address_space_root: None,
                 owned_frames: 0,
+                initial_stack_pointer: None,
             },
         }
     }
@@ -336,6 +339,47 @@ impl<Memory: ProcessFrameMemory> FrameBackedAddressSpace<Memory> {
 
     pub const fn owned_frame_count(&self) -> usize {
         self.owned_frame_count
+    }
+
+    /// Adds one zeroed, writable, non-executable stack page to a committed
+    /// process while retaining ownership in this backend.
+    pub fn install_initial_stack(
+        &mut self,
+        process: &ProcessImageHandle,
+        _authority: &Capability<'_, ProcessInstallControl>,
+    ) -> Result<u64, FrameBackedError<Memory::Error>> {
+        if self.active
+            || self.process_info(process).is_none()
+            || self.process_info.initial_stack_pointer.is_some()
+            || self.page_count == self.pages.len()
+        {
+            return Err(FrameBackedError::InvalidState);
+        }
+        let (table, index) = self.leaf_slot(INITIAL_USER_STACK_BASE)?;
+        let existing = self
+            .memory
+            .read_entry(table, index)
+            .map_err(FrameBackedError::Memory)?;
+        if existing != 0 {
+            return Err(FrameBackedError::MappingConflict);
+        }
+
+        let frame = self.allocate_owned()?;
+        let entry = frame.as_u64() | ENTRY_PRESENT | ENTRY_WRITABLE | ENTRY_USER | ENTRY_NO_EXECUTE;
+        if let Err(error) = self.memory.write_entry(table, index, entry) {
+            return match self.release_last_owned(frame) {
+                Ok(()) => Err(FrameBackedError::Memory(error)),
+                Err(cleanup) => Err(cleanup),
+            };
+        }
+        self.pages[self.page_count] = PageRecord {
+            frame,
+            virtual_address: INITIAL_USER_STACK_BASE,
+        };
+        self.page_count += 1;
+        self.process_info.initial_stack_pointer = Some(INITIAL_USER_STACK_POINTER);
+        self.process_info.owned_frames = self.owned_frame_count;
+        Ok(INITIAL_USER_STACK_POINTER)
     }
 
     /// Retries reclamation after a frame-memory backend reported a release
@@ -392,6 +436,24 @@ impl<Memory: ProcessFrameMemory> FrameBackedAddressSpace<Memory> {
         }
     }
 
+    fn release_last_owned(
+        &mut self,
+        frame: PhysicalAddress,
+    ) -> Result<(), FrameBackedError<Memory::Error>> {
+        let Some(index) = self.owned_frame_count.checked_sub(1) else {
+            return Err(FrameBackedError::CorruptHierarchy);
+        };
+        if self.owned_frames[index] != frame {
+            return Err(FrameBackedError::CorruptHierarchy);
+        }
+        self.memory
+            .release(frame)
+            .map_err(FrameBackedError::Memory)?;
+        self.owned_frames[index] = PhysicalAddress::new(0);
+        self.owned_frame_count = index;
+        Ok(())
+    }
+
     fn reset_records(&mut self) {
         self.mappings.fill(MappingRecord::EMPTY);
         self.mapping_count = 0;
@@ -402,6 +464,7 @@ impl<Memory: ProcessFrameMemory> FrameBackedAddressSpace<Memory> {
             segment_count: 0,
             address_space_root: None,
             owned_frames: 0,
+            initial_stack_pointer: None,
         };
     }
 
@@ -738,6 +801,7 @@ impl<Memory: ProcessFrameMemory> UserAddressSpaceBackend for FrameBackedAddressS
             segment_count: self.mapping_count,
             address_space_root: Some(root.as_u64()),
             owned_frames: self.owned_frame_count,
+            initial_stack_pointer: None,
         };
         Ok(ProcessImageHandle::new(0, self.process_generation))
     }
@@ -1028,6 +1092,16 @@ mod tests {
         let root = PhysicalAddress::new(info.address_space_root.unwrap());
         assert_eq!(info.owned_frames, 5);
         assert_eq!(backend.memory().read_entry(root, 256), Ok(inherited));
+        assert_eq!(
+            backend.install_initial_stack(&installed.process, &install_control),
+            Ok(INITIAL_USER_STACK_POINTER)
+        );
+        let stacked = backend.process_info(&installed.process).unwrap();
+        assert_eq!(stacked.owned_frames, 6);
+        assert_eq!(
+            stacked.initial_stack_pointer,
+            Some(INITIAL_USER_STACK_POINTER)
+        );
 
         let p3 = backend.memory().read_entry(root, 0).unwrap() & PAGE_ADDRESS_MASK;
         let p2 = backend
@@ -1053,12 +1127,24 @@ mod tests {
         assert_eq!(
             backend
                 .memory()
-                .bytes_equal(data, 0, &[0xf3, 0x90, 0xeb, 0xfc]),
+                .bytes_equal(data, 0, &[0xcc, 0xeb, 0xfe, 0x90]),
             Ok(true)
         );
         assert_eq!(
             backend.memory().bytes_zero(data, 4, PAGE_SIZE - 4),
             Ok(true)
+        );
+        let stack_leaf = backend
+            .memory()
+            .read_entry(PhysicalAddress::new(p1), 7)
+            .unwrap();
+        assert_eq!(
+            stack_leaf & (ENTRY_PRESENT | ENTRY_WRITABLE | ENTRY_USER | ENTRY_NO_EXECUTE),
+            ENTRY_PRESENT | ENTRY_WRITABLE | ENTRY_USER | ENTRY_NO_EXECUTE
+        );
+        assert_eq!(
+            backend.install_initial_stack(&installed.process, &install_control),
+            Err(FrameBackedError::InvalidState)
         );
 
         backend.release_process(&installed.process).unwrap();

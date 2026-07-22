@@ -6,13 +6,15 @@ use abyss::frame::BitmapFrameAllocator;
 use abyss::memory::MemoryRegionKind;
 use abyss::paging::PhysicalAddress;
 use abyss::reservation::{Reservation, ReservationKind, ReservationTable};
-use boulder::arch::x86_64::{active_page_table_root, enable_execute_disable, halt, idle};
+use boulder::arch::x86_64::{
+    X86_64, active_page_table_root, enable_execute_disable, halt, idle, privilege,
+};
 use boulder::boot::acpi::discover_madt;
 use boulder::boot::multiboot2::BootInformation;
 use boulder::capability::{
-    ArtifactSynthesisControl, Authority, FabricControl, FaultPolicyControl, LearningControl,
-    MachineProfileControl, MemorySharingControl, PhysicalMemoryControl, PolicyControl,
-    ProcessInstallControl, ResonanceControl, UserlandImageControl,
+    ArtifactSynthesisControl, Authority, FabricControl, FaultPolicyControl, InterruptGuard,
+    LearningControl, MachineProfileControl, MemorySharingControl, PhysicalMemoryControl,
+    PolicyControl, ProcessInstallControl, ResonanceControl, UserlandImageControl,
 };
 use boulder::cpu::topology::{self, ExecutionClass, TopologyPolicy};
 use boulder::fabric::{
@@ -25,6 +27,7 @@ use boulder::mmio::{
     EARLY_MAPPED_PHYSICAL_LIMIT, HIGHER_HALF_DIRECT_MAP_BASE, KERNEL_VIRTUAL_BASE,
     direct_map_address, kernel_mmio,
 };
+use boulder::process::install::UserAddressSpaceBackend;
 use boulder::process::x86_64::{DirectMapFrameMemory, FrameBackedAddressSpace};
 use boulder::serial::SerialPort;
 use boulder::shim::{AbyssAllocator, DriverHost, DriverServices, IrqService, MmioService};
@@ -102,6 +105,22 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
     let _ = writeln!(
         serial,
         "Boulder: higher-half transition verified, low PML4 entry absent"
+    );
+    // SAFETY: BSP bootstrap is serialized with interrupts disabled, and every
+    // process root inherits the higher-half descriptor and RSP0 storage.
+    let privilege_info = match unsafe { privilege::initialize() } {
+        Ok(info) => info,
+        Err(error) => {
+            let _ = writeln!(serial, "Boulder: privilege tables failed: {error:?}");
+            halt();
+        }
+    };
+    let _ = writeln!(
+        serial,
+        "Boulder: TSS active RSP0={:#x}, user selectors={:#x}/{:#x}",
+        privilege_info.kernel_stack_top,
+        privilege_info.user_code_selector,
+        privilege_info.user_data_selector,
     );
     let mut ignition = IgnitionSequence::new(BootProtocol::Multiboot2);
 
@@ -529,46 +548,92 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
     // SAFETY: CR3 is read during serialized BSP bootstrap and only used as an
     // immutable source for the kernel half of a new, inactive hierarchy.
     let kernel_page_table_root = PhysicalAddress::new(unsafe { active_page_table_root() });
-    let process_frames_before = frames.free_frames();
-    let blacklab = {
-        // SAFETY: The bitmap allocator manages only the first GiB, which the
-        // bootstrap maps at this stable writable higher-half direct-map base.
-        let frame_memory = unsafe {
-            DirectMapFrameMemory::new(
-                &mut frames,
-                HIGHER_HALF_DIRECT_MAP_BASE,
-                EARLY_MAPPED_PHYSICAL_LIMIT,
-                &physical_memory,
-            )
-        };
-        let mut process_backend =
-            FrameBackedAddressSpace::new(frame_memory, kernel_page_table_root, &process_install);
-        let controls = boulder::blacklab::Controls {
-            resonance: &resonance_control,
-            learning: &learning_control,
-            memory_sharing: &memory_sharing,
-            fault_policy: &fault_policy,
-            artifact_synthesis: &artifact_synthesis,
-            userland_image: &userland_image,
-            process_install: &process_install,
-        };
-        match boulder::blacklab::initialize(controls, &mut process_backend) {
-            Ok(summary) => summary,
-            Err(error) => {
-                let _ = writeln!(
-                    serial,
-                    "Boulder: Black Lab initialization failed: {error:?}"
-                );
-                halt();
-            }
+    // SAFETY: The bitmap allocator manages only the first GiB, which the
+    // bootstrap maps at this stable writable higher-half direct-map base.
+    let frame_memory = unsafe {
+        DirectMapFrameMemory::new(
+            &mut frames,
+            HIGHER_HALF_DIRECT_MAP_BASE,
+            EARLY_MAPPED_PHYSICAL_LIMIT,
+            &physical_memory,
+        )
+    };
+    let mut process_backend =
+        FrameBackedAddressSpace::new(frame_memory, kernel_page_table_root, &process_install);
+    let controls = boulder::blacklab::Controls {
+        resonance: &resonance_control,
+        learning: &learning_control,
+        memory_sharing: &memory_sharing,
+        fault_policy: &fault_policy,
+        artifact_synthesis: &artifact_synthesis,
+        userland_image: &userland_image,
+        process_install: &process_install,
+    };
+    let initialized = match boulder::blacklab::initialize(controls, &mut process_backend) {
+        Ok(initialized) => initialized,
+        Err(error) => {
+            let _ = writeln!(
+                serial,
+                "Boulder: Black Lab initialization failed: {error:?}"
+            );
+            halt();
         }
     };
+    let blacklab = initialized.summary;
+    let pid1 = initialized.pid1;
     if blacklab.pid1_page_table_root.is_none()
         || blacklab.pid1_owned_frames != 5
         || !blacklab.pid1_activation_validated
-        || frames.free_frames() != process_frames_before
+        || process_backend.owned_frame_count() != 5
     {
-        let _ = writeln!(serial, "Boulder: PID1 frame-backed teardown failed");
+        let _ = writeln!(serial, "Boulder: PID1 retained ownership failed");
+        halt();
+    }
+    let pid1_stack = match process_backend.install_initial_stack(&pid1, &process_install) {
+        Ok(stack) => stack,
+        Err(error) => {
+            let _ = writeln!(serial, "Boulder: PID1 stack installation failed: {error:?}");
+            halt();
+        }
+    };
+    let Some(pid1_info) = process_backend.process_info(&pid1) else {
+        let _ = writeln!(serial, "Boulder: retained PID1 handle became stale");
+        halt();
+    };
+    let Some(pid1_root) = pid1_info.address_space_root else {
+        let _ = writeln!(serial, "Boulder: retained PID1 has no page-table root");
+        halt();
+    };
+    if pid1_info.initial_stack_pointer != Some(pid1_stack) || pid1_info.owned_frames != 6 {
+        let _ = writeln!(
+            serial,
+            "Boulder: retained PID1 stack metadata is inconsistent"
+        );
+        halt();
+    }
+    let probe_before = interrupts::user_probe_hits();
+    {
+        let _interrupt_guard = InterruptGuard::<X86_64>::enter();
+        // SAFETY: PID1's measured entry and stack are mapped with user
+        // permissions, its root inherits the active higher-half kernel, the
+        // TSS owns RSP0, and the guard prevents asynchronous entry or reuse.
+        if let Err(error) = unsafe {
+            privilege::run_user_probe(
+                pid1_info.entry_point as usize,
+                pid1_stack as usize,
+                pid1_root,
+            )
+        } {
+            let _ = writeln!(serial, "Boulder: Ring 3 probe failed: {error:?}");
+            halt();
+        }
+    }
+    // SAFETY: The probe assembly must restore the serialized BSP root before
+    // returning; this read verifies that postcondition directly.
+    if interrupts::user_probe_hits() != probe_before + 1
+        || unsafe { active_page_table_root() } != kernel_page_table_root.as_u64()
+    {
+        let _ = writeln!(serial, "Boulder: Ring 3 return evidence is incomplete");
         halt();
     }
     let _ = writeln!(
@@ -586,9 +651,8 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
     );
     let _ = writeln!(
         serial,
-        "Boulder: PID1 page-table root={:#x}, frames={}, reclaimed=true, cr3_activation=validated",
-        blacklab.pid1_page_table_root.unwrap_or(0),
-        blacklab.pid1_owned_frames,
+        "Boulder: PID1 page-table root={:#x}, frames={}, retained=true, cr3_activation=validated, ring3_probe=returned",
+        pid1_root, pid1_info.owned_frames,
     );
 
     // SAFETY: ACPI described the active controllers, the local APIC is live,

@@ -24,6 +24,7 @@ pub const APIC_TEST_VECTOR: u8 = 48;
 pub const APIC_TIMER_VECTOR: u8 = 49;
 
 static BREAKPOINT_HITS: AtomicUsize = AtomicUsize::new(0);
+static USER_PROBE_HITS: AtomicUsize = AtomicUsize::new(0);
 static APIC_TEST_HITS: AtomicUsize = AtomicUsize::new(0);
 static APIC_TIMER_HITS: AtomicUsize = AtomicUsize::new(0);
 
@@ -77,6 +78,10 @@ pub fn trigger_breakpoint() {
 
 pub fn breakpoint_hits() -> usize {
     BREAKPOINT_HITS.load(Ordering::Relaxed)
+}
+
+pub fn user_probe_hits() -> usize {
+    USER_PROBE_HITS.load(Ordering::Relaxed)
 }
 
 pub fn apic_capabilities() -> (bool, bool) {
@@ -143,13 +148,29 @@ fn set_irq_masked(irq: u8, masked: bool) {
 }
 
 #[unsafe(no_mangle)]
-extern "C" fn boulder_interrupt_dispatch(frame: *mut InterruptFrame) {
+extern "C" fn boulder_interrupt_dispatch(frame: *mut InterruptFrame) -> usize {
     let Some(frame) = (unsafe { frame.as_mut() }) else {
         halt();
     };
     match frame.vector {
         3 => {
-            BREAKPOINT_HITS.fetch_add(1, Ordering::Relaxed);
+            if frame.code_segment & 3 == 3 {
+                let user_code_segment = frame.code_segment;
+                let user_instruction_pointer = frame.instruction_pointer;
+                if crate::arch::x86_64::privilege::complete_user_probe() {
+                    USER_PROBE_HITS.fetch_add(1, Ordering::Relaxed);
+                    let mut serial = unsafe { SerialPort::initialize(COM1) };
+                    let _ = writeln!(
+                        serial,
+                        "Boulder: Ring 3 trap rip={user_instruction_pointer:#x} cs={user_code_segment:#x}, returning through RSP0",
+                    );
+                    return 1;
+                } else {
+                    halt();
+                }
+            } else {
+                BREAKPOINT_HITS.fetch_add(1, Ordering::Relaxed);
+            }
         }
         14 => {
             let fault = exceptions::page_fault(frame.error_code);
@@ -194,4 +215,5 @@ extern "C" fn boulder_interrupt_dispatch(frame: *mut InterruptFrame) {
             halt();
         }
     }
+    0
 }

@@ -95,6 +95,8 @@ interrupt_common:
     movq %rsp, %rdi
     andq $-16, %rsp
     call boulder_interrupt_dispatch
+    testq %rax, %rax
+    jnz boulder_ring3_probe_return
     movq %r12, %rsp
 
     popq %r15

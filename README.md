@@ -190,20 +190,24 @@ Boulder now enters through a physical low bootstrap island, transfers code and
 stack execution to the higher half, removes PML4 entry zero, and checks that
 transition before initializing the IDT. During serialized bootstrap it also
 switches to PID 1's frame-backed CR3, confirms execution survives solely on the
-inherited higher-half mappings, and restores the kernel root before reclaiming
-the process hierarchy. This is a bounded activation proof, not retained
-process ownership or Ring 3 execution. Manifest measurements provide
-authenticity only when the manifest root is independently protected and
-replicated.
+inherited higher-half mappings, and restores the kernel root. The process
+hierarchy is now retained with a separate zeroed RW+NX user stack. A higher-half
+GDT and 64-bit TSS provide DPL3 selectors and a dedicated RSP0 entry stack; the
+measured probe enters Ring 3, raises a user breakpoint, returns through RSP0,
+and restores the kernel CR3 before boot continues. This proves one serialized
+privilege round trip, not scheduling or a functional init process. Manifest
+measurements provide authenticity only when the manifest root is independently
+protected and replicated.
 The ignition sequence is a protocol-neutral phase guard around Boulder's
 existing GRUB/Multiboot2 handoff. It requires validated boot information,
 memory, topology, subsystems, and interrupt routing in order before declaring
 the kernel online. A future Limine entry can feed the same guard without adding
 a competing entry symbol. Userland remains explicitly not ready even though a
 measured PID 1 image now passes static executable-format preparation and a
-temporary CR3 activation: retained per-process root ownership, relocation
-policy, TSS privilege stacks, user selectors, syscall entry, scheduling, and
-Ring 3 transfer are not yet complete.
+controlled Ring 3 round trip. The probe remains deliberately non-functional;
+relocation policy, validated user-pointer copying, syscall entry, process exit,
+preemptive scheduling, and transfer to the real `push` image are not yet
+complete.
 
 ```sh
 rustup component add rust-src --toolchain nightly

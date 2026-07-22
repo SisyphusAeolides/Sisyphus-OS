@@ -4,6 +4,7 @@ const IDT_ENTRIES: usize = 256;
 const INTERRUPT_STUBS: usize = 50;
 const KERNEL_CODE_SELECTOR: u16 = 0x08;
 const INTERRUPT_GATE: u8 = 0x8e;
+const USER_INTERRUPT_GATE: u8 = 0xee;
 
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
@@ -28,12 +29,12 @@ impl IdtEntry {
         reserved: 0,
     };
 
-    const fn interrupt_gate(handler: usize) -> Self {
+    const fn interrupt_gate(handler: usize, attributes: u8) -> Self {
         Self {
             offset_low: handler as u16,
             selector: KERNEL_CODE_SELECTOR,
             ist: 0,
-            attributes: INTERRUPT_GATE,
+            attributes,
             offset_middle: (handler >> 16) as u16,
             offset_high: (handler >> 32) as u32,
             reserved: 0,
@@ -62,7 +63,7 @@ static mut IDT: [IdtEntry; IDT_ENTRIES] = [IdtEntry::MISSING; IDT_ENTRIES];
 /// code selector and assembly stubs must match the active GDT and stack format.
 pub unsafe fn initialize() {
     let idt = core::ptr::addr_of_mut!(IDT).cast::<IdtEntry>();
-    let fallback = IdtEntry::interrupt_gate(isr_unhandled as *const () as usize);
+    let fallback = IdtEntry::interrupt_gate(isr_unhandled as *const () as usize, INTERRUPT_GATE);
     for index in 0..IDT_ENTRIES {
         unsafe { idt.add(index).write(fallback) };
     }
@@ -70,7 +71,15 @@ pub unsafe fn initialize() {
     let stubs = core::ptr::addr_of!(isr_stub_table).cast::<usize>();
     for index in 0..INTERRUPT_STUBS {
         let handler = unsafe { stubs.add(index).read() };
-        unsafe { idt.add(index).write(IdtEntry::interrupt_gate(handler)) };
+        let attributes = if index == 3 {
+            USER_INTERRUPT_GATE
+        } else {
+            INTERRUPT_GATE
+        };
+        unsafe {
+            idt.add(index)
+                .write(IdtEntry::interrupt_gate(handler, attributes))
+        };
     }
 
     let pointer = IdtPointer {

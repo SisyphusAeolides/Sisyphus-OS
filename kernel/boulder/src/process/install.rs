@@ -217,6 +217,7 @@ pub struct ProcessImageInfo {
     pub segment_count: usize,
     pub address_space_root: Option<u64>,
     pub owned_frames: usize,
+    pub initial_stack_pointer: Option<u64>,
 }
 
 #[derive(Clone, Copy)]
@@ -277,6 +278,7 @@ impl<const BYTES_PER_SEGMENT: usize> DryRunAddressSpace<BYTES_PER_SEGMENT> {
                 segment_count: 0,
                 address_space_root: None,
                 owned_frames: 0,
+                initial_stack_pointer: None,
             },
         }
     }
@@ -447,6 +449,7 @@ impl<const BYTES_PER_SEGMENT: usize> UserAddressSpaceBackend
             segment_count: self.slot_count,
             address_space_root: None,
             owned_frames: 0,
+            initial_stack_pointer: None,
         };
         Ok(ProcessImageHandle::new(0, self.process_generation))
     }
@@ -560,6 +563,7 @@ mod tests {
                 segment_count: 1,
                 address_space_root: None,
                 owned_frames: 0,
+                initial_stack_pointer: None,
             })
         );
         // SAFETY: The dry-run backend has no privileged state and validates

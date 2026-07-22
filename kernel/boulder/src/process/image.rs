@@ -132,7 +132,7 @@ mod tests {
         let prepared = prepare_user_image(artifact, &image_control).unwrap();
         assert_eq!(prepared.plan().entry_point, 0x1000);
         assert_eq!(prepared.plan().entry_file_offset(), Ok(128));
-        assert_eq!(prepared.bytes()[128..], [0xf3, 0x90, 0xeb, 0xfc]);
+        assert_eq!(prepared.bytes()[128..], [0xcc, 0xeb, 0xfe, 0x90]);
     }
 
     #[test]
