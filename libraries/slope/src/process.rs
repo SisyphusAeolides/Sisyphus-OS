@@ -2,6 +2,7 @@ use crate::{SyscallError, syscall};
 
 pub mod tachyon;
 pub mod executor;
+pub mod fabric;
 
 use aether::grimoire;
 
