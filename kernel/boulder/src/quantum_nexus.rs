@@ -26,9 +26,6 @@
 #![allow(clippy::too_many_arguments)]
 
 use core::sync::atomic::{AtomicU64, AtomicU32, AtomicBool, Ordering};
-use core::mem::MaybeUninit;
-use core::ptr::NonNull;
-use core::marker::PhantomData;
 
 // ─── STUBS FOR EXPERIMENTAL SUBSYSTEMS ───────────────────────────────────────
 #[derive(Clone, Copy, PartialEq, Eq)] pub struct TaskId(u64);
@@ -61,7 +58,7 @@ pub struct MmioWindow;
 impl MmioWindow { pub unsafe fn read_u32(&self, _offset: usize) -> u32 { 0 } pub fn id(&self) -> WindowId { WindowId(0) } }
 pub struct WindowId(u32);
 use crate::sync::SpinLock;
-use crate::capability::{Authority, Capability, FabricRight, ResonanceRight, SchedulerRight, LearningRight, DmaRight, DeviceMemoryRight};
+use crate::capability::{Authority, Capability, ResonanceRight, SchedulerRight, LearningRight, DmaRight, DeviceMemoryRight};
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ─── CONSTANTS ───────────────────────────────────────────────────────────────

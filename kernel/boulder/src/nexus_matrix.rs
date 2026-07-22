@@ -1,4 +1,7 @@
 use aether::nexus_wire::NexusOpcode;
+use aether::resonance_policy::{
+    POLICY_REPHASE, ResonancePolicy,
+};
 
 use crate::blacklab::ResonanceField;
 use crate::chronovore::{ChronoTick, TickDevourer};
@@ -228,6 +231,40 @@ impl<
                 ])
             }
         }
+    }
+
+    pub fn snapshot_telemetry(&self) -> aether::nexus_wire::NexusTelemetry {
+        let stats = self.stats();
+        aether::nexus_wire::NexusTelemetry::new(
+            0,
+            stats.logical_tick,
+            u64::from(stats.global_phase),
+            stats.pairs_live,
+            self.generation,
+            stats.heat,
+            stats.collapses,
+        )
+    }
+
+    pub fn apply_policy(
+        &mut self,
+        policy: ResonancePolicy,
+        wall_tick: u64,
+    ) {
+        self.collapse_threshold = policy.collapse_threshold;
+
+        self.chrono.set_priority_mass(
+            policy.priority_mass,
+            ChronoTick(wall_tick),
+        );
+
+        if policy.flags & POLICY_REPHASE != 0 {
+            self.global_phase =
+                policy.target_phase & (MATRIX_PHASE_BINS - 1);
+        }
+
+        self.generation =
+            self.generation.wrapping_add(1).max(1);
     }
 
     pub fn heartbeat(
