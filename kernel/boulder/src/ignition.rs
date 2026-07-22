@@ -12,6 +12,7 @@ pub enum IgnitionPhase {
     TopologyReady,
     SubsystemsReady,
     InterruptsReady,
+    UserlandReady,
     Online,
 }
 
@@ -37,6 +38,7 @@ pub struct IgnitionSequence {
     managed_frames: usize,
     free_frames: usize,
     processors: usize,
+    userland_ready: bool,
 }
 
 impl IgnitionSequence {
@@ -48,6 +50,7 @@ impl IgnitionSequence {
             managed_frames: 0,
             free_frames: 0,
             processors: 0,
+            userland_ready: false,
         }
     }
 
@@ -97,15 +100,21 @@ impl IgnitionSequence {
         )
     }
 
+    pub fn userland_ready(&mut self) -> Result<(), IgnitionError> {
+        self.advance(IgnitionPhase::InterruptsReady, IgnitionPhase::UserlandReady)?;
+        self.userland_ready = true;
+        Ok(())
+    }
+
     pub fn online(&mut self) -> Result<IgnitionSummary, IgnitionError> {
-        self.advance(IgnitionPhase::InterruptsReady, IgnitionPhase::Online)?;
+        self.advance(IgnitionPhase::UserlandReady, IgnitionPhase::Online)?;
         Ok(IgnitionSummary {
             protocol: self.protocol,
             memory_regions: self.memory_regions,
             managed_frames: self.managed_frames,
             free_frames: self.free_frames,
             processors: self.processors,
-            userland_ready: false,
+            userland_ready: self.userland_ready,
         })
     }
 
@@ -160,10 +169,11 @@ mod tests {
         ignition.topology_ready(4).unwrap();
         ignition.subsystems_ready().unwrap();
         ignition.interrupts_ready().unwrap();
+        ignition.userland_ready().unwrap();
         let summary = ignition.online().unwrap();
         assert_eq!(ignition.phase(), IgnitionPhase::Online);
         assert_eq!(summary.processors, 4);
-        assert!(!summary.userland_ready);
+        assert!(summary.userland_ready);
     }
 
     #[test]

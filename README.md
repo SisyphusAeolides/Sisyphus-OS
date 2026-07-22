@@ -12,10 +12,10 @@ and userland.
 - `core/kairos`: ABI negotiation, normalized machine profiles, and object authority.
 - `kernel/boulder`: kernel core and C driver host.
 - `libraries/driver-abi`: canonical Rust definition of the stable C driver ABI.
-- `libraries/slope`: safe userland syscall surface.
-- `userland/push`: init and service supervision.
-- `userland/corinth`: networking and package management.
-- `userland/crest`: compositor and input routing.
+- `libraries/slope`: syscall, shared-memory, DMA-ring, time, and storage contracts.
+- `userland/push`: measured PID 1, bounded supervision, and capability policy.
+- `userland/corinth`: bounded package DNA, synthesis, integration, and swarm transport.
+- `userland/crest`: display/input contracts and fixed-point semantic rendering.
 
 ## C driver contract
 
@@ -76,6 +76,8 @@ drivers only after Boulder installs their initialized Ring 0 services.
 ```sh
 cargo check --workspace
 cargo test -p boulder
+cargo user-push
+cargo kernel
 ```
 
 The custom target is intentionally not the workspace default, which keeps host
@@ -167,25 +169,18 @@ their opaque object handles. Tartarus tracks retired ranges in software and
 returns quarantine decisions while placing learning samples on a bounded queue.
 It neither overloads architecture page-table bits nor trains a model in an
 exception handler.
-Oureboros is currently a fixed-capacity deterministic artifact catalog, not a
-replacement VFS. It unfolds versioned recipes into caller-owned writable
-buffers, checks their exact SHA-256 manifest measurements, and clears output on
-failure. A verified-artifact token keeps the measured source buffer immutably
-borrowed while Boulder prepares it. The first executable recipe emits a fixed,
-minimal x86-64 ET_DYN image whose information is part of the generator; it is
-preparation evidence rather than a compressed arbitrary user program. The PID
-1 preparation path rejects dynamic-linker requirements, non-user addresses,
-oversized images, unreadable executable segments, and manifest/ELF entry-point
-disagreement. Executable-class output is never transferred directly to
-control. Boulder now defines a transactional address-space backend contract
-that requires zeroed staging mappings, bounded copies, initialized-data and BSS
-verification, final W^X sealing, commit-after-seal ordering, and abort on every
-intermediate failure. The x86-64 bootstrap backend now allocates real physical
-frames, constructs a hardware-format four-level user hierarchy, inherits only
-the upper kernel PML4 half, keeps staging leaves non-present, enables EFER.NXE,
-and publishes final user PTEs only after data and BSS verification. The current
-validation path is bounded to 64 user pages and 128 total owned frames; it
-reclaims the complete PID 1 hierarchy and proves stale-handle rejection.
+Oureboros is a fixed-capacity measured-artifact catalog, not a replacement VFS
+or a claim that arbitrary binaries can be reconstructed from tiny random seeds.
+It verifies immutable boot artifacts against independently embedded SHA-256
+manifests and clears generated output on failure. GRUB supplies the separately
+built `push` ELF as a named Multiboot2 module; Boulder reserves that physical
+range, verifies its exact size, digest, and entry-point manifest, and rejects
+dynamic-linker requirements, non-user addresses, overlapping or oversized
+segments, and writable-executable mappings. The address-space installer uses
+zeroed staging pages, bounded copies, initialized-data and BSS verification,
+final W^X sealing, commit-after-seal ordering, and abort on every intermediate
+failure. Its hardware-format four-level hierarchy inherits only the upper
+kernel PML4 half and is retained for the lifetime of PID 1.
 Boulder now enters through a physical low bootstrap island, transfers code and
 stack execution to the higher half, removes PML4 entry zero, and checks that
 transition before initializing the IDT. During serialized bootstrap it also
@@ -197,24 +192,40 @@ RSP0 entry stack. The kernel programs EFER/STAR/LSTAR/FMASK and enters native
 syscalls on a separate 16 KiB kernel stack. The bounded write path walks every
 user page through the active hierarchy, requires user permission at all four
 levels, copies at most 256 bytes through the retained direct map, and never
-dereferences a raw user pointer. The measured probe enters Ring 3, completes
-real bounded-write and yield syscall/SYSRET round trips, raises a user
-breakpoint, returns through
-RSP0, and restores the kernel CR3 before boot continues. This proves one
-serialized syscall and privilege round trip, not scheduling or a functional
-init process. Manifest
-measurements provide authenticity only when the manifest root is independently
-protected and replicated.
+dereferences a raw user pointer. Boulder switches to Push's CR3 and transfers
+permanently to its measured ET_EXEC entry. Push then exercises native bounded
+write and cooperative-yield syscalls from a persistent Ring 3 supervision loop.
+Manifest measurements provide authenticity only when the manifest root is
+independently protected and replicated.
+
+Push models Slope-Net, Corinth, and Crest as a fixed dependency graph with
+bounded restart/backoff policy, saturating per-service failure mass, telemetry,
+and a deadlock detector that observes stalled launch work rather than mistaking
+a stable healthy system for failure. Gordian request pages use explicit atomic
+states and return opaque generation-checked capability handles. The kernel
+hardware broker and process-spawn capability are not implemented, so the
+current boot deliberately reports launch failure and proves the critical
+recovery path instead of claiming child services are running.
+
+Slope provides bounded syscall wrappers, revocation-aware pointer resolution,
+borrow-scoped shared-memory access, split-ownership DMA rings, cooperative
+network futures, and opaque pinned-block storage contracts. Corinth validates
+fixed-capacity package DNA, drives backend-supplied code lowering and artifact
+publication, commits dependency updates transactionally, and advances swarm
+assimilation one verified fragment per poll. Crest keeps display, input, and
+framebuffer authority behind backend traits. Its Obsidian path validates a
+bounded fixed-point SDF instruction set; Heliosphere consumes telemetry
+snapshots, and the orbital cortex solves Kepler's equation with a fixed six-step
+integer Newton budget. None of these userland contracts grant raw MMIO, NVMe,
+HID, or CRTC pointers.
+
 The ignition sequence is a protocol-neutral phase guard around Boulder's
 existing GRUB/Multiboot2 handoff. It requires validated boot information,
-memory, topology, subsystems, and interrupt routing in order before declaring
-the kernel online. A future Limine entry can feed the same guard without adding
-a competing entry symbol. Userland remains explicitly not ready even though a
-measured PID 1 image now passes static executable-format preparation and a
-controlled Ring 3 round trip. The probe remains deliberately minimal;
-relocation policy, scheduler-owned process exit, preemptive scheduling,
-per-process syscall capabilities, and transfer to the real `push` image are
-not yet complete.
+memory, topology, subsystems, interrupt routing, and the measured PID 1 install
+before declaring userland ready. A future Limine entry can feed the same guard
+without adding a competing entry symbol. Scheduler-owned process exit,
+preemptive user scheduling, per-process syscall capabilities, the hardware
+capability broker, and measured child-process spawn/wait remain incomplete.
 
 ```sh
 rustup component add rust-src --toolchain nightly
@@ -225,4 +236,5 @@ scripts/test-boot.sh
 
 The ISO path is `target/sisyphus-os.iso`. Building it requires GRUB and
 `xorriso`; running it requires `qemu-system-x86_64`. `test-boot.sh` succeeds
-only after the expected early-boot milestone appears on COM1.
+only after COM1 proves measured installation, permanent Ring 3 transfer, native
+Push syscalls, and bounded transition into recovery mode.

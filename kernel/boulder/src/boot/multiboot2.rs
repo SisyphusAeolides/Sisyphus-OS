@@ -4,6 +4,7 @@ use abyss::paging::PhysicalAddress;
 use super::acpi::Rsdp;
 
 const TAG_END: u32 = 0;
+const TAG_MODULE: u32 = 3;
 const TAG_MEMORY_MAP: u32 = 6;
 const TAG_ACPI_OLD: u32 = 14;
 const TAG_ACPI_NEW: u32 = 15;
@@ -12,6 +13,7 @@ const TAG_HEADER_SIZE: usize = 8;
 const MEMORY_MAP_HEADER_SIZE: usize = 16;
 const MEMORY_MAP_ENTRY_MINIMUM_SIZE: usize = 24;
 const MAXIMUM_BOOT_INFORMATION_SIZE: usize = 16 * 1024 * 1024;
+const MODULE_HEADER_SIZE: usize = 16;
 
 #[derive(Clone, Copy)]
 pub struct BootInformation {
@@ -112,6 +114,55 @@ impl BootInformation {
         Rsdp::parse(payload).map_err(|_| BootError::MalformedAcpiRsdp)
     }
 
+    pub fn module(self, command_line: &[u8]) -> Result<BootModule, BootError> {
+        let end = self.address + self.total_size;
+        let mut address = self.address + HEADER_SIZE;
+        while address < end {
+            if end - address < TAG_HEADER_SIZE {
+                return Err(BootError::MalformedTag);
+            }
+            // SAFETY: The fixed header lies in the validated boot structure.
+            let tag_type = unsafe { read_u32(address) };
+            let size = unsafe { read_u32(address + 4) } as usize;
+            if size < TAG_HEADER_SIZE || address.checked_add(size).is_none_or(|next| next > end) {
+                return Err(BootError::MalformedTag);
+            }
+            if tag_type == TAG_MODULE {
+                if size < MODULE_HEADER_SIZE {
+                    return Err(BootError::MalformedModule);
+                }
+                let string_length = size - MODULE_HEADER_SIZE;
+                // SAFETY: The complete module tag was bounds-checked above.
+                let string = unsafe {
+                    core::slice::from_raw_parts(
+                        (address + MODULE_HEADER_SIZE) as *const u8,
+                        string_length,
+                    )
+                };
+                let Some(nul) = string.iter().position(|byte| *byte == 0) else {
+                    return Err(BootError::MalformedModule);
+                };
+                if &string[..nul] == command_line {
+                    // SAFETY: The module tag's fixed fields are present.
+                    let start = u64::from(unsafe { read_u32(address + 8) });
+                    let finish = u64::from(unsafe { read_u32(address + 12) });
+                    if start >= finish {
+                        return Err(BootError::MalformedModule);
+                    }
+                    return Ok(BootModule {
+                        start: PhysicalAddress::new(start),
+                        end: PhysicalAddress::new(finish),
+                    });
+                }
+            }
+            if tag_type == TAG_END {
+                break;
+            }
+            address = align_up_8(address + size).ok_or(BootError::AddressOverflow)?;
+        }
+        Err(BootError::MissingModule)
+    }
+
     fn find_tag(self, wanted_type: u32) -> Result<Option<Tag>, BootError> {
         let end = self.address + self.total_size;
         let mut address = self.address + HEADER_SIZE;
@@ -144,6 +195,18 @@ struct Tag {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BootModule {
+    pub start: PhysicalAddress,
+    pub end: PhysicalAddress,
+}
+
+impl BootModule {
+    pub const fn length(self) -> u64 {
+        self.end.as_u64() - self.start.as_u64()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BootError {
     InvalidAddress,
     InvalidTotalSize,
@@ -153,6 +216,8 @@ pub enum BootError {
     MalformedMemoryMap,
     MissingAcpiRsdp,
     MalformedAcpiRsdp,
+    MissingModule,
+    MalformedModule,
     AddressOverflow,
     TooManyMemoryRegions,
 }
@@ -242,5 +307,28 @@ mod tests {
         bytes.0[16..20].copy_from_slice(&(16_u32).to_le_bytes());
         let boot = unsafe { BootInformation::load(bytes.0.as_ptr() as usize) }.unwrap();
         assert_eq!(boot.memory_map().err(), Some(BootError::MalformedMemoryMap));
+    }
+
+    #[test]
+    fn locates_a_named_boot_module() {
+        #[repr(align(8))]
+        struct ModuleBootInformation([u8; 40]);
+
+        let mut bytes = ModuleBootInformation([0; 40]);
+        bytes.0[0..4].copy_from_slice(&(40_u32).to_le_bytes());
+        bytes.0[8..12].copy_from_slice(&TAG_MODULE.to_le_bytes());
+        bytes.0[12..16].copy_from_slice(&(21_u32).to_le_bytes());
+        bytes.0[16..20].copy_from_slice(&(0x40_0000_u32).to_le_bytes());
+        bytes.0[20..24].copy_from_slice(&(0x40_2000_u32).to_le_bytes());
+        bytes.0[24..29].copy_from_slice(b"push\0");
+        bytes.0[32..36].copy_from_slice(&TAG_END.to_le_bytes());
+        bytes.0[36..40].copy_from_slice(&(8_u32).to_le_bytes());
+
+        let boot = unsafe { BootInformation::load(bytes.0.as_ptr() as usize) }.unwrap();
+        let module = boot.module(b"push").unwrap();
+        assert_eq!(module.start.as_u64(), 0x40_0000);
+        assert_eq!(module.end.as_u64(), 0x40_2000);
+        assert_eq!(module.length(), 0x2000);
+        assert_eq!(boot.module(b"crest"), Err(BootError::MissingModule));
     }
 }

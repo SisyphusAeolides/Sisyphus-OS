@@ -315,6 +315,61 @@ pub unsafe fn run_user_probe(
     }
 }
 
+/// Permanently transfers the bootstrap CPU to a retained Ring 3 process.
+///
+/// On success this function does not return. The initial user RFLAGS enables
+/// maskable interrupts; later interrupt entry uses the installed TSS RSP0.
+///
+/// # Safety
+///
+/// The caller must retain the complete process hierarchy and stack, ensure all
+/// kernel mappings required by interrupts and syscalls are inherited, and
+/// guarantee that no Rust value on the abandoned kernel stack requires drop.
+#[cfg(target_os = "none")]
+pub unsafe fn enter_user_process(
+    entry_point: usize,
+    stack_pointer: usize,
+    page_table_root: u64,
+) -> Result<(), PrivilegeError> {
+    if !INITIALIZED.load(Ordering::Acquire) {
+        return Err(PrivilegeError::NotInitialized);
+    }
+    if !(0x1000..USER_ADDRESS_LIMIT).contains(&entry_point)
+        || !(0x1000..USER_ADDRESS_LIMIT).contains(&stack_pointer)
+    {
+        return Err(PrivilegeError::InvalidAddress);
+    }
+    if page_table_root == 0 || page_table_root & 0xfff != 0 {
+        return Err(PrivilegeError::InvalidPageTableRoot);
+    }
+
+    unsafe extern "C" {
+        fn boulder_enter_user_process(
+            entry_point: usize,
+            stack_pointer: usize,
+            page_table_root: u64,
+        ) -> !;
+    }
+    // SAFETY: Validation and the caller's retention contract establish the
+    // assembly transfer requirements. IRETQ is the successful terminal path.
+    unsafe { boulder_enter_user_process(entry_point, stack_pointer, page_table_root) }
+}
+
+/// Reports that persistent privilege transfer is unavailable in host tests.
+///
+/// # Safety
+///
+/// Callers must satisfy the bare-metal retention contract even when compiling
+/// this fallback.
+#[cfg(not(target_os = "none"))]
+pub unsafe fn enter_user_process(
+    _entry_point: usize,
+    _stack_pointer: usize,
+    _page_table_root: u64,
+) -> Result<(), PrivilegeError> {
+    Err(PrivilegeError::UnsupportedHost)
+}
+
 /// Reports that a hardware privilege transfer is unavailable in host tests.
 ///
 /// # Safety

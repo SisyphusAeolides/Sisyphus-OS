@@ -1,5 +1,6 @@
 const ELF_HEADER_LENGTH: usize = 64;
 const PROGRAM_HEADER_LENGTH: usize = 56;
+const ELF_TYPE_EXECUTABLE: u16 = 2;
 const ELF_TYPE_SHARED_OBJECT: u16 = 3;
 const MACHINE_X86_64: u16 = 62;
 const SEGMENT_LOAD: u32 = 1;
@@ -219,10 +220,14 @@ fn validate_header(bytes: &[u8]) -> Result<(), LoaderError> {
     if bytes.get(..4) != Some(b"\x7fELF") {
         return Err(LoaderError::InvalidMagic);
     }
+    let image_type = read_u16(bytes, 16);
     if bytes[4] != 2
         || bytes[5] != 1
         || bytes[6] != 1
-        || read_u16(bytes, 16) != Some(ELF_TYPE_SHARED_OBJECT)
+        || !matches!(
+            image_type,
+            Some(ELF_TYPE_EXECUTABLE | ELF_TYPE_SHARED_OBJECT)
+        )
         || read_u16(bytes, 18) != Some(MACHINE_X86_64)
         || read_u32(bytes, 20) != Some(1)
     {
@@ -315,5 +320,12 @@ mod tests {
             LoadPlan::parse(&bytes),
             Err(LoaderError::WriteExecuteSegment)
         );
+    }
+
+    #[test]
+    fn accepts_a_fixed_address_static_executable() {
+        let mut bytes = shared_object(SEGMENT_READABLE | SEGMENT_EXECUTABLE);
+        bytes[16..18].copy_from_slice(&ELF_TYPE_EXECUTABLE.to_le_bytes());
+        assert!(LoadPlan::parse(&bytes).is_ok());
     }
 }

@@ -1,4 +1,4 @@
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 #[cfg(target_os = "none")]
 use crate::arch::x86_64::active_page_table_root;
@@ -37,6 +37,7 @@ const MAXIMUM_WRITE_BYTES: usize = 256;
 const COM1: u16 = 0x3f8;
 
 static YIELD_HITS: AtomicUsize = AtomicUsize::new(0);
+static LAST_YIELD_HINT: AtomicU64 = AtomicU64::new(0);
 static WRITE_HITS: AtomicUsize = AtomicUsize::new(0);
 static EXIT_REQUESTS: AtomicUsize = AtomicUsize::new(0);
 
@@ -69,6 +70,10 @@ pub fn yield_hits() -> usize {
     YIELD_HITS.load(Ordering::Acquire)
 }
 
+pub fn last_yield_hint() -> u64 {
+    LAST_YIELD_HINT.load(Ordering::Acquire)
+}
+
 pub fn write_hits() -> usize {
     WRITE_HITS.load(Ordering::Acquire)
 }
@@ -93,6 +98,7 @@ extern "C" fn boulder_syscall_dispatch(frame: *mut SyscallFrame) {
     let result = match number {
         SYSCALL_WRITE => write_from_user(frame.arguments),
         SYSCALL_YIELD => {
+            LAST_YIELD_HINT.store(frame.arguments[0], Ordering::Release);
             YIELD_HITS.fetch_add(1, Ordering::AcqRel);
             0
         }
@@ -255,6 +261,12 @@ mod tests {
             dispatch(SYSCALL_WRITE, [2, 0, 0, 0, 0, 0]),
             ERROR_BAD_FILE_DESCRIPTOR
         );
+    }
+
+    #[test]
+    fn yield_hint_storage_is_scalar_and_bounded_to_the_call() {
+        LAST_YIELD_HINT.store(0x55aa, Ordering::Release);
+        assert_eq!(last_yield_hint(), 0x55aa);
     }
 
     #[test]

@@ -45,6 +45,20 @@ boulder_ring3_probe_return:
     retq
 .size boulder_ring3_probe_return, . - boulder_ring3_probe_return
 
+.global boulder_enter_user_process
+.type boulder_enter_user_process, @function
+boulder_enter_user_process:
+    cli
+    movq %rdx, %cr3
+    pushq $USER_DATA_SELECTOR
+    pushq %rsi
+    pushq $0x202
+    pushq $USER_CODE_SELECTOR
+    pushq %rdi
+    iretq
+    ud2
+.size boulder_enter_user_process, . - boulder_enter_user_process
+
 .section .bss,"aw",@nobits
 .balign 8
 ring3_saved_rsp:

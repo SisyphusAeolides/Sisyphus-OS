@@ -5,6 +5,7 @@ pub enum ReservationKind {
     LowMemory,
     KernelImage,
     BootInformation,
+    BootModule,
     BootstrapHeap,
     AllocatorMetadata,
     Firmware,

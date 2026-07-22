@@ -63,6 +63,15 @@ pub struct ArtifactMeasurement {
     pub sha256: [u8; 32],
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ArtifactManifest {
+    pub inode_id: u32,
+    pub class: FractalClass,
+    pub architecture: TargetArchitecture,
+    pub entry_offset: usize,
+    pub expected_sha256: [u8; 32],
+}
+
 /// A measured artifact that keeps its backing buffer immutably borrowed.
 ///
 /// Consumers can parse or copy these bytes, but safe code cannot modify the
@@ -80,6 +89,53 @@ impl VerifiedArtifact<'_> {
     pub const fn bytes(&self) -> &[u8] {
         self.bytes
     }
+}
+
+/// Verifies caller-supplied immutable bytes against an independently rooted
+/// manifest and binds their measurement to the returned borrow.
+pub fn verify_artifact<'bytes>(
+    manifest: ArtifactManifest,
+    bytes: &'bytes [u8],
+) -> Result<VerifiedArtifact<'bytes>, OureborosError> {
+    if manifest.inode_id == 0
+        || bytes.is_empty()
+        || bytes.len() > MAXIMUM_ARTIFACT_BYTES
+        || manifest.expected_sha256 == [0; 32]
+    {
+        return Err(OureborosError::InvalidManifest);
+    }
+    match manifest.class {
+        FractalClass::Executable | FractalClass::SharedLibrary => {
+            if manifest.architecture == TargetArchitecture::Independent
+                || manifest.entry_offset >= bytes.len()
+            {
+                return Err(OureborosError::InvalidManifest);
+            }
+        }
+        FractalClass::Configuration => {
+            if manifest.architecture != TargetArchitecture::Independent
+                || manifest.entry_offset != 0
+            {
+                return Err(OureborosError::InvalidManifest);
+            }
+        }
+    }
+
+    let actual = sha256(bytes);
+    if !constant_time_equal(&actual, &manifest.expected_sha256) {
+        return Err(OureborosError::DigestMismatch);
+    }
+    Ok(VerifiedArtifact {
+        measurement: ArtifactMeasurement {
+            inode_id: manifest.inode_id,
+            class: manifest.class,
+            architecture: manifest.architecture,
+            bytes_written: bytes.len(),
+            entry_offset: manifest.entry_offset,
+            sha256: actual,
+        },
+        bytes,
+    })
 }
 
 /// Fixed-capacity catalog of deterministic artifact recipes.
@@ -355,6 +411,7 @@ fn constant_time_equal(left: &[u8; 32], right: &[u8; 32]) -> bool {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OureborosError {
     InvalidSeed,
+    InvalidManifest,
     UnsupportedRecipe,
     DuplicateInode,
     CapacityExceeded,
@@ -661,5 +718,40 @@ mod tests {
         assert_eq!(&artifact.bytes()[128..133], &[0xb8, 1, 0, 0, 0]);
         assert_eq!(&artifact.bytes()[152..157], &[0xb8, 3, 0, 0, 0]);
         assert_eq!(artifact.measurement().sha256, digest);
+    }
+
+    #[test]
+    fn verifies_immutable_external_artifacts_against_a_manifest() {
+        let bytes = b"externally built static image";
+        let expected_sha256 = sha256(bytes);
+        let artifact = verify_artifact(
+            ArtifactManifest {
+                inode_id: 9,
+                class: FractalClass::Executable,
+                architecture: TargetArchitecture::X86_64,
+                entry_offset: 4,
+                expected_sha256,
+            },
+            bytes,
+        )
+        .unwrap();
+        assert_eq!(artifact.bytes(), bytes);
+        assert_eq!(artifact.measurement().sha256, expected_sha256);
+
+        let mut corrupt = expected_sha256;
+        corrupt[0] ^= 1;
+        assert!(matches!(
+            verify_artifact(
+                ArtifactManifest {
+                    inode_id: 9,
+                    class: FractalClass::Executable,
+                    architecture: TargetArchitecture::X86_64,
+                    entry_offset: 4,
+                    expected_sha256: corrupt,
+                },
+                bytes,
+            ),
+            Err(OureborosError::DigestMismatch)
+        ));
     }
 }

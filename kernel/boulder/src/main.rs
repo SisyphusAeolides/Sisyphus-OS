@@ -6,15 +6,13 @@ use abyss::frame::BitmapFrameAllocator;
 use abyss::memory::MemoryRegionKind;
 use abyss::paging::PhysicalAddress;
 use abyss::reservation::{Reservation, ReservationKind, ReservationTable};
-use boulder::arch::x86_64::{
-    X86_64, active_page_table_root, enable_execute_disable, halt, idle, privilege,
-};
+use boulder::arch::x86_64::{active_page_table_root, enable_execute_disable, halt, privilege};
 use boulder::boot::acpi::discover_madt;
 use boulder::boot::multiboot2::BootInformation;
 use boulder::capability::{
-    ArtifactSynthesisControl, Authority, FabricControl, FaultPolicyControl, InterruptGuard,
-    LearningControl, MachineProfileControl, MemorySharingControl, PhysicalMemoryControl,
-    PolicyControl, ProcessInstallControl, ResonanceControl, UserlandImageControl,
+    ArtifactSynthesisControl, Authority, FabricControl, FaultPolicyControl, LearningControl,
+    MachineProfileControl, MemorySharingControl, PhysicalMemoryControl, PolicyControl,
+    ProcessInstallControl, ResonanceControl, UserlandImageControl,
 };
 use boulder::cpu::topology::{self, ExecutionClass, TopologyPolicy};
 use boulder::fabric::{
@@ -45,8 +43,61 @@ const KERNEL_PHYSICAL_LOAD_BASE: u64 = 1024 * 1024;
 const MINIMUM_HEAP_SIZE: u64 = 64 * 1024;
 const MAXIMUM_HEAP_SIZE: u64 = 4 * 1024 * 1024;
 
+#[cfg(target_os = "none")]
+const PUSH_EXPECTED_SHA256: [u8; 32] = parse_sha256(env!("SISYPHUS_PUSH_SHA256"));
+#[cfg(not(target_os = "none"))]
+const PUSH_EXPECTED_SHA256: [u8; 32] = [0; 32];
+#[cfg(target_os = "none")]
+const PUSH_EXPECTED_BYTES: usize = parse_decimal(env!("SISYPHUS_PUSH_BYTES"));
+#[cfg(not(target_os = "none"))]
+const PUSH_EXPECTED_BYTES: usize = 0;
+#[cfg(target_os = "none")]
+const PUSH_ENTRY_FILE_OFFSET: usize = parse_decimal(env!("SISYPHUS_PUSH_ENTRY_FILE_OFFSET"));
+#[cfg(not(target_os = "none"))]
+const PUSH_ENTRY_FILE_OFFSET: usize = 0;
+
 static KERNEL_HEAP: BumpAllocator = BumpAllocator::empty();
 static IRQ_TEST_HITS: AtomicUsize = AtomicUsize::new(0);
+
+const fn parse_sha256(encoded: &str) -> [u8; 32] {
+    assert!(encoded.len() == 64, "invalid embedded Push digest");
+    let bytes = encoded.as_bytes();
+    let mut digest = [0_u8; 32];
+    let mut index = 0;
+    while index < digest.len() {
+        digest[index] = (hex_nibble(bytes[index * 2]) << 4) | hex_nibble(bytes[index * 2 + 1]);
+        index += 1;
+    }
+    digest
+}
+
+const fn hex_nibble(value: u8) -> u8 {
+    match value {
+        b'0'..=b'9' => value - b'0',
+        b'a'..=b'f' => value - b'a' + 10,
+        _ => panic!("invalid embedded Push digest"),
+    }
+}
+
+const fn parse_decimal(encoded: &str) -> usize {
+    assert!(!encoded.is_empty(), "invalid embedded Push size");
+    let bytes = encoded.as_bytes();
+    let mut value = 0_usize;
+    let mut index = 0;
+    while index < bytes.len() {
+        assert!(bytes[index].is_ascii_digit(), "invalid embedded Push size");
+        value = match value.checked_mul(10) {
+            Some(value) => value,
+            None => panic!("embedded Push size overflow"),
+        };
+        value = match value.checked_add((bytes[index] - b'0') as usize) {
+            Some(value) => value,
+            None => panic!("embedded Push size overflow"),
+        };
+        index += 1;
+    }
+    value
+}
 
 unsafe extern "C" {
     static __kernel_start: u8;
@@ -169,6 +220,38 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
         multiboot_physical_address,
         multiboot_physical_address + boot.total_size()
     );
+    let push_module = match boot.module(b"push") {
+        Ok(module) => module,
+        Err(error) => {
+            let _ = writeln!(serial, "Boulder: Push boot module error: {error:?}");
+            halt();
+        }
+    };
+    if push_module.length() as usize != PUSH_EXPECTED_BYTES
+        || push_module.end.as_u64() > EARLY_MAPPED_PHYSICAL_LIMIT
+    {
+        let _ = writeln!(serial, "Boulder: Push boot module size or range mismatch");
+        halt();
+    }
+    let Some(push_virtual) = direct_map_address(push_module.start.as_u64()) else {
+        let _ = writeln!(
+            serial,
+            "Boulder: Push boot module is outside the direct map"
+        );
+        halt();
+    };
+    // SAFETY: The validated module range is immutable bootloader-owned memory
+    // covered by the retained direct map and reserved below before allocation.
+    let push_bytes = unsafe {
+        core::slice::from_raw_parts(push_virtual as *const u8, push_module.length() as usize)
+    };
+    let _ = writeln!(
+        serial,
+        "Boulder: measured Push module {} bytes at {:#x}..{:#x}",
+        push_bytes.len(),
+        push_module.start.as_u64(),
+        push_module.end.as_u64(),
+    );
 
     let memory_map = match boot.memory_map() {
         Ok(map) => map,
@@ -195,8 +278,9 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
         usable_bytes / 1024
     );
 
-    let protected_end =
-        (kernel_physical_end as u64).max((multiboot_physical_address + boot.total_size()) as u64);
+    let protected_end = (kernel_physical_end as u64)
+        .max((multiboot_physical_address + boot.total_size()) as u64)
+        .max(push_module.end.as_u64());
     let Some(heap_region) =
         memory_map.usable_range(protected_end, IDENTITY_MAP_END, MINIMUM_HEAP_SIZE)
     else {
@@ -269,6 +353,11 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
             PhysicalAddress::new(multiboot_physical_address as u64),
             PhysicalAddress::new((multiboot_physical_address + boot.total_size()) as u64),
             ReservationKind::BootInformation,
+        ),
+        Reservation::new(
+            push_module.start,
+            push_module.end,
+            ReservationKind::BootModule,
         ),
         Reservation::new(
             PhysicalAddress::new(heap_start as u64),
@@ -569,7 +658,15 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
         userland_image: &userland_image,
         process_install: &process_install,
     };
-    let initialized = match boulder::blacklab::initialize(controls, &mut process_backend) {
+    let initialized = match boulder::blacklab::initialize(
+        controls,
+        &mut process_backend,
+        boulder::blacklab::Pid1Source {
+            bytes: push_bytes,
+            expected_sha256: PUSH_EXPECTED_SHA256,
+            entry_file_offset: PUSH_ENTRY_FILE_OFFSET,
+        },
+    ) {
         Ok(initialized) => initialized,
         Err(error) => {
             let _ = writeln!(
@@ -582,9 +679,9 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
     let blacklab = initialized.summary;
     let pid1 = initialized.pid1;
     if blacklab.pid1_page_table_root.is_none()
-        || blacklab.pid1_owned_frames != 5
+        || blacklab.pid1_owned_frames == 0
         || !blacklab.pid1_activation_validated
-        || process_backend.owned_frame_count() != 5
+        || process_backend.owned_frame_count() != blacklab.pid1_owned_frames
     {
         let _ = writeln!(serial, "Boulder: PID1 retained ownership failed");
         halt();
@@ -604,40 +701,13 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
         let _ = writeln!(serial, "Boulder: retained PID1 has no page-table root");
         halt();
     };
-    if pid1_info.initial_stack_pointer != Some(pid1_stack) || pid1_info.owned_frames != 6 {
+    if pid1_info.initial_stack_pointer != Some(pid1_stack)
+        || pid1_info.owned_frames != blacklab.pid1_owned_frames + 1
+    {
         let _ = writeln!(
             serial,
             "Boulder: retained PID1 stack metadata is inconsistent"
         );
-        halt();
-    }
-    let probe_before = interrupts::user_probe_hits();
-    let write_before = boulder::syscalls::write_hits();
-    let yield_before = boulder::syscalls::yield_hits();
-    {
-        let _interrupt_guard = InterruptGuard::<X86_64>::enter();
-        // SAFETY: PID1's measured entry and stack are mapped with user
-        // permissions, its root inherits the active higher-half kernel, the
-        // TSS owns RSP0, and the guard prevents asynchronous entry or reuse.
-        if let Err(error) = unsafe {
-            privilege::run_user_probe(
-                pid1_info.entry_point as usize,
-                pid1_stack as usize,
-                pid1_root,
-            )
-        } {
-            let _ = writeln!(serial, "Boulder: Ring 3 probe failed: {error:?}");
-            halt();
-        }
-    }
-    // SAFETY: The probe assembly must restore the serialized BSP root before
-    // returning; this read verifies that postcondition directly.
-    if interrupts::user_probe_hits() != probe_before + 1
-        || boulder::syscalls::write_hits() != write_before + 1
-        || boulder::syscalls::yield_hits() != yield_before + 1
-        || unsafe { active_page_table_root() } != kernel_page_table_root.as_u64()
-    {
-        let _ = writeln!(serial, "Boulder: Ring 3 return evidence is incomplete");
         halt();
     }
     let _ = writeln!(
@@ -655,8 +725,8 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
     );
     let _ = writeln!(
         serial,
-        "Boulder: PID1 page-table root={:#x}, frames={}, retained=true, cr3_activation=validated, syscall_write=returned, syscall_yield=returned, ring3_probe=returned",
-        pid1_root, pid1_info.owned_frames,
+        "Boulder: PID1 page-table root={:#x}, frames={}, segments={}, retained=true, cr3_activation=validated, launch=pending",
+        pid1_root, pid1_info.owned_frames, pid1_info.segment_count,
     );
 
     // SAFETY: ACPI described the active controllers, the local APIC is live,
@@ -793,6 +863,10 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
         );
         halt();
     }
+    if let Err(error) = ignition.userland_ready() {
+        let _ = writeln!(serial, "Boulder: ignition userland phase failed: {error:?}");
+        halt();
+    }
     interrupts::enable();
     let ignition_summary = match ignition.online() {
         Ok(summary) => summary,
@@ -807,8 +881,29 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
         ignition_summary.protocol, ignition_summary.userland_ready
     );
     let _ = writeln!(serial, "Boulder: interrupt-routing milestone complete");
-
-    idle()
+    let _ = writeln!(
+        serial,
+        "Boulder: transferring permanently to measured Push PID1 at {:#x}",
+        pid1_info.entry_point,
+    );
+    interrupts::disable();
+    // SAFETY: Push's measured W^X image, retained hierarchy, and RW+NX stack
+    // remain owned by `process_backend`, all kernel entry mappings are
+    // inherited, and this terminal transfer intentionally abandons the
+    // bootstrap stack without running destructors.
+    if let Err(error) = unsafe {
+        privilege::enter_user_process(
+            pid1_info.entry_point as usize,
+            pid1_stack as usize,
+            pid1_root,
+        )
+    } {
+        let _ = writeln!(
+            serial,
+            "Boulder: persistent PID1 transfer failed: {error:?}"
+        );
+    }
+    halt()
 }
 
 #[panic_handler]

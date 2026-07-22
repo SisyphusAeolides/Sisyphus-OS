@@ -23,8 +23,8 @@ const TABLE_ENTRIES: usize = 512;
 
 pub const MAXIMUM_PROCESS_PAGES: usize = 64;
 pub const MAXIMUM_OWNED_FRAMES: usize = 128;
-pub const INITIAL_USER_STACK_BASE: u64 = 0x7000;
-pub const INITIAL_USER_STACK_POINTER: u64 = 0x8000;
+pub const INITIAL_USER_STACK_BASE: u64 = 0x0010_0000;
+pub const INITIAL_USER_STACK_POINTER: u64 = INITIAL_USER_STACK_BASE + 0x1000;
 
 /// Physical-memory operations required by the process page-table builder.
 ///
@@ -1136,7 +1136,7 @@ mod tests {
         );
         let stack_leaf = backend
             .memory()
-            .read_entry(PhysicalAddress::new(p1), 7)
+            .read_entry(PhysicalAddress::new(p1), 256)
             .unwrap();
         assert_eq!(
             stack_leaf & (ENTRY_PRESENT | ENTRY_WRITABLE | ENTRY_USER | ENTRY_NO_EXECUTE),

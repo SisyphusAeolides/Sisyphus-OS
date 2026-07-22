@@ -7,8 +7,8 @@ use ::blacklab::graph::{
     EdgeKind, GraphError, NodeKind, PagePrediction, SemanticEdge, SemanticGraph, SemanticNode,
 };
 use ::blacklab::oureboros::{
-    FractalCatalog, FractalClass, FractalRecipe, FractalSeed, MINIMAL_X86_64_ELF_BYTES,
-    OureborosError, TargetArchitecture, measure_recipe,
+    ArtifactManifest, FractalCatalog, FractalClass, FractalRecipe, FractalSeed, OureborosError,
+    TargetArchitecture, measure_recipe, verify_artifact,
 };
 use ::blacklab::pythia::{ClassifierError, Label, NYX_ANOMALY_DETECTOR};
 use ::blacklab::resonance::{
@@ -115,9 +115,17 @@ pub struct Controls<'authority> {
     pub process_install: &'authority Capability<'authority, ProcessInstallControl>,
 }
 
+#[derive(Clone, Copy)]
+pub struct Pid1Source<'bytes> {
+    pub bytes: &'bytes [u8],
+    pub expected_sha256: [u8; 32],
+    pub entry_file_offset: usize,
+}
+
 pub fn initialize<Backend: UserAddressSpaceBackend>(
     controls: Controls<'_>,
     install_backend: &mut Backend,
+    pid1_source: Pid1Source<'_>,
 ) -> Result<Initialization<Backend::Process>, InitializeError<Backend::Error>> {
     let mut runtime = RUNTIME.lock();
     if runtime.initialized {
@@ -365,33 +373,22 @@ pub fn initialize<Backend: UserAddressSpaceBackend>(
     }
     let materialized_bytes = measurement.bytes_written;
 
-    let pid1_recipe = FractalRecipe {
-        algorithm_version: 2,
-        base_entropy: 0x9999_8888_7777_6666,
-        structural_mutator: 0xaaaa_bbbb_cccc_dddd,
-    };
-    let pid1_digest = measure_recipe(pid1_recipe, MINIMAL_X86_64_ELF_BYTES)
-        .map_err(InitializeError::Oureboros)?;
-    runtime
-        .artifacts
-        .plant_seed(FractalSeed {
+    let pid1_artifact = verify_artifact(
+        ArtifactManifest {
             inode_id: 2,
             class: FractalClass::Executable,
             architecture: TargetArchitecture::X86_64,
-            recipe: pid1_recipe,
-            unfolded_size_bytes: MINIMAL_X86_64_ELF_BYTES as u32,
-            entry_offset: 128,
-            expected_sha256: pid1_digest,
-        })
-        .map_err(InitializeError::Oureboros)?;
-    let mut pid1_bytes = [0_u8; MINIMAL_X86_64_ELF_BYTES];
-    let pid1_artifact = runtime
-        .artifacts
-        .materialize(2, &mut pid1_bytes)
-        .map_err(InitializeError::Oureboros)?;
+            entry_offset: pid1_source.entry_file_offset,
+            expected_sha256: pid1_source.expected_sha256,
+        },
+        pid1_source.bytes,
+    )
+    .map_err(InitializeError::Oureboros)?;
     let pid1_image = prepare_user_image(pid1_artifact, controls.userland_image)
         .map_err(InitializeError::UserImage)?;
-    if pid1_image.measurement().sha256 != pid1_digest || runtime.artifacts.len() != 2 {
+    if pid1_image.measurement().sha256 != pid1_source.expected_sha256
+        || runtime.artifacts.len() != 1
+    {
         return Err(InitializeError::IncompletePlan);
     }
     let installed_pid1 = install_user_image(pid1_image, install_backend, controls.process_install)
@@ -418,7 +415,9 @@ pub fn initialize<Backend: UserAddressSpaceBackend>(
     };
     let pid1_page_table_root = process_info.address_space_root;
     let pid1_owned_frames = process_info.owned_frames;
-    if process_info.entry_point != pid1_entry_point || process_info.segment_count != 1 {
+    if process_info.entry_point != pid1_entry_point
+        || process_info.segment_count != installed_pid1.segment_count
+    {
         install_backend
             .release_process(&installed_pid1.process)
             .map_err(|error| InitializeError::ProcessInstall(InstallError::Backend(error)))?;
