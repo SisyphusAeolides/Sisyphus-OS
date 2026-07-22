@@ -204,7 +204,13 @@ extern "C" fn boulder_interrupt_dispatch(frame: *mut InterruptFrame) -> usize {
         }
         49 => {
             APIC_TIMER_HITS.fetch_add(1, Ordering::Relaxed);
-            crate::nexus_deferred::request_from_irq(<crate::arch::Active as crate::arch::Architecture>::counter_sample());
+
+            let wall_tick =
+                <crate::arch::Active as crate::arch::Architecture>
+                    ::counter_sample();
+
+            crate::nexus_deferred::request_from_irq(wall_tick);
+
             apic::end_of_interrupt();
         }
         255 => {}

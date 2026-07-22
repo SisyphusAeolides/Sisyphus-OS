@@ -152,7 +152,7 @@ pub fn apply_policy(
     MATRIX.lock().apply_policy(policy, wall_tick);
 }
 
-pub fn heartbeat(wall_tick: u64) {
+pub fn heartbeat_batch(wall_tick: u64, batch_size: u64) {
     if !READY.load(Ordering::Acquire) {
         return;
     }
@@ -164,7 +164,11 @@ pub fn heartbeat(wall_tick: u64) {
         return;
     };
 
-    let pulse = matrix.heartbeat(wall_tick, thermal);
+    let mut pulse = None;
+    for _ in 0..batch_size.max(1) {
+        pulse = Some(matrix.heartbeat(wall_tick, thermal));
+    }
+    let pulse = pulse.unwrap();
     let stats = matrix.stats();
 
     let sample = StabilitySample {

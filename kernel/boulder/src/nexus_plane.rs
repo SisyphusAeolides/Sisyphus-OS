@@ -53,11 +53,21 @@ pub fn initialize(
     Ok(())
 }
 
-pub fn drive_once(wall_tick: u64, _pending: u64) {
+pub(crate) fn drive_once(
+    wall_tick: u64,
+    absorbed_ticks: u64,
+) {
     drain_commands(wall_tick);
 
-    nexus_runtime::heartbeat(wall_tick);
+    nexus_runtime::heartbeat_batch(
+        wall_tick,
+        absorbed_ticks.min(64),
+    );
 
+    evaluate_policy_and_publish(wall_tick);
+}
+
+fn evaluate_policy_and_publish(wall_tick: u64) {
     let sequence =
         RESONANCE_PLANE.epoch().wrapping_add(1);
 
