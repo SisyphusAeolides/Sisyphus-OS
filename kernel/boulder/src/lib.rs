@@ -30,3 +30,4 @@ pub mod tartarus_deep;
 pub mod thermogenesis;
 pub mod chronovore;
 pub mod fabric_weave;
+pub mod quantum_nexus;

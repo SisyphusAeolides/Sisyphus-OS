@@ -696,6 +696,10 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
             halt();
         }
     };
+    if let Err(error) = process_backend.install_thermal_page(&pid1, &process_install) {
+        let _ = writeln!(serial, "Boulder: PID1 thermal page mapping failed: {error:?}");
+        halt();
+    }
     let pid1_stack = match process_backend.prepare_initial_stack(
         &pid1,
         &[b"push"],

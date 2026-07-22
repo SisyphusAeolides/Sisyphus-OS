@@ -1,6 +1,35 @@
 #![allow(dead_code)]
 use alloc::{collections::BTreeMap, vec, vec::Vec};
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering};
+
+#[repr(C, align(64))]
+pub struct ThermalPage {
+    pub temperature_zone:    AtomicU8,
+    pub throttle_hint:       AtomicU8,
+    pub kernel_epoch:        AtomicU8,
+    _pad:                    u8,
+    pub tsc_frequency_mhz:   AtomicU32,
+    pub cpu_budget_ticks:    AtomicU64,
+    pub cpu_used_ticks:      AtomicU64,
+    pub thermal_ticks:       AtomicU64,
+    _reserved:               [u8; 32],
+}
+
+impl ThermalPage {
+    pub const fn zeroed() -> Self {
+        Self {
+            temperature_zone:  AtomicU8::new(0),
+            throttle_hint:     AtomicU8::new(0),
+            kernel_epoch:      AtomicU8::new(0),
+            _pad:              0,
+            tsc_frequency_mhz: AtomicU32::new(0),
+            cpu_budget_ticks:  AtomicU64::new(0),
+            cpu_used_ticks:    AtomicU64::new(0),
+            thermal_ticks:     AtomicU64::new(0),
+            _reserved:         [0; 32],
+        }
+    }
+}
 
 // ─────────────────────────────────────────────
 // NO_STD MATH HELPERS

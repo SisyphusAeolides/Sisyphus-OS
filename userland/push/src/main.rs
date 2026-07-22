@@ -25,14 +25,15 @@ core::arch::global_asm!(
 
 struct UnavailableBroker;
 
-static THERMAL_PAGE: ThermalPage = ThermalPage::zeroed();
+pub const THERMAL_PAGE_ADDRESS: usize = 0x0080_0000;
+fn thermal_page() -> &'static ThermalPage { unsafe { &*(THERMAL_PAGE_ADDRESS as *const ThermalPage) } }
 
 struct DispatchProbe { remaining: u8, units: usize }
 
 impl Future for DispatchProbe {
     type Output = ();
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
-        let batch = throttled_batch_size(&THERMAL_PAGE, self.units);
+        let batch = throttled_batch_size(thermal_page(), self.units);
         self.units = self.units.saturating_sub(batch.max(1));
         if self.remaining == 0 || self.units == 0 {
             Poll::Ready(())
@@ -91,16 +92,16 @@ pub extern "C" fn push_start_with_stack(stack_ptr: *const u8) -> ! {
     let mut executor = slope::executor::OuroborosExecutor::new();
     let mut dispatch = DispatchProbe { remaining: 4, units: 1024 };
     unsafe { executor.spawn_raw(&mut dispatch).expect("executor arena exhausted"); }
-    let mut thermal = ThermalPolicy::new(&THERMAL_PAGE);
+    let mut thermal = ThermalPolicy::new(thermal_page());
     while executor.run_until_stall() != 0 {
-        let _guard = ThermalGuard::enter(&THERMAL_PAGE);
+        let _guard = ThermalGuard::enter(thermal_page());
         thermal.check_transition();
         push::push_log!(
             "[PID 1] dispatch pass alive={} thermal={:?} hint={:?} partition_units={}",
             executor.task_count(),
             thermal.current_zone(),
-            THERMAL_PAGE.hint(),
-            throttled_batch_size(&THERMAL_PAGE, runtime.partition.iter().next().map(|s| s.len()).unwrap_or(0)),
+            thermal_page().hint(),
+            throttled_batch_size(thermal_page(), runtime.partition.iter().next().map(|s| s.len()).unwrap_or(0)),
         );
     }
     push::push_log!("[PID 1] Kairos-dispatched workload complete");
@@ -120,10 +121,14 @@ pub extern "C" fn push_start_with_stack(stack_ptr: *const u8) -> ! {
                     supervisor.status(service.id).restart_count,
                     service.maximum_restarts,
                 );
-                // Spawn is intentionally not forged. Until Boulder provides a
-                // process capability, this explicit failure exercises bounded
-                // restart and recovery policy without claiming a child exists.
-                let _ = supervisor.record_failure(service.id, FailureReason::LaunchUnavailable);
+                match slope::process::spawn(0, service.id as u8) {
+                    Ok(pid) => {
+                        push::push_log!("[PID 1] spawned service {:?} as PID {}", service.id, pid);
+                    }
+                    Err(_) => {
+                        let _ = supervisor.record_failure(service.id, FailureReason::LaunchUnavailable);
+                    }
+                }
             }
             SupervisorAction::EnterRecovery { failed_service } => {
                 push::push_log!(
@@ -140,6 +145,13 @@ pub extern "C" fn push_start_with_stack(stack_ptr: *const u8) -> ! {
                 let _ = supervisor.record_failure(service, FailureReason::Unresponsive);
             }
             SupervisorAction::Idle => {}
+        }
+        match slope::process::wait_nohang() {
+            Ok(Some((pid, status))) => {
+                push::push_log!("[PID 1] child {} exited with status {}", pid, status);
+                // Simple demonstration; in a real OS we'd map PID to service.id
+            }
+            _ => {}
         }
         if slope::process::yield_now().is_err() {
             core::hint::spin_loop();

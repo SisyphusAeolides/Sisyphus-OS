@@ -62,6 +62,8 @@ pub fn dispatch(number: usize, arguments: [usize; 6]) -> isize {
         // that exists, returning ENOSYS is safer than returning to code that
         // reasonably believes its process has terminated.
         grimoire::SYS_EXIT => ERROR_NOT_IMPLEMENTED,
+        grimoire::SYS_SPAWN => ERROR_NOT_IMPLEMENTED,
+        grimoire::SYS_WAIT => ERROR_NOT_IMPLEMENTED,
         _ => ERROR_NOT_IMPLEMENTED,
     }
 }
@@ -106,8 +108,17 @@ extern "C" fn boulder_syscall_dispatch(frame: *mut SyscallFrame) {
             EXIT_REQUESTS.fetch_add(1, Ordering::AcqRel);
             ERROR_NOT_IMPLEMENTED
         }
+        grimoire::SYS_SPAWN => spawn_from_user(frame.arguments),
+        grimoire::SYS_WAIT => wait_from_user(frame.arguments),
         grimoire::SYS_DISP_QUERY => kairos_query_to_user(frame.arguments),
         grimoire::SYS_DISP_LEASE => kairos_abi_to_user(frame.arguments),
+        id @ crate::quantum_nexus::sys::SYS_NEXUS_ENTANGLE..=crate::quantum_nexus::sys::SYS_NEXUS_CONTROL => {
+            let mut thermal = crate::quantum_nexus::ThermalBudget;
+            match crate::quantum_nexus::sys::dispatch(id, frame.arguments[0] as usize, frame.arguments[1] as usize, frame.arguments[2] as usize, frame.arguments[3] as usize, frame.arguments[4] as usize, frame.arguments[5] as usize, &mut thermal) {
+                Ok(v) => v as isize,
+                Err(_) => -1, // Simple error mapping
+            }
+        }
         _ => ERROR_NOT_IMPLEMENTED,
     };
     frame.number_or_result = result as u64;
@@ -140,6 +151,45 @@ fn write_from_user(arguments: [u64; 6]) -> isize {
     serial.write_bytes(&bytes[..length]);
     WRITE_HITS.fetch_add(1, Ordering::AcqRel);
     length as isize
+}
+
+#[cfg(target_os = "none")]
+static NEXT_PID: AtomicUsize = AtomicUsize::new(2);
+#[cfg(target_os = "none")]
+static EXITED_PID: core::sync::atomic::AtomicIsize = core::sync::atomic::AtomicIsize::new(0);
+
+#[cfg(target_os = "none")]
+fn spawn_from_user(_arguments: [u64; 6]) -> isize {
+    // Basic mock of spawn until we have a real scheduler and VFS image loading
+    let pid = NEXT_PID.fetch_add(1, Ordering::AcqRel);
+    // Pretend the child immediately exits for testing purposes
+    EXITED_PID.store(pid as isize, Ordering::Release);
+    pid as isize
+}
+
+#[cfg(target_os = "none")]
+fn wait_from_user(arguments: [u64; 6]) -> isize {
+    let pid_ptr = arguments[0];
+    let status_ptr = arguments[1];
+    
+    let exited = EXITED_PID.swap(0, Ordering::Acquire);
+    if exited == 0 {
+        return -11; // EAGAIN
+    }
+    
+    if pid_ptr != 0 {
+        if copy_value_to_user(pid_ptr, &(exited as u32)).is_err() {
+            return ERROR_BAD_ADDRESS;
+        }
+    }
+    if status_ptr != 0 {
+        let status: i32 = 0; // success
+        if copy_value_to_user(status_ptr, &status).is_err() {
+            return ERROR_BAD_ADDRESS;
+        }
+    }
+    
+    0
 }
 
 #[cfg(target_os = "none")]

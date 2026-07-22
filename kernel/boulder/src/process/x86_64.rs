@@ -399,6 +399,33 @@ impl<Memory: ProcessFrameMemory> FrameBackedAddressSpace<Memory> {
         Ok(INITIAL_USER_STACK_POINTER)
     }
 
+    /// Maps a kernel-owned thermal page into the user's address space.
+    pub fn install_thermal_page(
+        &mut self,
+        process: &ProcessImageHandle,
+        _authority: &Capability<'_, ProcessInstallControl>,
+    ) -> Result<u64, FrameBackedError<Memory::Error>> {
+        if self.active || self.process_info(process).is_none() {
+            return Err(FrameBackedError::InvalidState);
+        }
+        let virtual_address = 0x0080_0000;
+        let (table, index) = self.ensure_leaf_slot(virtual_address)?;
+        let frame = self.allocate_owned()?;
+        // Zero the frame
+        if let Some(ptr) = crate::mmio::direct_map_address(frame.as_u64()) {
+            unsafe { core::ptr::write_bytes(ptr as *mut u8, 0, 4096) };
+        }
+        let entry = frame.as_u64() | ENTRY_PRESENT | ENTRY_USER | ENTRY_NO_EXECUTE; // Read-only for user
+        self.memory.write_entry(table, index, entry).map_err(FrameBackedError::Memory)?;
+        self.pages[self.page_count] = PageRecord {
+            frame,
+            virtual_address,
+        };
+        self.page_count += 1;
+        self.process_info.owned_frames = self.owned_frame_count;
+        Ok(virtual_address)
+    }
+
     /// Materializes the documented `[argc][argv][envp]` entry block in the
     /// retained user stack and returns the stack pointer to pass to Ring 3.
     pub fn prepare_initial_stack(
