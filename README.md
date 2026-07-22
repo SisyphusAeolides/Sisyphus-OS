@@ -17,6 +17,19 @@ and userland.
 - `userland/corinth`: bounded package DNA, synthesis, integration, and swarm transport.
 - `userland/crest`: display/input contracts and fixed-point semantic rendering.
 
+## Exotic Subsystems
+
+Sisyphus OS embraces chaotic, biological, and quantum-mechanical metaphors for operating system design:
+- **Wormhole IPC**: Causal time-reversal message passing using CTC (Closed Timelike Curve) ring buffers and holographic semantic hashing.
+- **Chronovore**: A time-eating entropy engine that harvests CPU jitter to feed a Rule 30 cellular automaton, searching for temporal crystals to predict optimal preemption windows.
+- **Eigenthread Scheduler**: A workload Hamiltonian scheduler that models processes as quantum states, dynamically recalculating their coupling energy to solve for the optimal ground-state co-schedule.
+- **Fabric Weave**: A causal spacetime execution graph that tracks all kernel events as nodes in a light cone, detecting causal violations and deadlocks via Kahn's topological sort.
+- **Schrödinger Core**: A quantum speculative execution sandbox that physically bifurcates the execution state to evaluate both sides of an uncertain branch simultaneously, collapsing the wave function only when the truth is observed.
+- **VoidFS**: A filesystem modeled as a Kerr rotating black hole. Files orbit an accretion disk and slowly spiral into an event horizon where they are spaghettified into a 2D holographic hash, eventually evaporating as Hawking radiation into the Chronovore engine.
+- **Fractal Page Tables**: An iterated function system (IFS) memory space where virtual addresses are mapped to physical frames via Mandelbrot-like chaotic dynamics on the complex plane, rendering ROP chains mathematically impossible.
+- **Macrophage IPC Firewall**: A biological immune system where patrolling white blood cells inspect IPC channels, phagocytize malicious packets, and broadcast extracted antigens to trigger apoptosis in rogue processes.
+- **Symbiosis Scheduler**: Inspired by mitochondrial evolution, this module forces highly communicative processes into endosymbiosis—quantum-entangling their page tables and permanently collapsing their IPC overhead into a single eukaryotic host.
+
 ## C driver contract
 
 The kernel exposes a versioned function table to drivers. Drivers receive no
