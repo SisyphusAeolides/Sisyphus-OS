@@ -2,6 +2,8 @@
 
 pub mod bridge;
 pub mod env;
+pub mod executor;
+pub mod fabric;
 pub mod fs;
 pub mod io;
 pub mod ipc;
@@ -12,6 +14,7 @@ pub mod signal;
 pub mod storage;
 pub mod sync;
 pub mod syscalls;
+pub mod thermogenesis;
 pub mod time;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
