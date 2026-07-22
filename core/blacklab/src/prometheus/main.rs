@@ -1,8 +1,8 @@
 use alloc::vec::Vec;
 
 use crate::prometheus::{
-    genome::{BootGenome, Gene},
-    stigmergy::{PheromoneField, TrailType},
+    genome::BootGenome,
+    stigmergy::PheromoneField,
     oracle::OracleSupervisor,
     entanglement::{EntanglementRegistry, BellState},
 };
@@ -38,7 +38,7 @@ pub fn prometheus_tick(
     // === PHASE 3: ORPHAN REAPING ===
     // Collect dead children (waitpid equivalent)
     let dead_pids = reap_children(); // returns vec of (pid, exit_code)
-    for (dead_pid, exit_code) in &dead_pids {
+    for (dead_pid, _exit_code) in &dead_pids {
         // Trigger quantum collapse cascade — all entangled services notified
         let cascades = entanglement.propagate_collapse(*dead_pid, false);
         for (affected_pid, new_state) in cascades {
@@ -88,4 +88,5 @@ fn persist_genome_to_nvram(_: &BootGenome) {}
 fn wait_for_event() {}
 
 #[derive(Copy, Clone)]
+#[allow(dead_code)]
 enum Signal { Terminate, Interrupt, Hangup }

@@ -2,6 +2,7 @@ use alloc::{collections::BTreeMap, vec::Vec};
 use core::sync::atomic::{AtomicU64, Ordering};
 
 const PHEROMONE_DECAY: f64 = 0.95; // per tick evaporation rate
+#[allow(dead_code)]
 const MAX_SERVICES: usize = 256;
 
 /// Pheromone trail — a concentration left by a running service

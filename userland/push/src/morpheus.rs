@@ -304,7 +304,7 @@ impl SleepingService {
     }
 
     /// Wake up — return to awake state, record wake event
-    pub fn wake(&self, now_ns: u64, wake_event: u8) {
+    pub fn wake(&self, now_ns: u64, _wake_event: u8) {
         let _prev_stage = self.current_stage();
         self.stage.store(SleepStage::Awake as u8, Ordering::Relaxed);
         self.last_wake_ns.store(now_ns, Ordering::Relaxed);

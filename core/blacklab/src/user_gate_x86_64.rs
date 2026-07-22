@@ -402,7 +402,7 @@ pub mod blacklab {
                 // Basic STDOUT / STDERR write stub
                 if fd == 1 || fd == 2 { len as i64 } else { -1 }
             }
-            sigil::SIGIL_TIME => unsafe { super::rdtsc() as i64 },
+            sigil::SIGIL_TIME => super::rdtsc() as i64,
             sigil::SIGIL_YIELD => {
                 // Yield execution context marker
                 0
@@ -474,7 +474,7 @@ pub fn rdtsc() -> u64 {
 
 // Top-level harness to wire it up.
 pub unsafe fn launch_blacklab(image: &[u8]) -> Result<blacklab::TrapFrame, blacklab::LoadError> {
-    let (mut proc, thread) = blacklab::load(image)?;
+    let (proc, thread) = blacklab::load(image)?;
     let cpu = plat::current_cpu_local();
     
     // Set up the Ring 0 stack pointer for when the user process traps.

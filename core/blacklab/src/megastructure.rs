@@ -6,8 +6,8 @@
 //! An intertwined, highly-experimental kernel substrate combining 7 forbidden 
 //! architectural paradigms into a unified lock-free topology.
 
-use core::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, AtomicPtr, AtomicBool, Ordering};
-use core::ptr::{self, NonNull};
+use core::sync::atomic::{AtomicU8, AtomicU64, AtomicPtr, AtomicBool, Ordering};
+use core::ptr;
 
 /// The Heartbeat. This single pulse function cross-wires the state of all 
 /// 7 subsystems, causing them to actively feed into one another.
@@ -15,7 +15,7 @@ pub fn blacklab_pulse() -> u64 {
     static CODEX_PULSE: AtomicU64 = AtomicU64::new(0);
     let p = CODEX_PULSE.fetch_add(1, Ordering::SeqCst);
     
-    unsafe {
+    {
         // HELIOS heat bleeds into MNEMOSYNE semantic graph
         let heat = helios::HELIOS_STAR.thermal_core.load(Ordering::Relaxed);
         mnemosyne::MNEMOSYNE_GRAPH.semantic_heat.fetch_add(heat / 10, Ordering::Relaxed);
@@ -289,7 +289,7 @@ pub mod logos {
     pub fn assert_theorem(axiom: &Axiom) -> bool {
         // A theorem forge where policies are strictly mathematical bitwise reductions
         let truth = axiom.truth_value;
-        unsafe {
+        {
             let old = LOGOS_FORGE.absolute_truth.fetch_or(truth, Ordering::Release);
             (old | truth) != 0
         }

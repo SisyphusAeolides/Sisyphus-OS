@@ -1,4 +1,3 @@
-use core::f64::consts::PI;
 use alloc::vec::Vec;
 
 /// A window as a patch on a Riemannian 2-manifold

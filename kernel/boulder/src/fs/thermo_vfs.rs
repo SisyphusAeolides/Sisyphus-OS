@@ -1,4 +1,4 @@
-use alloc::{collections::BTreeMap, string::String, vec::Vec};
+use alloc::{collections::BTreeMap, vec::Vec};
 
 /// Block thermal state
 #[derive(Clone, Copy, PartialEq)]

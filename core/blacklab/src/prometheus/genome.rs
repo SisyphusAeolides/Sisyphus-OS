@@ -56,7 +56,7 @@ impl Gene {
                 self.promoter_strength = new_ps;
             }
             1 => { // epigenetic methylation — increase delay
-                self.expression_delay_ms = ((seed >> 16) % 5000);
+                self.expression_delay_ms = (seed >> 16) % 5000;
             }
             2 => { // intron/exon flip — risky but powerful
                 if self.fitness_score < 0.3 {
