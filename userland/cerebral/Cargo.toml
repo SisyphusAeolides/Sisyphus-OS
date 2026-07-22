@@ -1,0 +1,11 @@
+[package]
+name = "cerebral"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+slope = { path = "../../libraries/slope" }
+[lints]
+workspace = true

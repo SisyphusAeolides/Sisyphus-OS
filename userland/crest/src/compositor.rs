@@ -6,6 +6,7 @@ pub mod tween;
 pub mod gesture;
 pub mod panel;
 pub mod settings;
+pub mod swapchain;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Rectangle {

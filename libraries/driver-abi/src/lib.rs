@@ -3,6 +3,7 @@
 pub mod prometheus;
 pub mod golem;
 pub mod lazarus;
+pub mod membrane;
 
 use core::ffi::c_void;
 

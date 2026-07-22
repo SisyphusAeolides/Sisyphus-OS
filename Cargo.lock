@@ -27,6 +27,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "cerebral"
+version = "0.1.0"
+dependencies = [
+ "slope",
+]
+
+[[package]]
 name = "corinth"
 version = "0.1.0"
 dependencies = [
@@ -66,3 +73,6 @@ version = "0.1.0"
 [[package]]
 name = "slope"
 version = "0.1.0"
+dependencies = [
+ "aether",
+]

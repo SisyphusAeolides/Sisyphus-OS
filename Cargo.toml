@@ -10,7 +10,7 @@ members = [
     "libraries/slope",
     "userland/push",
     "userland/corinth",
-    "userland/crest",
+    "userland/crest", "userland/cerebral",
 ]
 default-members = [
     "core/aether",
