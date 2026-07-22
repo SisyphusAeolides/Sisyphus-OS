@@ -2,13 +2,14 @@ use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll};
 
-use slope::nexus::NexusClient;
+use slope::resonance_plane::{ResonancePlaneClient, NexusOpcode, NexusTelemetry};
 use slope::scheduler::{
     self, PhaseHint, Priority,
 };
 
 const HEAT_CRITICAL: u64 = 850_000;
 const HEAT_EXCITED: u64 = 500_000;
+const CEREBRAL_PLANE_ADDRESS: usize = 0x600_0000_0000;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ReactorState {
@@ -18,7 +19,7 @@ enum ReactorState {
 }
 
 pub struct NexusReactor {
-    client: NexusClient,
+    client: ResonancePlaneClient,
     state: ReactorState,
     local_phase: u16,
     coherence: u16,
@@ -27,9 +28,14 @@ pub struct NexusReactor {
 }
 
 impl NexusReactor {
-    pub const fn new(resonance_capability: u64) -> Self {
+    pub fn new(resonance_capability: u64) -> Self {
+        // SAFETY: The kernel maps the plane at CEREBRAL_PLANE_ADDRESS during process installation.
+        let client = unsafe {
+            ResonancePlaneClient::from_address(CEREBRAL_PLANE_ADDRESS, resonance_capability)
+                .expect("Failed to initialize ResonancePlaneClient")
+        };
         Self {
-            client: NexusClient::new(resonance_capability),
+            client,
             state: ReactorState::Observe,
             local_phase: 0,
             coherence: 768,
@@ -39,7 +45,9 @@ impl NexusReactor {
     }
 
     fn observe(&mut self) {
-        let Ok(telemetry) = self.client.telemetry() else {
+        let _ = self.client.poll_reply();
+
+        let Some(telemetry) = self.client.telemetry() else {
             self.coherence = self.coherence.saturating_sub(8).max(128);
             return;
         };
@@ -64,7 +72,9 @@ impl NexusReactor {
                 self.cooldown_passes = 0;
 
                 if telemetry.generation != self.last_generation {
-                    let _ = self.client.query_stats();
+                    if !self.client.has_pending_command() {
+                        let _ = self.client.submit(NexusOpcode::QueryStats, [0, 0, 0, 0]);
+                    }
                     self.last_generation = telemetry.generation;
                 }
             }
@@ -78,7 +88,9 @@ impl NexusReactor {
                 let mass =
                     0x6000_u16.saturating_add(self.coherence << 4);
 
-                let _ = self.client.set_priority_mass(mass);
+                if !self.client.has_pending_command() {
+                    let _ = self.client.submit(NexusOpcode::SetPriorityMass, [mass as u64, 0, 0, 0]);
+                }
             }
 
             ReactorState::Cooldown => {
@@ -88,7 +100,9 @@ impl NexusReactor {
                 self.cooldown_passes =
                     self.cooldown_passes.saturating_add(1);
 
-                let _ = self.client.set_priority_mass(0x3000);
+                if !self.client.has_pending_command() {
+                    let _ = self.client.submit(NexusOpcode::SetPriorityMass, [0x3000, 0, 0, 0]);
+                }
             }
         }
     }

@@ -1,5 +1,5 @@
 use aether::lockfree::QueueError;
-use aether::nexus_wire::{
+pub use aether::nexus_wire::{
     NexusCommand, NexusOpcode, NexusReply,
     NexusStatus, NexusTelemetry, WireError,
 };

@@ -426,6 +426,30 @@ impl<Memory: ProcessFrameMemory> FrameBackedAddressSpace<Memory> {
         Ok(virtual_address)
     }
 
+    /// Maps the statically allocated ResonancePlane into the user's address space.
+    pub fn install_nexus_plane(
+        &mut self,
+        process: &ProcessImageHandle,
+        _authority: &Capability<'_, ProcessInstallControl>,
+    ) -> Result<u64, FrameBackedError<Memory::Error>> {
+        if self.active || self.process_info(process).is_none() {
+            return Err(FrameBackedError::InvalidState);
+        }
+        let virtual_address = 0x600_0000_0000;
+        let (table, index) = self.ensure_leaf_slot(virtual_address)?;
+        let plane_ptr = crate::nexus_plane::plane() as *const _ as u64;
+        let physical = plane_ptr - crate::mmio::KERNEL_VIRTUAL_BASE as u64 + 0x10_0000;
+        let entry = physical | ENTRY_PRESENT | ENTRY_USER | ENTRY_WRITABLE | ENTRY_NO_EXECUTE;
+        self.memory.write_entry(table, index, entry).map_err(FrameBackedError::Memory)?;
+        self.pages[self.page_count] = PageRecord {
+            frame: PhysicalAddress::new(physical),
+            virtual_address,
+        };
+        self.page_count += 1;
+        self.process_info.owned_frames = self.owned_frame_count;
+        Ok(virtual_address)
+    }
+
     /// Materializes the documented `[argc][argv][envp]` entry block in the
     /// retained user stack and returns the stack pointer to pass to Ring 3.
     pub fn prepare_initial_stack(
