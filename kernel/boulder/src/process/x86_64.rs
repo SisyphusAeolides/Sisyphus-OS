@@ -21,10 +21,17 @@ const ENTRY_NO_EXECUTE: u64 = 1 << 63;
 const USER_PML4_ENTRIES: usize = 256;
 const TABLE_ENTRIES: usize = 512;
 
-pub const MAXIMUM_PROCESS_PAGES: usize = 64;
-pub const MAXIMUM_OWNED_FRAMES: usize = 128;
+pub const MAXIMUM_PROCESS_PAGES: usize = 192;
+pub const MAXIMUM_OWNED_FRAMES: usize = 256;
 pub const INITIAL_USER_STACK_BASE: u64 = 0x0010_0000;
-pub const INITIAL_USER_STACK_POINTER: u64 = INITIAL_USER_STACK_BASE + 0x1000;
+pub const INITIAL_USER_STACK_PAGES: usize = 112;
+// Leave one mapped page below the ABI block so the entry trampoline and the
+// first Rust prologue can push return state without faulting at the boundary.
+const INITIAL_USER_STACK_MAPPING_BASE: u64 =
+    INITIAL_USER_STACK_BASE
+        - ((INITIAL_USER_STACK_PAGES as u64 - 1) * PAGE_SIZE as u64);
+pub const INITIAL_USER_STACK_POINTER: u64 =
+    INITIAL_USER_STACK_BASE + (INITIAL_USER_STACK_PAGES as u64 * PAGE_SIZE as u64);
 
 /// Physical-memory operations required by the process page-table builder.
 ///
@@ -341,8 +348,8 @@ impl<Memory: ProcessFrameMemory> FrameBackedAddressSpace<Memory> {
         self.owned_frame_count
     }
 
-    /// Adds one zeroed, writable, non-executable stack page to a committed
-    /// process while retaining ownership in this backend.
+    /// Adds a fixed 128 KiB zeroed, writable, non-executable stack to a
+    /// committed process while retaining ownership in this backend.
     pub fn install_initial_stack(
         &mut self,
         process: &ProcessImageHandle,
@@ -351,35 +358,111 @@ impl<Memory: ProcessFrameMemory> FrameBackedAddressSpace<Memory> {
         if self.active
             || self.process_info(process).is_none()
             || self.process_info.initial_stack_pointer.is_some()
-            || self.page_count == self.pages.len()
+            || self.page_count + INITIAL_USER_STACK_PAGES > self.pages.len()
         {
             return Err(FrameBackedError::InvalidState);
         }
-        let (table, index) = self.leaf_slot(INITIAL_USER_STACK_BASE)?;
-        let existing = self
-            .memory
-            .read_entry(table, index)
-            .map_err(FrameBackedError::Memory)?;
-        if existing != 0 {
-            return Err(FrameBackedError::MappingConflict);
-        }
 
-        let frame = self.allocate_owned()?;
-        let entry = frame.as_u64() | ENTRY_PRESENT | ENTRY_WRITABLE | ENTRY_USER | ENTRY_NO_EXECUTE;
-        if let Err(error) = self.memory.write_entry(table, index, entry) {
-            return match self.release_last_owned(frame) {
-                Ok(()) => Err(FrameBackedError::Memory(error)),
-                Err(cleanup) => Err(cleanup),
+        let owned_before = self.owned_frame_count;
+        let pages_before = self.page_count;
+        for page in 0..INITIAL_USER_STACK_PAGES {
+            let virtual_address = INITIAL_USER_STACK_MAPPING_BASE
+                + (page as u64 * PAGE_SIZE as u64);
+            let (table, index) = match self.ensure_leaf_slot(virtual_address) {
+                Ok(slot) => slot,
+                Err(error) => {
+                    self.rollback_stack_install(owned_before, pages_before)?;
+                    return Err(error);
+                }
             };
+            let frame = match self.allocate_owned() {
+                Ok(frame) => frame,
+                Err(error) => {
+                    self.rollback_stack_install(owned_before, pages_before)?;
+                    return Err(error);
+                }
+            };
+            let entry =
+                frame.as_u64() | ENTRY_PRESENT | ENTRY_WRITABLE | ENTRY_USER | ENTRY_NO_EXECUTE;
+            if let Err(error) = self.memory.write_entry(table, index, entry) {
+                self.rollback_stack_install(owned_before, pages_before)?;
+                return Err(FrameBackedError::Memory(error));
+            }
+            self.pages[self.page_count] = PageRecord {
+                frame,
+                virtual_address,
+            };
+            self.page_count += 1;
         }
-        self.pages[self.page_count] = PageRecord {
-            frame,
-            virtual_address: INITIAL_USER_STACK_BASE,
-        };
-        self.page_count += 1;
         self.process_info.initial_stack_pointer = Some(INITIAL_USER_STACK_POINTER);
         self.process_info.owned_frames = self.owned_frame_count;
         Ok(INITIAL_USER_STACK_POINTER)
+    }
+
+    /// Materializes the documented `[argc][argv][envp]` entry block in the
+    /// retained user stack and returns the stack pointer to pass to Ring 3.
+    pub fn prepare_initial_stack(
+        &mut self,
+        process: &ProcessImageHandle,
+        argv: &[&[u8]],
+        envp: &[&[u8]],
+    ) -> Result<u64, FrameBackedError<Memory::Error>> {
+        if self.active
+            || self.process_info(process).is_none()
+            || self.process_info.initial_stack_pointer.is_none()
+        {
+            return Err(FrameBackedError::InvalidState);
+        }
+        let word_count = 1usize
+            .checked_add(argv.len())
+            .and_then(|count| count.checked_add(1))
+            .and_then(|count| count.checked_add(envp.len()))
+            .and_then(|count| count.checked_add(1))
+            .ok_or(FrameBackedError::InvalidRange)?;
+        let pointer_bytes = word_count
+            .checked_mul(core::mem::size_of::<u64>())
+            .ok_or(FrameBackedError::InvalidRange)?;
+        let string_bytes = argv
+            .iter()
+            .chain(envp.iter())
+            .try_fold(0usize, |total, value| {
+                total.checked_add(value.len().checked_add(1)?)
+            })
+            .ok_or(FrameBackedError::InvalidRange)?;
+        let stack_bytes = INITIAL_USER_STACK_PAGES * PAGE_SIZE;
+        if pointer_bytes.checked_add(string_bytes).is_none_or(|size| size > stack_bytes) {
+            return Err(FrameBackedError::InvalidRange);
+        }
+
+        let stack_base = INITIAL_USER_STACK_BASE;
+        let mut word_address = stack_base;
+        self.write_stack_word(word_address, argv.len() as u64)?;
+        word_address += 8;
+        let string_start = stack_base + pointer_bytes as u64;
+        let mut string_address = string_start;
+        for value in argv {
+            self.write_stack_word(word_address, string_address)?;
+            word_address += 8;
+            string_address += value.len() as u64 + 1;
+        }
+        self.write_stack_word(word_address, 0)?;
+        word_address += 8;
+        for value in envp {
+            self.write_stack_word(word_address, string_address)?;
+            word_address += 8;
+            string_address += value.len() as u64 + 1;
+        }
+        self.write_stack_word(word_address, 0)?;
+
+        string_address = string_start;
+        for value in argv.iter().chain(envp.iter()) {
+            self.write_stack_bytes(string_address, value)?;
+            string_address += value.len() as u64;
+            self.write_stack_bytes(string_address, &[0])?;
+            string_address += 1;
+        }
+        self.process_info.initial_stack_pointer = Some(stack_base);
+        Ok(stack_base)
     }
 
     /// Retries reclamation after a frame-memory backend reported a release
@@ -451,6 +534,58 @@ impl<Memory: ProcessFrameMemory> FrameBackedAddressSpace<Memory> {
             .map_err(FrameBackedError::Memory)?;
         self.owned_frames[index] = PhysicalAddress::new(0);
         self.owned_frame_count = index;
+        Ok(())
+    }
+
+    fn rollback_stack_install(
+        &mut self,
+        owned_before: usize,
+        pages_before: usize,
+    ) -> Result<(), FrameBackedError<Memory::Error>> {
+        while self.owned_frame_count > owned_before {
+            let frame = self.owned_frames[self.owned_frame_count - 1];
+            self.release_last_owned(frame)?;
+        }
+        self.pages[pages_before..self.page_count].fill(PageRecord::EMPTY);
+        self.page_count = pages_before;
+        Ok(())
+    }
+
+    fn write_stack_word(
+        &mut self,
+        address: u64,
+        value: u64,
+    ) -> Result<(), FrameBackedError<Memory::Error>> {
+        self.write_stack_bytes(address, &value.to_le_bytes())
+    }
+
+    fn write_stack_bytes(
+        &mut self,
+        address: u64,
+        bytes: &[u8],
+    ) -> Result<(), FrameBackedError<Memory::Error>> {
+        let mut copied = 0usize;
+        while copied < bytes.len() {
+            let current = address
+                .checked_add(copied as u64)
+                .ok_or(FrameBackedError::InvalidRange)?;
+            let page_index = self
+                .pages
+                .iter()
+                .take(self.page_count)
+                .position(|page| {
+                    current >= page.virtual_address
+                        && current < page.virtual_address + PAGE_SIZE as u64
+                })
+                .ok_or(FrameBackedError::InvalidRange)?;
+            let page = self.pages[page_index];
+            let offset = (current - page.virtual_address) as usize;
+            let length = (PAGE_SIZE - offset).min(bytes.len() - copied);
+            self.memory
+                .write_bytes(page.frame, offset, &bytes[copied..copied + length])
+                .map_err(FrameBackedError::Memory)?;
+            copied += length;
+        }
         Ok(())
     }
 
@@ -905,6 +1040,7 @@ const fn next_generation(generation: u32) -> u32 {
 
 #[cfg(test)]
 mod tests {
+    use alloc::boxed::Box;
     use blacklab::oureboros::{
         FractalCatalog, FractalClass, FractalRecipe, FractalSeed, MINIMAL_X86_64_ELF_BYTES,
         TargetArchitecture, measure_recipe,
@@ -1036,6 +1172,18 @@ mod tests {
         }
     }
 
+    impl<const FRAMES: usize> ProcessFrameMemory for Box<TestMemory<FRAMES>> {
+        type Error = TestMemoryError;
+
+        fn allocate_zeroed(&mut self) -> Result<PhysicalAddress, Self::Error> { (**self).allocate_zeroed() }
+        fn release(&mut self, frame: PhysicalAddress) -> Result<(), Self::Error> { (**self).release(frame) }
+        fn read_entry(&self, table: PhysicalAddress, index: usize) -> Result<u64, Self::Error> { (**self).read_entry(table, index) }
+        fn write_entry(&mut self, table: PhysicalAddress, index: usize, value: u64) -> Result<(), Self::Error> { (**self).write_entry(table, index, value) }
+        fn write_bytes(&mut self, frame: PhysicalAddress, offset: usize, bytes: &[u8]) -> Result<(), Self::Error> { (**self).write_bytes(frame, offset, bytes) }
+        fn bytes_equal(&self, frame: PhysicalAddress, offset: usize, bytes: &[u8]) -> Result<bool, Self::Error> { (**self).bytes_equal(frame, offset, bytes) }
+        fn bytes_zero(&self, frame: PhysicalAddress, offset: usize, length: usize) -> Result<bool, Self::Error> { (**self).bytes_zero(frame, offset, length) }
+    }
+
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     enum TestMemoryError {
         Exhausted,
@@ -1066,7 +1214,7 @@ mod tests {
 
     #[test]
     fn builds_hardware_entries_and_reclaims_every_owned_frame() {
-        let mut memory = TestMemory::<16>::new();
+        let mut memory = Box::new(TestMemory::<176>::new());
         let inherited = 0x1234_5000 | ENTRY_PRESENT | ENTRY_WRITABLE;
         memory
             .write_entry(PhysicalAddress::new(0), 256, inherited)
@@ -1097,11 +1245,19 @@ mod tests {
             Ok(INITIAL_USER_STACK_POINTER)
         );
         let stacked = backend.process_info(&installed.process).unwrap();
-        assert_eq!(stacked.owned_frames, 6);
+        assert_eq!(stacked.owned_frames, 5 + INITIAL_USER_STACK_PAGES);
         assert_eq!(
             stacked.initial_stack_pointer,
             Some(INITIAL_USER_STACK_POINTER)
         );
+        let stack_pointer = backend
+            .prepare_initial_stack(
+                &installed.process,
+                &[b"push"],
+                &[b"SISYPHUS_PROCESS=push"],
+            )
+            .unwrap();
+        assert_eq!(stack_pointer, INITIAL_USER_STACK_BASE);
 
         let p3 = backend.memory().read_entry(root, 0).unwrap() & PAGE_ADDRESS_MASK;
         let p2 = backend
@@ -1116,7 +1272,10 @@ mod tests {
             & PAGE_ADDRESS_MASK;
         let leaf = backend
             .memory()
-            .read_entry(PhysicalAddress::new(p1), 1)
+            .read_entry(
+                PhysicalAddress::new(p1),
+                1,
+            )
             .unwrap();
         assert_eq!(
             leaf & (ENTRY_PRESENT | ENTRY_USER),

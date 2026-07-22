@@ -193,9 +193,12 @@ CPU-proportional NUMA work partitions. The kernel advertises only implemented
 features, so required capabilities fail closed while optional capabilities are
 reported as unavailable. Slope also centralizes argv/environment collapse and
 Kairos setup in `ProcessRuntime` for binaries using the process-entry stack ABI.
-The current PID 1 entry still uses its existing minimal stack contract; adopting
-the canonical runtime entry requires Boulder to populate argv/envp and pass the
-entry stack pointer explicitly. Kairos's internal object table uses
+Boulder now allocates a retained multi-page user stack, materializes
+`[argc][argv][envp]` with C strings, and passes its base through the Ring 3
+entry trampoline. The remaining integration seam is the kernel ABI-reply
+user-copy path; until that is corrected, Push reports the accepted entry ABI
+and continues its bounded supervisor loop without claiming topology negotiation
+succeeded. Kairos's internal object table uses
 non-cloneable, generation-checked handles with rights attenuation and opaque
 payload handles. Raw-pointer message transport and mutable global profile
 publication remain disabled pending per-process handle tables and

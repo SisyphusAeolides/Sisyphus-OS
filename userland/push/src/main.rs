@@ -6,6 +6,17 @@ use push::aegis::{BrokerError, HardwareCapabilityBroker, evaluate_knot};
 use push::gordian::{CapabilityHandle, CapabilityKind, service_knot};
 use push::service::{FailureReason, ServiceId, Supervisor, SupervisorAction};
 
+core::arch::global_asm!(
+    ".section .text._start,\"ax\"",
+    ".global _start",
+    ".type _start,@function",
+    "_start:",
+    "mov %rsp, %rdi",
+    "jmp push_start_with_stack",
+    ".size _start, .-_start",
+    options(att_syntax)
+);
+
 struct UnavailableBroker;
 
 impl HardwareCapabilityBroker for UnavailableBroker {
@@ -19,8 +30,11 @@ impl HardwareCapabilityBroker for UnavailableBroker {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn _start() -> ! {
+pub extern "C" fn push_start_with_stack(stack_ptr: *const u8) -> ! {
     push::push_log!("[PID 1] measured push engine online");
+    let _ = stack_ptr;
+    push::push_log!("[PID 1] argv/envp ABI accepted; Kairos runtime handoff pending kernel user-copy fix");
+
     let mut supervisor = Supervisor::new();
     let mut broker = UnavailableBroker;
     loop {

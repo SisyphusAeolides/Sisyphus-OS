@@ -6,8 +6,12 @@ use crate::kairos::{
 };
 
 pub const DEFAULT_REQUIRED_FEATURES: u64 =
-    features::SYSCALL_BASIC | features::ASYNC_IO | features::THERMAL_PAGE;
-pub const DEFAULT_OPTIONAL_FEATURES: u64 = features::OFFLOAD_DISPATCH | features::HOLOGRAM_FS;
+    features::SYSCALL_BASIC;
+pub const DEFAULT_OPTIONAL_FEATURES: u64 = features::ASYNC_IO
+    | features::THERMAL_PAGE
+    | features::KAIROS_PAGE
+    | features::OFFLOAD_DISPATCH
+    | features::HOLOGRAM_FS;
 pub const DEFAULT_WORK_UNITS: usize = 1024;
 
 pub struct ProcessRuntime {

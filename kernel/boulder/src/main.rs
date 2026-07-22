@@ -26,7 +26,9 @@ use boulder::mmio::{
     direct_map_address, kernel_mmio,
 };
 use boulder::process::install::UserAddressSpaceBackend;
-use boulder::process::x86_64::{DirectMapFrameMemory, FrameBackedAddressSpace};
+use boulder::process::x86_64::{
+    DirectMapFrameMemory, FrameBackedAddressSpace, INITIAL_USER_STACK_PAGES,
+};
 use boulder::serial::SerialPort;
 use boulder::shim::{AbyssAllocator, DriverHost, DriverServices, IrqService, MmioService};
 use core::alloc::{GlobalAlloc, Layout};
@@ -687,10 +689,21 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
         let _ = writeln!(serial, "Boulder: PID1 retained ownership failed");
         halt();
     }
-    let pid1_stack = match process_backend.install_initial_stack(&pid1, &process_install) {
+    let _stack_top = match process_backend.install_initial_stack(&pid1, &process_install) {
         Ok(stack) => stack,
         Err(error) => {
             let _ = writeln!(serial, "Boulder: PID1 stack installation failed: {error:?}");
+            halt();
+        }
+    };
+    let pid1_stack = match process_backend.prepare_initial_stack(
+        &pid1,
+        &[b"push"],
+        &[b"SISYPHUS_PROCESS=push", b"SISYPHUS_ABI=1"],
+    ) {
+        Ok(stack) => stack,
+        Err(error) => {
+            let _ = writeln!(serial, "Boulder: PID1 argv/envp preparation failed: {error:?}");
             halt();
         }
     };
@@ -703,7 +716,8 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
         halt();
     };
     if pid1_info.initial_stack_pointer != Some(pid1_stack)
-        || pid1_info.owned_frames != blacklab.pid1_owned_frames + 1
+        || pid1_info.owned_frames
+            != blacklab.pid1_owned_frames + INITIAL_USER_STACK_PAGES
     {
         let _ = writeln!(
             serial,
@@ -726,7 +740,7 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
     );
     let _ = writeln!(
         serial,
-        "Boulder: PID1 page-table root={:#x}, frames={}, segments={}, retained=true, cr3_activation=validated, launch=pending",
+        "Boulder: PID1 page-table root={:#x}, frames={}, segments={}, retained=true, cr3_activation=validated, argv_envp=prepared, launch=pending",
         pid1_root, pid1_info.owned_frames, pid1_info.segment_count,
     );
 
