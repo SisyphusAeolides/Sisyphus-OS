@@ -426,28 +426,56 @@ impl<Memory: ProcessFrameMemory> FrameBackedAddressSpace<Memory> {
         Ok(virtual_address)
     }
 
-    /// Maps the statically allocated ResonancePlane into the user's address space.
+    pub const CEREBRAL_INGRESS_ADDRESS: u64 = 0x600_0000_0000;
+    pub const CEREBRAL_OBSERVATION_ADDRESS: u64 = 0x600_0000_1000;
+
+    /// Maps the statically allocated split Resonance pages into the user's address space.
     pub fn install_nexus_plane(
         &mut self,
         process: &ProcessImageHandle,
         _authority: &Capability<'_, ProcessInstallControl>,
-    ) -> Result<u64, FrameBackedError<Memory::Error>> {
+    ) -> Result<(), FrameBackedError<Memory::Error>> {
         if self.active || self.process_info(process).is_none() {
             return Err(FrameBackedError::InvalidState);
         }
-        let virtual_address = 0x600_0000_0000;
-        let (table, index) = self.ensure_leaf_slot(virtual_address)?;
-        let plane_ptr = crate::nexus_plane::plane() as *const _ as u64;
-        let physical = plane_ptr - crate::mmio::KERNEL_VIRTUAL_BASE as u64 + 0x10_0000;
-        let entry = physical | ENTRY_PRESENT | ENTRY_USER | ENTRY_WRITABLE | ENTRY_NO_EXECUTE;
-        self.memory.write_entry(table, index, entry).map_err(FrameBackedError::Memory)?;
+
+        // Ingress Page
+        let ingress_addr = Self::CEREBRAL_INGRESS_ADDRESS;
+        let (table_i, index_i) = self.ensure_leaf_slot(ingress_addr)?;
+        let ingress_ptr = crate::nexus_plane::ingress() as *const _ as u64;
+        let ingress_frame = PhysicalAddress::new(ingress_ptr - crate::mmio::KERNEL_VIRTUAL_BASE as u64 + 0x10_0000);
+        let ingress_entry =
+            ingress_frame.as_u64()
+                | ENTRY_PRESENT
+                | ENTRY_USER
+                | ENTRY_WRITABLE
+                | ENTRY_NO_EXECUTE;
+        self.memory.write_entry(table_i, index_i, ingress_entry).map_err(FrameBackedError::Memory)?;
         self.pages[self.page_count] = PageRecord {
-            frame: PhysicalAddress::new(physical),
-            virtual_address,
+            frame: ingress_frame,
+            virtual_address: ingress_addr,
         };
         self.page_count += 1;
+
+        // Observation Page
+        let obs_addr = Self::CEREBRAL_OBSERVATION_ADDRESS;
+        let (table_o, index_o) = self.ensure_leaf_slot(obs_addr)?;
+        let obs_ptr = crate::nexus_plane::observation() as *const _ as u64;
+        let observation_frame = PhysicalAddress::new(obs_ptr - crate::mmio::KERNEL_VIRTUAL_BASE as u64 + 0x10_0000);
+        let observation_entry =
+            observation_frame.as_u64()
+                | ENTRY_PRESENT
+                | ENTRY_USER
+                | ENTRY_NO_EXECUTE;
+        self.memory.write_entry(table_o, index_o, observation_entry).map_err(FrameBackedError::Memory)?;
+        self.pages[self.page_count] = PageRecord {
+            frame: observation_frame,
+            virtual_address: obs_addr,
+        };
+        self.page_count += 1;
+
         self.process_info.owned_frames = self.owned_frame_count;
-        Ok(virtual_address)
+        Ok(())
     }
 
     /// Materializes the documented `[argc][argv][envp]` entry block in the

@@ -4,9 +4,8 @@ use core::sync::atomic::{
 
 use aether::blacklab_vm::LabMetrics;
 use aether::event_horizon::EVENT_HORIZON_PROGRAM;
-use aether::lockfree::QueueError;
-use aether::resonance_plane::{
-    PlaneInitError, ResonancePlane,
+use aether::resonance_split::{
+    ResonanceIngressPage, ResonanceObservationPage,
 };
 use aether::resonance_policy::ResonancePolicy;
 
@@ -20,27 +19,25 @@ use crate::nexus_runtime;
 
 pub const COMMAND_BUDGET_PER_HEARTBEAT: usize = 16;
 
-static RESONANCE_PLANE: ResonancePlane =
-    ResonancePlane::new();
+static INGRESS_PAGE: ResonanceIngressPage = ResonanceIngressPage::new();
+static OBSERVATION_PAGE: ResonanceObservationPage = ResonanceObservationPage::new();
 
-static LAB_CAPSULE: LabCapsule =
-    LabCapsule::new();
+static LAB_CAPSULE: LabCapsule = LabCapsule::new();
 
-static LAST_COLLAPSES: AtomicU64 =
-    AtomicU64::new(0);
+static LAST_COLLAPSES: AtomicU64 = AtomicU64::new(0);
+
+static mut PRIVATE_CURSOR: u64 = 0;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PlaneDriverInitError {
-    Plane(PlaneInitError),
     Capsule(CapsuleError),
 }
 
 pub fn initialize(
     authority: &Capability<'_, LearningRight>,
 ) -> Result<(), PlaneDriverInitError> {
-    RESONANCE_PLANE
-        .initialize()
-        .map_err(PlaneDriverInitError::Plane)?;
+    INGRESS_PAGE.initialize(1);
+    OBSERVATION_PAGE.initialize(1);
 
     LAB_CAPSULE
         .initialize(
@@ -69,7 +66,7 @@ pub(crate) fn drive_once(
 
 fn evaluate_policy_and_publish(wall_tick: u64) {
     let sequence =
-        RESONANCE_PLANE.epoch().wrapping_add(1);
+        OBSERVATION_PAGE.epoch().wrapping_add(1);
 
     let telemetry =
         nexus_runtime::telemetry(sequence, wall_tick);
@@ -101,9 +98,7 @@ fn evaluate_policy_and_publish(wall_tick: u64) {
         heat: telemetry.heat.min(i64::MAX as u64) as i64,
 
         queue_pressure:
-            RESONANCE_PLANE
-                .command_depth_approximate()
-                .min(i64::MAX as usize) as i64,
+            0,
 
         collapse_rate:
             collapse_delta.min(i64::MAX as u64) as i64,
@@ -111,9 +106,7 @@ fn evaluate_policy_and_publish(wall_tick: u64) {
         phase_drift: i64::from(phase_drift),
 
         replay_pressure:
-            RESONANCE_PLANE
-                .dropped_commands()
-                .min(i64::MAX as u64) as i64,
+            0,
 
         coherence:
             1024_i64.saturating_sub(i64::from(phase_drift)),
@@ -130,24 +123,28 @@ fn evaluate_policy_and_publish(wall_tick: u64) {
         );
     }
 
-    RESONANCE_PLANE.publish_telemetry(&telemetry);
+    OBSERVATION_PAGE.publish_telemetry(&telemetry);
 }
 
-pub fn plane() -> &'static ResonancePlane {
-    &RESONANCE_PLANE
+pub fn ingress() -> &'static ResonanceIngressPage {
+    &INGRESS_PAGE
+}
+
+pub fn observation() -> &'static ResonanceObservationPage {
+    &OBSERVATION_PAGE
 }
 
 fn drain_commands(wall_tick: u64) {
     for _ in 0..COMMAND_BUDGET_PER_HEARTBEAT {
-        let command = match RESONANCE_PLANE.take_command() {
-            Ok(command) => command,
-            Err(QueueError::Empty) => break,
-            Err(_) => break,
+        let cursor_ref = unsafe { &mut *core::ptr::addr_of_mut!(PRIVATE_CURSOR) };
+        let command = INGRESS_PAGE.take_new(cursor_ref);
+        let Some(command) = command else {
+            break;
         };
 
         let reply =
             nexus_runtime::control(&command, wall_tick);
 
-        let _ = RESONANCE_PLANE.publish_reply(reply);
+        OBSERVATION_PAGE.publish_reply(&reply);
     }
 }

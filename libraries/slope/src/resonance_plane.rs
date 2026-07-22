@@ -3,7 +3,9 @@ pub use aether::nexus_wire::{
     NexusCommand, NexusOpcode, NexusReply,
     NexusStatus, NexusTelemetry, WireError,
 };
-use aether::resonance_plane::ResonancePlane;
+use aether::resonance_split::{
+    ResonanceIngressPage, ResonanceObservationPage,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PendingCommand {
@@ -26,7 +28,8 @@ pub enum PlaneClientError {
 }
 
 pub struct ResonancePlaneClient {
-    plane: &'static ResonancePlane,
+    ingress: &'static ResonanceIngressPage,
+    observation: &'static ResonanceObservationPage,
     capability: u64,
     next_sequence: u64,
     pending: Option<u64>,
@@ -35,29 +38,36 @@ pub struct ResonancePlaneClient {
 impl ResonancePlaneClient {
     /// # Safety
     ///
-    /// `address` must be the process's mapped ResonancePlane page and remain
-    /// mapped for the process lifetime.
-    pub unsafe fn from_address(
-        address: usize,
+    /// `ingress_address` and `observation_address` must be the process's mapped
+    /// Resonance split pages and remain mapped for the process lifetime.
+    pub unsafe fn from_addresses(
+        ingress_address: usize,
+        observation_address: usize,
         capability: u64,
     ) -> Result<Self, PlaneClientError> {
-        if address == 0 {
+        if ingress_address == 0 || observation_address == 0 {
             return Err(PlaneClientError::NullAddress);
         }
 
-        if address % core::mem::align_of::<ResonancePlane>() != 0 {
+        if ingress_address % core::mem::align_of::<ResonanceIngressPage>() != 0 {
+            return Err(PlaneClientError::MisalignedAddress);
+        }
+
+        if observation_address % core::mem::align_of::<ResonanceObservationPage>() != 0 {
             return Err(PlaneClientError::MisalignedAddress);
         }
 
         // SAFETY: Established by the caller's mapping contract.
-        let plane = unsafe { &*(address as *const ResonancePlane) };
+        let ingress = unsafe { &*(ingress_address as *const ResonanceIngressPage) };
+        let observation = unsafe { &*(observation_address as *const ResonanceObservationPage) };
 
-        if !plane.is_compatible() {
+        if !ingress.compatible() || !observation.compatible() {
             return Err(PlaneClientError::IncompatiblePlane);
         }
 
         Ok(Self {
-            plane,
+            ingress,
+            observation,
             capability,
             next_sequence: 1,
             pending: None,
@@ -65,7 +75,7 @@ impl ResonancePlaneClient {
     }
 
     pub fn telemetry(&self) -> Option<NexusTelemetry> {
-        self.plane.telemetry(8)
+        self.observation.telemetry()
     }
 
     pub fn submit(
@@ -88,9 +98,7 @@ impl ResonancePlaneClient {
             arguments,
         );
 
-        self.plane
-            .submit_command(command)
-            .map_err(PlaneClientError::Queue)?;
+        self.ingress.submit(&command);
 
         self.pending = Some(sequence);
 
@@ -104,20 +112,9 @@ impl ResonancePlaneClient {
             return Ok(None);
         };
 
-        let reply = match self.plane.take_reply() {
-            Ok(reply) => reply,
-            Err(QueueError::Empty) => return Ok(None),
-            Err(error) => {
-                return Err(PlaneClientError::Queue(error));
-            }
+        let Some(reply) = self.observation.reply(expected) else {
+            return Ok(None);
         };
-
-        if reply.sequence != expected {
-            return Err(PlaneClientError::UnexpectedReply {
-                expected,
-                observed: reply.sequence,
-            });
-        }
 
         let status = reply
             .validate(expected)
@@ -137,10 +134,10 @@ impl ResonancePlaneClient {
     }
 
     pub fn dropped_commands(&self) -> u64 {
-        self.plane.dropped_commands()
+        0
     }
 
     pub fn dropped_replies(&self) -> u64 {
-        self.plane.dropped_replies()
+        0
     }
 }

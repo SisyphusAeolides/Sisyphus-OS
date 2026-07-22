@@ -9,7 +9,8 @@ use slope::scheduler::{
 
 const HEAT_CRITICAL: u64 = 850_000;
 const HEAT_EXCITED: u64 = 500_000;
-const CEREBRAL_PLANE_ADDRESS: usize = 0x600_0000_0000;
+const CEREBRAL_INGRESS_ADDRESS: usize = 0x600_0000_0000;
+const CEREBRAL_OBSERVATION_ADDRESS: usize = 0x600_0000_1000;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ReactorState {
@@ -29,10 +30,14 @@ pub struct NexusReactor {
 
 impl NexusReactor {
     pub fn new(resonance_capability: u64) -> Self {
-        // SAFETY: The kernel maps the plane at CEREBRAL_PLANE_ADDRESS during process installation.
+        // SAFETY: The kernel maps the ingress and observation pages at these addresses during process installation.
         let client = unsafe {
-            ResonancePlaneClient::from_address(CEREBRAL_PLANE_ADDRESS, resonance_capability)
-                .expect("Failed to initialize ResonancePlaneClient")
+            ResonancePlaneClient::from_addresses(
+                CEREBRAL_INGRESS_ADDRESS,
+                CEREBRAL_OBSERVATION_ADDRESS,
+                resonance_capability,
+            )
+            .expect("Failed to initialize ResonancePlaneClient")
         };
         Self {
             client,
