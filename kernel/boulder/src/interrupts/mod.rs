@@ -4,6 +4,8 @@ mod idt;
 mod ioapic;
 mod irq;
 mod pic;
+pub mod neuromorphic;
+pub mod synaptic;
 
 use core::fmt::Write;
 use core::sync::atomic::{AtomicUsize, Ordering};

@@ -1,5 +1,6 @@
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SurfaceId(pub u64);
+pub mod riemann;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Rectangle {

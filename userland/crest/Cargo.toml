@@ -9,6 +9,7 @@ rust-version.workspace = true
 os-bin = []
 
 [dependencies]
+libm = "0.2.16"
 slope = { path = "../../libraries/slope" }
 
 [lib]

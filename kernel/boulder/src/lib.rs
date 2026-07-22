@@ -1,4 +1,5 @@
 #![no_std]
+extern crate alloc;
 
 pub mod aether;
 pub mod arch;
@@ -8,6 +9,7 @@ pub mod capability;
 pub mod cpu;
 pub mod drivers;
 pub mod fabric;
+pub mod fs;
 pub mod hw;
 pub mod ignition;
 pub mod interrupts;
@@ -23,3 +25,8 @@ pub mod serial;
 pub mod shim;
 pub mod sync;
 pub mod syscalls;
+pub mod ouroboros;
+pub mod tartarus_deep;
+pub mod thermogenesis;
+pub mod chronovore;
+pub mod fabric_weave;

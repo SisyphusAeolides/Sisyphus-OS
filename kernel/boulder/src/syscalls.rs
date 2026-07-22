@@ -1,5 +1,5 @@
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-
+pub mod spectral_router;
 #[cfg(target_os = "none")]
 use crate::arch::x86_64::active_page_table_root;
 #[cfg(target_os = "none")]
