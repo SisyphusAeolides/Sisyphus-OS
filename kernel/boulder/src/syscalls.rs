@@ -112,11 +112,32 @@ extern "C" fn boulder_syscall_dispatch(frame: *mut SyscallFrame) {
         grimoire::SYS_WAIT => wait_from_user(frame.arguments),
         grimoire::SYS_DISP_QUERY => kairos_query_to_user(frame.arguments),
         grimoire::SYS_DISP_LEASE => kairos_abi_to_user(frame.arguments),
-        id @ crate::quantum_nexus::sys::SYS_NEXUS_ENTANGLE..=crate::quantum_nexus::sys::SYS_NEXUS_CONTROL => {
+        grimoire::SYS_NEXUS_TELEMETRY => {
+            nexus_telemetry_to_user(frame.arguments)
+        }
+
+        grimoire::SYS_NEXUS_CONTROL => {
+            nexus_control_from_user(frame.arguments)
+        }
+
+        id @ grimoire::SYS_NEXUS_ENTANGLE
+            ..=grimoire::SYS_NEXUS_EXPERIMENT =>
+        {
+            // Compatibility path for the existing scalar conduits.
             let mut thermal = crate::quantum_nexus::ThermalBudget;
-            match crate::quantum_nexus::sys::dispatch(id, frame.arguments[0] as usize, frame.arguments[1] as usize, frame.arguments[2] as usize, frame.arguments[3] as usize, frame.arguments[4] as usize, frame.arguments[5] as usize, &mut thermal) {
-                Ok(v) => v as isize,
-                Err(_) => -1, // Simple error mapping
+
+            match crate::quantum_nexus::sys::dispatch(
+                id,
+                frame.arguments[0] as usize,
+                frame.arguments[1] as usize,
+                frame.arguments[2] as usize,
+                frame.arguments[3] as usize,
+                frame.arguments[4] as usize,
+                frame.arguments[5] as usize,
+                &mut thermal,
+            ) {
+                Ok(value) => value as isize,
+                Err(_) => ERROR_INVALID_ARGUMENT,
             }
         }
         _ => ERROR_NOT_IMPLEMENTED,
@@ -431,6 +452,66 @@ enum UserCopyError {
     HugePageUnsupported,
     #[cfg(target_os = "none")]
     UnmappedPhysicalMemory,
+}
+
+#[cfg(target_os = "none")]
+fn nexus_control_from_user(arguments: [u64; 6]) -> isize {
+    use aether::nexus_wire::{
+        NexusCommand, NexusReply,
+    };
+    use crate::arch::{Active, Architecture};
+
+    if arguments[2] != core::mem::size_of::<NexusCommand>() as u64
+        || arguments[3] != core::mem::size_of::<NexusReply>() as u64
+    {
+        return ERROR_INVALID_ARGUMENT;
+    }
+
+    let mut command = NexusCommand::ZERO;
+
+    // SAFETY: NexusCommand contains only integer fields and initialized arrays.
+    // The byte slice covers the complete 64-byte wire object.
+    let command_bytes = unsafe {
+        core::slice::from_raw_parts_mut(
+            (&mut command as *mut NexusCommand).cast::<u8>(),
+            core::mem::size_of::<NexusCommand>(),
+        )
+    };
+
+    if copy_from_user(arguments[0], command_bytes).is_err() {
+        return ERROR_BAD_ADDRESS;
+    }
+
+    let wall_tick = Active::counter_sample();
+    let reply = crate::nexus_runtime::control(&command, wall_tick);
+
+    if copy_value_to_user(arguments[1], &reply).is_err() {
+        return ERROR_BAD_ADDRESS;
+    }
+
+    0
+}
+
+#[cfg(target_os = "none")]
+fn nexus_telemetry_to_user(arguments: [u64; 6]) -> isize {
+    use aether::nexus_wire::NexusTelemetry;
+    use crate::arch::{Active, Architecture};
+
+    if arguments[1] != core::mem::size_of::<NexusTelemetry>() as u64 {
+        return ERROR_INVALID_ARGUMENT;
+    }
+
+    let sequence = arguments[2];
+    let telemetry = crate::nexus_runtime::telemetry(
+        sequence,
+        Active::counter_sample(),
+    );
+
+    if copy_value_to_user(arguments[0], &telemetry).is_err() {
+        return ERROR_BAD_ADDRESS;
+    }
+
+    core::mem::size_of::<NexusTelemetry>() as isize
 }
 
 #[cfg(test)]
