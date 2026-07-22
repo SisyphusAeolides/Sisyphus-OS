@@ -20,6 +20,7 @@ pub mod thermogenesis;
 pub mod time;
 pub mod capability;
 pub mod scheduler;
+pub mod nexus;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SyscallError(pub isize);
