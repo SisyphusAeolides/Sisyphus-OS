@@ -8,3 +8,4 @@ pub mod grimoire;
 pub mod nexus_wire;
 pub mod lockfree;
 pub mod resonance_plane;
+pub mod constellation;
