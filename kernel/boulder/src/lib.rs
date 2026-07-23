@@ -27,6 +27,7 @@ pub mod memory;
 pub mod mirage;
 pub mod mmio;
 pub mod module;
+pub mod nexus_commit;
 pub mod nexus_deferred;
 pub mod nexus_gateway;
 pub mod nexus_matrix;

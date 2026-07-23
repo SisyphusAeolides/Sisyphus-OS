@@ -462,6 +462,19 @@ impl<
         Ok(slot)
     }
 
+    pub fn rephase(&mut self, target_phase: u16) -> Result<u16, MatrixError> {
+        if target_phase >= MATRIX_PHASE_BINS {
+            return Err(MatrixError::InvalidArgument);
+        }
+
+        let previous = self.global_phase;
+        self.global_phase = target_phase;
+
+        self.generation = self.generation.wrapping_add(1).max(1);
+
+        Ok(previous)
+    }
+
     fn live_pairs(&self) -> u32 {
         self.pairs
             .iter()

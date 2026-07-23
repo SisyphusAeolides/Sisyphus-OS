@@ -1,8 +1,10 @@
 use core::sync::atomic::{AtomicBool, Ordering};
 
+use crate::nexus_commit::{CommitError, NexusCommitEngine, apply_prepared};
+use aether::effect_program::{EffectIntent, EffectKind, EffectProgram};
 use aether::holographic::HolographicTree;
 use aether::nexus_wire::{NexusCommand, NexusOpcode, NexusReply, NexusStatus, NexusTelemetry};
-use aether::resonance_policy::ResonancePolicy;
+use aether::resonance_policy::{POLICY_REPHASE, ResonancePolicy};
 
 use crate::capability::{Capability, ResonanceRight};
 use crate::continuity_vault::{CheckpointId, ContinuityVault};
@@ -45,6 +47,8 @@ static HOLOGRAM: SpinLock<HolographicTree<MATRIX_HOLOGRAM_LEAVES, MATRIX_HOLOGRA
 static LAST_CHECKPOINT: SpinLock<Option<CheckpointId>> = SpinLock::new(None);
 
 static GATEWAY: KernelGateway = KernelGateway::new(0, 0x51_4e_45_58_55_53_21);
+
+static COMMIT_ENGINE: NexusCommitEngine<1, 16> = NexusCommitEngine::new(0);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum InitializeError {
@@ -169,12 +173,107 @@ pub fn telemetry(sequence: u64, _wall_tick: u64) -> NexusTelemetry {
     telemetry
 }
 
-pub fn apply_policy(policy: ResonancePolicy, wall_tick: u64) {
-    if !READY.load(Ordering::Acquire) {
-        return;
+pub fn policy_effects(
+    policy: ResonancePolicy,
+    generation: u32,
+    state_root: u64,
+) -> EffectProgram<4> {
+    let mut program = EffectProgram::new(generation, state_root, policy.heat_ceiling);
+
+    let _ = program.push(EffectIntent::new(
+        EffectKind::SetCollapseThreshold,
+        0,
+        [policy.collapse_threshold, 0, 0, 0],
+    ));
+
+    let _ = program.push(EffectIntent::new(
+        EffectKind::SetPriorityMass,
+        1 << 0,
+        [u64::from(policy.priority_mass), 0, 0, 0],
+    ));
+
+    if policy.flags & POLICY_REPHASE != 0 {
+        let _ = program.push(EffectIntent::new(
+            EffectKind::Rephase,
+            (1 << 0) | (1 << 1),
+            [u64::from(policy.target_phase), 0, 0, 0],
+        ));
     }
 
-    MATRIX.lock().apply_policy(policy, wall_tick);
+    program.seal()
+}
+
+pub fn apply_policy(policy: ResonancePolicy, wall_tick: u64) -> Result<(), CommitError> {
+    if !READY.load(Ordering::Acquire) {
+        return Ok(());
+    }
+
+    let mut matrix = MATRIX.lock();
+    let mut thermal_guard = THERMAL.lock();
+
+    let Some(thermal) = thermal_guard.as_mut() else {
+        return Ok(());
+    };
+
+    let stats_before = matrix.stats();
+    let root_before = HOLOGRAM.lock().root();
+
+    let program = policy_effects(policy, stats_before.generation, root_before);
+
+    let prepared = program
+        .prepare(stats_before.generation, root_before, thermal.current_heat())
+        .map_err(CommitError::Effects)?;
+
+    let online_cpu_count = 1_usize;
+    let required_cpus = usize::from(online_cpu_count).max(1);
+
+    let ticket = COMMIT_ENGINE.begin(&prepared, required_cpus)?;
+
+    let current_cpu_index = 0;
+    COMMIT_ENGINE.acknowledge(current_cpu_index, ticket)?;
+
+    if !COMMIT_ENGINE.ready(ticket)? {
+        return Ok(());
+    }
+
+    let _checkpoint = checkpoint_runtime(&matrix, thermal, wall_tick);
+
+    match apply_prepared(&mut matrix, thermal, &prepared, wall_tick) {
+        Ok(()) => {
+            let root_after = matrix
+                .refresh_hologram(&mut HOLOGRAM.lock())
+                .unwrap_or(root_before);
+            let stats_after = matrix.stats();
+
+            let receipt = COMMIT_ENGINE.finalize_success(
+                ticket,
+                &prepared,
+                root_before,
+                root_after,
+                stats_before.generation,
+                stats_after.generation,
+                wall_tick,
+            )?;
+
+            crate::nexus_plane::observation().publish_witness_root(receipt.witness_root);
+            Ok(())
+        }
+
+        Err(error) => {
+            rollback_latest(&mut matrix, thermal);
+
+            let _ = COMMIT_ENGINE.finalize_abort(
+                ticket,
+                &prepared,
+                root_before,
+                stats_before.generation,
+                wall_tick,
+                true,
+            );
+
+            Err(error)
+        }
+    }
 }
 
 pub fn heartbeat_batch(wall_tick: u64, batch_size: u64) {
@@ -236,7 +335,7 @@ pub fn chronicle_is_valid() -> bool {
     GATEWAY.chronicle_is_valid()
 }
 
-pub fn continuity_state() -> (u64, u64) {
+pub fn continuity_state() -> (u64, u64, u64) {
     let root = HOLOGRAM.lock().root();
 
     let checkpoint_generation = match *LAST_CHECKPOINT.lock() {
@@ -244,7 +343,11 @@ pub fn continuity_state() -> (u64, u64) {
         None => 0,
     };
 
-    (root, checkpoint_generation)
+    (
+        root,
+        checkpoint_generation as u64,
+        COMMIT_ENGINE.witness_root(),
+    )
 }
 
 fn checkpoint_runtime(

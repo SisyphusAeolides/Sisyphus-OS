@@ -192,13 +192,13 @@ struct ObservationCore {
     last_reply_sequence: AtomicU64,
     telemetry_publications: AtomicU64,
     reply_publications: AtomicU64,
-    reserved: [AtomicU64; 2],
+    reserved: [AtomicU64; 10],
 
     telemetry: AtomicWire64,
     reply: AtomicWire64,
 }
 
-const _: () = assert!(core::mem::size_of::<ObservationCore>() == 320);
+const _: () = assert!(core::mem::size_of::<ObservationCore>() == 384);
 
 #[repr(C, align(4096))]
 pub struct ResonanceObservationPage {
@@ -218,7 +218,7 @@ impl ResonanceObservationPage {
                 last_reply_sequence: AtomicU64::new(0),
                 telemetry_publications: AtomicU64::new(0),
                 reply_publications: AtomicU64::new(0),
-                reserved: [AtomicU64::new(0), AtomicU64::new(0)],
+                reserved: [const { AtomicU64::new(0) }; 10],
                 telemetry: AtomicWire64::new(),
                 reply: AtomicWire64::new(),
             },
@@ -271,6 +271,14 @@ impl ResonanceObservationPage {
 
     pub fn checkpoint_generation(&self) -> u64 {
         self.core.reserved[1].load(Ordering::Acquire)
+    }
+
+    pub fn publish_witness_root(&self, root: u64) {
+        self.core.reserved[2].store(root, Ordering::Release);
+    }
+
+    pub fn witness_root(&self) -> u64 {
+        self.core.reserved[2].load(Ordering::Acquire)
     }
 
     /// Userland reader.

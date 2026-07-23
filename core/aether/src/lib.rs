@@ -18,3 +18,7 @@ pub mod resonance_plane;
 pub mod resonance_policy;
 pub mod resonance_split;
 mod sync;
+
+pub mod causal_quorum;
+pub mod effect_program;
+pub mod witness_chain;
