@@ -555,6 +555,106 @@ fn restore_checkpoint(
     true
 }
 
+pub fn service_temporal_echo(wall_tick: u64) -> bool {
+    let Some(pending) = TEMPORAL_ECHO.take_due(wall_tick) else {
+        return false;
+    };
+
+    let Ok(image) = CONTINUITY_VAULT.restore(pending.checkpoint) else {
+        return false;
+    };
+
+    let report = verify_replay(
+        &image.matrix,
+        image.thermal_heat,
+        image.thermal_charge,
+        &pending.capsule,
+        &mut ECHO_HOLOGRAM.lock(),
+    );
+
+    let echo_root = TEMPORAL_ECHO.record(report);
+
+    CERTIFICATE_PAGE.publish_echo_state(echo_root, report.sequence, report.verdict as u64);
+
+    if report.verdict != EchoVerdict::Diverged && report.verdict != EchoVerdict::ExecutionFault {
+        return true;
+    }
+
+    guarded_echo_rollback(pending, image, wall_tick, report);
+
+    true
+}
+
+fn guarded_echo_rollback(
+    pending: PendingEcho<4>,
+    image: RuntimeImage,
+    wall_tick: u64,
+    report: crate::temporal_echo::EchoReport,
+) {
+    let certificate = pending.capsule.certificate();
+
+    // Never rewind over a newer certified transition.
+    let Some(latest) = CERTIFICATE_PAGE.snapshot() else {
+        return;
+    };
+
+    if latest.sequence != certificate.sequence {
+        return;
+    }
+
+    let mut matrix = MATRIX.lock();
+    let thermal_guard = THERMAL.lock();
+
+    let Some(thermal) = thermal_guard.as_ref() else {
+        return;
+    };
+
+    let live_root = matrix.refresh_hologram(&mut HOLOGRAM.lock()).unwrap_or(0);
+
+    let live_stats = matrix.stats();
+
+    // Restore only when the suspect transition is still exactly live.
+    if live_root != certificate.after_root || live_stats.generation != certificate.generation_after
+    {
+        return;
+    }
+
+    *matrix = image.matrix;
+
+    thermal.restore_charge(image.thermal_charge);
+
+    let restored_root = matrix
+        .refresh_hologram(&mut HOLOGRAM.lock())
+        .unwrap_or(certificate.before_root);
+
+    let sequence = CERTIFICATE_SEQUENCE.fetch_add(1, Ordering::AcqRel).max(1);
+
+    let rollback_certificate = TransitionCertificate::new(
+        CertificateOutcome::Diverged,
+        certificate.reality_mask,
+        sequence,
+        certificate.effect_digest,
+        certificate.contract_digest,
+        certificate.after_root,
+        restored_root,
+        certificate.witness_root,
+        report.digest,
+        wall_tick,
+        report.heat_observed,
+        image.thermal_heat,
+        certificate.generation_after,
+        certificate.generation_before,
+        0,
+        certificate.effect_count,
+        certificate.phase_after,
+        certificate.phase_before,
+        certificate.passed_invariants,
+        certificate.failed_invariants | report.mismatch_mask,
+    );
+
+    CERTIFICATE_PAGE.publish(&rollback_certificate);
+}
+
 fn opcode_mutates(opcode: NexusOpcode) -> bool {
     !matches!(
         opcode,

@@ -160,6 +160,12 @@ impl CertificatePage {
     pub fn generation(&self) -> u64 {
         self.core.generation.load(Ordering::Acquire)
     }
+
+    pub fn publish_echo_state(&self, echo_root: u64, sequence: u64, verdict: u64) {
+        self.core.reserved[0].store(echo_root, Ordering::Release);
+        self.core.reserved[1].store(sequence, Ordering::Release);
+        self.core.reserved[2].store(verdict, Ordering::Release);
+    }
 }
 
 impl Default for CertificatePage {
