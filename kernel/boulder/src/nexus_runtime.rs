@@ -42,6 +42,7 @@ type KernelGateway = NexusGateway<64, 256, 512, 64>;
 struct RuntimeImage {
     matrix: KernelMatrix,
     thermal_charge: u64,
+    thermal_heat: u64,
 }
 
 static READY: AtomicBool = AtomicBool::new(false);
@@ -490,6 +491,7 @@ fn checkpoint_runtime(
     let image = RuntimeImage {
         matrix: matrix.clone(),
         thermal_charge: thermal.current_charge(),
+        thermal_heat: thermal.current_heat(),
     };
 
     let checkpoint = CONTINUITY_VAULT.checkpoint(&image, root, wall_tick).ok()?;
