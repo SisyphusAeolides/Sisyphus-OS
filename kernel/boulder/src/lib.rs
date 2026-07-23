@@ -6,6 +6,7 @@ pub mod aether;
 pub mod arch;
 pub mod argus_sentinel;
 pub mod axiom_manifold;
+pub mod birkhoff_vn;
 pub mod blacklab;
 pub mod blacklab_bootstrap;
 pub mod blacklab_control_plane;
@@ -14,6 +15,8 @@ pub mod bootstrap_chronal;
 pub mod capability;
 pub mod cassandra_reactor;
 pub mod causal_lattice;
+pub mod cech_h1;
+
 pub mod charybdis_dma_firewall;
 pub mod chronovore;
 pub mod commit_reactor;
@@ -26,6 +29,7 @@ pub mod drivers;
 pub mod er_epr_memory;
 pub mod fabric;
 pub mod fabric_weave;
+pub mod fiedler_cut;
 pub mod fs;
 pub mod futamura;
 pub mod ghost_chronicle;
@@ -70,6 +74,7 @@ pub mod session_pi;
 pub mod sheaf_capability;
 pub mod shim;
 pub mod singularity;
+pub mod stabilizer_tableau;
 pub mod sync;
 pub mod syntropic_ecc;
 pub mod syscalls;
@@ -77,6 +82,7 @@ pub mod tartarus_deep;
 pub mod temporal_echo;
 pub mod thermogenesis;
 pub mod tropical_crit;
+pub mod zx_rewrite;
 
 use crate::axiom_manifold::{
     AxiomManifold, AxiomPolicy, CELL_READ_ONLY, CommitCertificate, DraftError, DriveOutcome,
