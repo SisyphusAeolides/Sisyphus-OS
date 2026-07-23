@@ -178,3 +178,32 @@ fn wrapped_phase_distance(left: u16, right: u16) -> u16 {
 
     direct.min(1024 - direct)
 }
+
+impl TemporalContract {
+    pub fn digest(&self) -> u64 {
+        let mut digest = fold(0x434f_4e54_5241_4354, u64::from(self.expected_generation));
+
+        digest = fold(digest, u64::from(self.flags));
+        digest = fold(digest, self.expected_state_root);
+        digest = fold(digest, self.deadline_tick);
+        digest = fold(digest, self.maximum_heat);
+
+        digest = fold(
+            digest,
+            u64::from(self.maximum_generation_delta) | (u64::from(self.maximum_pair_growth) << 32),
+        );
+
+        digest = fold(digest, self.maximum_collapse_growth);
+
+        digest = fold(digest, u64::from(self.maximum_phase_distance));
+
+        fold(digest, self.allowed_effects)
+    }
+}
+
+fn fold(mut state: u64, value: u64) -> u64 {
+    state ^= value.wrapping_add(0x517c_c1b7_2722_0a95);
+    state = state.rotate_left(31);
+    state = state.wrapping_mul(0x9e37_79b1_85eb_ca87);
+    state ^ (state >> 28)
+}
