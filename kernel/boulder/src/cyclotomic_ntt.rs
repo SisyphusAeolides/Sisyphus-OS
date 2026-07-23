@@ -1,42 +1,25 @@
 // kernel/boulder/src/cyclotomic_ntt.rs
-//! Cyclotomic NTT scheduler — convolution fair-queue over Z/pZ
+//! Cyclotomic NTT fair-queue — n=64 over Z/193Z
 //!
-//! Choose n = power of two, prime p = k·n + 1, ω primitive n-th root mod p.
-//! NTT_ω(a)_j = Σ_i a_i ω^{ij}  (mod p)
-//! Convolution theorem: NTT(a * b) = NTT(a) ⊙ NTT(b)
+//! p = 193 = 3·64 + 1
+//! g = 5 (primitive root mod 193)
+//! ω = g^{(p-1)/n} = 5^3 = 125,  order(ω)=64
+//! ω^{-1} = 105,  n^{-1} = 190
 //!
-//! Fair-queue:
-//!   deficit[t] ∈ (Z/pZ)^n  — recent service lag per traffic class (ring buffer)
-//!   kernel k                 — cyclotomic low-pass (e.g. raised-cosine taps)
-//!   smooth = IFFT( FFT(deficit) ⊙ FFT(k) )
-//!   next class = argmax_i smooth[i]  (with deterministic tie-break)
-//!
-//! Parameters baked for n=8: p=17 (k=2), ω=2 because 2^8=256≡1 mod 17
-//! and order of 2 mod 17 is 8.  (For production n=64, use p=193, ω=5, etc.)
+//! Verified: NTT round-trip + circular convolution theorem.
 
 #![allow(dead_code)]
 
-pub const N: usize = 8;
-/// Prime p = 2·8 + 1 = 17
-pub const P: u32 = 17;
-/// Primitive 8-th root mod 17: 2^8 = 256 ≡ 1 (mod 17); order is 8.
-pub const OMEGA: u32 = 2;
-/// Inverse of n mod p  (8 * 15 = 120 ≡ 1 mod 17? 120/17=7*17=119, yes 15)
-pub const N_INV: u32 = 15;
+pub const N: usize = 64;
+pub const P: u32 = 193;
+pub const OMEGA: u32 = 125;
+pub const OMEGA_INV: u32 = 105;
+pub const N_INV: u32 = 190;
+pub const LOG_N: usize = 6;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NttFault {
     Len,
-    NoInverse,
-}
-
-#[inline]
-fn mod_p(x: i64) -> u32 {
-    let mut r = (x % P as i64) as i32;
-    if r < 0 {
-        r += P as i32;
-    }
-    r as u32
 }
 
 #[inline]
@@ -68,135 +51,162 @@ fn pow_mod(mut base: u32, mut exp: u32) -> u32 {
     r
 }
 
-/// Bit-reverse permutation for n=8.
-fn bit_reverse_8(a: &mut [u32; N]) {
-    // 000,100,010,110,001,101,011,111 → indices 0,4,2,6,1,5,3,7
-    const REV: [usize; 8] = [0, 4, 2, 6, 1, 5, 3, 7];
-    let mut tmp = [0u32; N];
-    for i in 0..N {
-        tmp[REV[i]] = a[i];
+#[inline]
+fn bitrev6(mut i: usize) -> usize {
+    let mut r = 0usize;
+    let mut b = 0;
+    while b < LOG_N {
+        r = (r << 1) | (i & 1);
+        i >>= 1;
+        b += 1;
     }
-    *a = tmp;
+    r
 }
 
-/// In-place radix-2 NTT. `invert=false` → forward (ω), true → inverse (ω^{-1}, /n).
+fn bit_reverse(a: &mut [u32; N]) {
+    let mut i = 0usize;
+    while i < N {
+        let j = bitrev6(i);
+        if i < j {
+            a.swap(i, j);
+        }
+        i += 1;
+    }
+}
+
+/// In-place radix-2 NTT. `invert` selects ω^{-1} and scales by n^{-1}.
 pub fn ntt(a: &mut [u32; N], invert: bool) {
-    bit_reverse_8(a);
+    bit_reverse(a);
+    let base = if invert { OMEGA_INV } else { OMEGA };
     let mut len = 2usize;
     while len <= N {
-        // Actually twiddle step: primitive len-th root = ω^{n/len}
-        let root = if invert {
-            pow_mod(pow_mod(OMEGA, (N as u32) - 1), (N / len) as u32)
-        } else {
-            pow_mod(OMEGA, (N / len) as u32)
-        };
+        let root = pow_mod(base, (N / len) as u32);
         let mut i = 0usize;
         while i < N {
             let mut w = 1u32;
-            for j in 0..(len / 2) {
+            let half = len / 2;
+            let mut j = 0usize;
+            while j < half {
                 let u = a[i + j];
-                let v = mul_mod(a[i + j + len / 2], w);
+                let v = mul_mod(a[i + j + half], w);
                 a[i + j] = add_mod(u, v);
-                a[i + j + len / 2] = sub_mod(u, v);
+                a[i + j + half] = sub_mod(u, v);
                 w = mul_mod(w, root);
+                j += 1;
             }
             i += len;
         }
         len <<= 1;
     }
     if invert {
-        for x in a.iter_mut() {
-            *x = mul_mod(*x, N_INV);
+        let mut i = 0usize;
+        while i < N {
+            a[i] = mul_mod(a[i], N_INV);
+            i += 1;
         }
     }
 }
 
-/// Circular convolution c = a * b via NTT.
 pub fn conv(a: &[u32; N], b: &[u32; N]) -> [u32; N] {
     let mut fa = *a;
     let mut fb = *b;
     ntt(&mut fa, false);
     ntt(&mut fb, false);
     let mut fc = [0u32; N];
-    for i in 0..N {
+    let mut i = 0usize;
+    while i < N {
         fc[i] = mul_mod(fa[i], fb[i]);
+        i += 1;
     }
     ntt(&mut fc, true);
     fc
 }
 
-/// Raised-cosine-ish low-pass taps on the cyclotomic ring (mod p), time domain.
-/// k = [2,1,1,0,0,0,1,1] normalized loosely — energy on low differences.
+/// Spectral low-pass on the cyclotomic ring (time-domain taps, length 64).
+/// Energy concentrated on lag 0..3 and wrap — smooths class deficits.
 pub fn fair_kernel() -> [u32; N] {
-    // Positive taps; sum = 6. Used as smoothing stencil.
-    [2, 1, 1, 0, 0, 0, 1, 1]
+    let mut k = [0u32; N];
+    k[0] = 4;
+    k[1] = 2;
+    k[2] = 1;
+    k[3] = 1;
+    k[N - 3] = 1;
+    k[N - 2] = 1;
+    k[N - 1] = 2;
+    k
 }
 
-#[derive(Clone, Debug)]
 pub struct CyclotomicFairQ {
-    /// deficit[class] as ring — index = class id mod n
     pub deficit: [u32; N],
-    pub kernel: [u32; N],
-    /// cached FFT(kernel)
     pub kernel_hat: [u32; N],
     pub classes: u8,
+    pub picks: u64,
 }
 
 impl CyclotomicFairQ {
-    pub fn new(classes: u8) -> Self {
-        let kernel = fair_kernel();
-        let mut kernel_hat = kernel;
-        ntt(&mut kernel_hat, false);
+    pub const fn empty() -> Self {
         Self {
             deficit: [0; N],
-            kernel,
-            kernel_hat,
-            classes: classes.min(N as u8).max(1),
+            kernel_hat: [0; N],
+            classes: 8,
+            picks: 0,
         }
     }
 
-    /// Record that `class` wanted one quantum but may have been delayed.
+    pub fn new(classes: u8) -> Self {
+        let mut kernel_hat = fair_kernel();
+        ntt(&mut kernel_hat, false);
+        Self {
+            deficit: [0; N],
+            kernel_hat,
+            classes: classes.min(N as u8).max(1),
+            picks: 0,
+        }
+    }
+
     pub fn charge(&mut self, class: usize, amount: u32) {
         let i = class % N;
         self.deficit[i] = add_mod(self.deficit[i], amount % P);
     }
 
-    /// Class received service — reduce deficit.
     pub fn credit(&mut self, class: usize, amount: u32) {
         let i = class % N;
         self.deficit[i] = sub_mod(self.deficit[i], amount % P);
     }
 
-    /// Spectral smooth of deficit via convolution with fair kernel.
     pub fn smooth(&self) -> [u32; N] {
         let mut d_hat = self.deficit;
         ntt(&mut d_hat, false);
         let mut y = [0u32; N];
-        for i in 0..N {
+        let mut i = 0usize;
+        while i < N {
             y[i] = mul_mod(d_hat[i], self.kernel_hat[i]);
+            i += 1;
         }
         ntt(&mut y, true);
         y
     }
 
-    /// Pick next class among 0..classes-1 with highest smoothed deficit.
     pub fn pick(&self) -> usize {
         let s = self.smooth();
+        let n = self.classes as usize;
         let mut best_i = 0usize;
         let mut best_v = s[0];
-        for i in 1..self.classes as usize {
+        let mut i = 1usize;
+        while i < n {
             if s[i] > best_v {
                 best_v = s[i];
                 best_i = i;
             }
+            i += 1;
         }
         best_i
     }
 
-    /// One scheduler quantum: pick, credit service.
     pub fn quantum(&mut self, service: u32) -> usize {
         let c = self.pick();
         self.credit(c, service);
+        self.picks = self.picks.wrapping_add(1);
         c
     }
 }
@@ -206,17 +216,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn omega_order_is_8() {
-        assert_eq!(pow_mod(OMEGA, 8), 1);
-        // proper divisor orders shouldn't all be 1
-        assert_ne!(pow_mod(OMEGA, 4), 1);
+    fn omega_params() {
+        assert_eq!(pow_mod(OMEGA, 64), 1);
+        assert_eq!(pow_mod(OMEGA, 32), P - 1); // -1
+        assert_eq!(mul_mod(OMEGA, OMEGA_INV), 1);
+        assert_eq!(mul_mod(N as u32, N_INV), 1);
     }
 
     #[test]
-    fn ntt_roundtrip() {
-        let mut a = [1u32, 2, 3, 4, 5, 6, 7, 8];
-        for x in a.iter_mut() {
-            *x %= P;
+    fn roundtrip() {
+        let mut a = [0u32; N];
+        for i in 0..N {
+            a[i] = (i as u32 * 3 + 1) % P;
         }
         let orig = a;
         ntt(&mut a, false);
@@ -225,25 +236,29 @@ mod tests {
     }
 
     #[test]
-    fn conv_matches_naive() {
-        let a = [1u32, 2, 0, 0, 0, 0, 0, 0];
-        let b = [1u32, 1, 0, 0, 0, 0, 0, 0];
+    fn convolution_theorem() {
+        let mut a = [0u32; N];
+        let mut b = [0u32; N];
+        a[0] = 1;
+        a[1] = 2;
+        a[2] = 3;
+        b[0] = 4;
+        b[1] = 5;
         let c = conv(&a, &b);
-        // naive circular
-        let mut n = [0u32; N];
+        let mut naive = [0u32; N];
         for i in 0..N {
             for j in 0..N {
-                n[(i + j) % N] = add_mod(n[(i + j) % N], mul_mod(a[i], b[j]));
+                naive[(i + j) % N] = add_mod(naive[(i + j) % N], mul_mod(a[i], b[j]));
             }
         }
-        assert_eq!(c, n);
+        assert_eq!(c, naive);
     }
 
     #[test]
-    fn fairq_prefers_starved() {
-        let mut q = CyclotomicFairQ::new(4);
-        q.charge(3, 5); // 5 * 2 = 10, no wraparound mod 17
+    fn starved_class_wins() {
+        let mut q = CyclotomicFairQ::new(16);
+        q.charge(7, 20);
         q.charge(0, 1);
-        assert_eq!(q.pick(), 3);
+        assert_eq!(q.pick(), 7);
     }
 }
