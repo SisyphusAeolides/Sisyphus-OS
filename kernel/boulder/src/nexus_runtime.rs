@@ -147,7 +147,7 @@ pub fn control(command: &NexusCommand, wall_tick: u64) -> NexusReply {
 
     if result.is_err() {
         if let Some(checkpoint) = checkpoint {
-            let _ = CONTINUITY_VAULT.discard(checkpoint);
+            let _ = restore_checkpoint(checkpoint, &mut matrix, thermal);
         }
     }
 
@@ -375,6 +375,21 @@ fn rollback_latest(matrix: &mut KernelMatrix, thermal: &Thermogenesis) -> bool {
         return false;
     };
 
+    let Ok(image) = CONTINUITY_VAULT.restore(checkpoint) else {
+        return false;
+    };
+
+    *matrix = image.matrix;
+    thermal.restore_charge(image.thermal_charge);
+
+    true
+}
+
+fn restore_checkpoint(
+    checkpoint: CheckpointId,
+    matrix: &mut KernelMatrix,
+    thermal: &Thermogenesis,
+) -> bool {
     let Ok(image) = CONTINUITY_VAULT.restore(checkpoint) else {
         return false;
     };
