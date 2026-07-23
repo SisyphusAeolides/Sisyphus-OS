@@ -79,19 +79,57 @@ pub fn prometheus_tick(
 
 /// Stub interfaces — implement against Boulder's syscall ABI
 fn spawn_replica(_pid: u32) -> u32 {
-    0 /* fork + exec standby */
+    slope::process::spawn(0, 0).unwrap_or(0)
 }
+
 fn reap_children() -> Vec<(u32, i32)> {
-    Vec::new()
+    let mut reaped = Vec::new();
+    while let Ok(Some((pid, status))) = slope::process::wait_nohang() {
+        reaped.push((pid, status));
+    }
+    reaped
 }
-fn send_signal(_pid: u32, _sig: Signal) {}
-fn promote_replica(_replica: u32, _original: u32) {}
-fn schedule_restart(_pid: u32, _delay_ms: u64) {}
+
+fn send_signal(pid: u32, sig: Signal) {
+    let raw_sig = match sig {
+        Signal::Terminate => 1,
+        Signal::Interrupt => 2,
+        Signal::Hangup => 5,
+    };
+    let _ = unsafe { slope::syscall(slope::syscalls::SYS_SIGNAL_DELIVER, [pid as usize, raw_sig, 0, 0, 0, 0]) };
+}
+
+fn promote_replica(replica: u32, original: u32) {
+    let _ = unsafe { slope::syscall(slope::syscalls::SYS_SIGNAL_DELIVER, [replica as usize, 7, original as usize, 0, 0, 0]) };
+}
+
+fn schedule_restart(_pid: u32, delay_ms: u64) {
+    let _ = slope::scheduler::sleep_ns(delay_ms * 1_000_000);
+}
+
 fn read_boot_elapsed_ns() -> u64 {
-    0
+    slope::time::read_counter()
 }
-fn persist_genome_to_nvram(_: &BootGenome) {}
-fn wait_for_event() {}
+
+fn persist_genome_to_nvram(genome: &BootGenome) {
+    if let Ok(file) = slope::fs::AkashicFile::open(b"/sys/nvram/genome", slope::fs::flags::CREATE_RW | slope::fs::flags::TRUNCATE) {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&genome.generation.to_le_bytes());
+        buf.extend_from_slice(&genome.last_boot_fitness.to_le_bytes());
+        for gene in &genome.chromosome {
+            buf.extend_from_slice(&gene.codon);
+            buf.extend_from_slice(&gene.promoter_strength.to_le_bytes());
+            buf.push(gene.is_intron as u8);
+            buf.extend_from_slice(&gene.fitness_score.to_le_bytes());
+            buf.extend_from_slice(&gene.expression_delay_ms.to_le_bytes());
+        }
+        let _ = file.write_all(&buf);
+    }
+}
+
+fn wait_for_event() {
+    let _ = slope::process::yield_now();
+}
 
 #[derive(Copy, Clone)]
 #[allow(dead_code)]

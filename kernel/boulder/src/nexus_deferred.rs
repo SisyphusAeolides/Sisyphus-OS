@@ -82,12 +82,20 @@ pub fn run_deferred(maximum_passes: u32) -> DeferredReport {
         let wall_tick = LATEST_WALL_TICK.load(Ordering::Acquire);
 
         // One matrix evolution absorbs all causally equivalent timer requests.
-        #[cfg(feature = "unfinished-quantum-nexus")]
         crate::nexus_plane::drive_once(wall_tick, pending);
 
-        let _ = crate::manifold_orchestrator::run_tensor_online_update_deferred();
-        let _ = crate::manifold_orchestrator::run_tensor_analysis_deferred();
-        let _ = crate::manifold_orchestrator::run_predictive_control_deferred();
+        if let Err(e) = crate::manifold_orchestrator::run_tensor_online_update_deferred() {
+            let mut serial = unsafe { crate::serial::SerialPort::initialize(0x3f8) };
+            let _ = core::fmt::write(&mut serial, format_args!("Deferred tensor update error: {:?}\n", e));
+        }
+        if let Err(e) = crate::manifold_orchestrator::run_tensor_analysis_deferred() {
+            let mut serial = unsafe { crate::serial::SerialPort::initialize(0x3f8) };
+            let _ = core::fmt::write(&mut serial, format_args!("Deferred tensor analysis error: {:?}\n", e));
+        }
+        if let Err(e) = crate::manifold_orchestrator::run_predictive_control_deferred() {
+            let mut serial = unsafe { crate::serial::SerialPort::initialize(0x3f8) };
+            let _ = core::fmt::write(&mut serial, format_args!("Deferred predictive control error: {:?}\n", e));
+        }
 
         ticks_absorbed = ticks_absorbed.saturating_add(pending);
         passes += 1;

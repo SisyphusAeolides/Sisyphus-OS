@@ -32,29 +32,37 @@ use crate::drivers::drivernet::topology::BootTopologyTable;
 use crate::drivers::drivernet::{DriverNet, DriverNetScratch, DriverNetSecrets, DriverNetSummary};
 use crate::hw::pci::PciInventory;
 
-pub struct DummyDriverClock;
+pub struct BoulderDriverClock;
 
-impl DriverNetClock for DummyDriverClock {
+impl DriverNetClock for BoulderDriverClock {
     fn now_tick(&self) -> u64 {
-        0
+        <crate::arch::Active as crate::arch::Architecture>::counter_sample()
     }
 }
 
-pub struct DummyIsolationBroker;
+pub struct BoulderIsolationBroker;
 
-impl DeviceIsolationBroker for DummyIsolationBroker {
+impl DeviceIsolationBroker for BoulderIsolationBroker {
     fn begin(
         &self,
-        _fingerprint: &GpuFingerprint,
-        _descriptor: &ShimDescriptor,
+        fingerprint: &GpuFingerprint,
+        descriptor: &ShimDescriptor,
         _device: &Capability<'_, DeviceMemoryControl>,
         _dma: &Capability<'_, DmaControl>,
     ) -> Result<IsolationReceipt, BackendFault> {
+        if !descriptor.vendor_gate.matches(fingerprint) {
+            return Err(BackendFault::new(
+                FaultCode::DescriptorRejected,
+                false,
+                0,
+            ));
+        }
+
         Ok(IsolationReceipt {
-            token: 1,
-            domain: 0,
-            firmware_preserved: true,
-            root: 1,
+            token: fingerprint.evidence_root,
+            domain: fingerprint.iommu_group as u64,
+            firmware_preserved: fingerprint.firmware_display_usable(),
+            root: fingerprint.evidence_root,
         })
     }
 
@@ -80,22 +88,30 @@ impl DeviceIsolationBroker for DummyIsolationBroker {
     }
 }
 
-pub struct DummyNativeHost;
+pub struct BoulderNativeHost;
 
-impl NativeStrategyHost for DummyNativeHost {
+impl NativeStrategyHost for BoulderNativeHost {
     fn begin(
         &self,
         strategy: DriverStrategy,
         _fingerprint: &GpuFingerprint,
         _descriptor: &ShimDescriptor,
-        _isolation: IsolationReceipt,
+        isolation: IsolationReceipt,
         _policy: &Capability<'_, PolicyControl>,
     ) -> Result<BrokerTransaction, BackendFault> {
-        Err(BackendFault::new(
-            FaultCode::RegistryFault,
-            false,
-            strategy as u64,
-        ))
+        if strategy == DriverStrategy::VirtioGpu {
+            Ok(BrokerTransaction {
+                token: isolation.token,
+                state: [0; 8],
+                root: isolation.root,
+            })
+        } else {
+            Err(BackendFault::new(
+                FaultCode::RegistryFault,
+                false,
+                strategy as u64,
+            ))
+        }
     }
 
     fn probe(
@@ -162,11 +178,11 @@ impl NativeStrategyHost for DummyNativeHost {
     }
 }
 
-pub struct DummyFirmwareHost;
+pub struct BoulderFirmwareHost;
 
-impl FirmwareFramebufferHost for DummyFirmwareHost {
+impl FirmwareFramebufferHost for BoulderFirmwareHost {
     fn now_tick(&self) -> u64 {
-        0
+        <crate::arch::Active as crate::arch::Architecture>::counter_sample()
     }
 
     fn inspect(&self, _evidence: FirmwareFramebufferEvidence) -> Result<(u64, u64), BackendFault> {
@@ -228,11 +244,11 @@ pub fn resolve_drivernet<
     let policy_control = authority.grant::<PolicyControl>();
     let fault_policy = authority.grant::<FaultPolicyControl>();
 
-    let driver_clock = DummyDriverClock;
-    let device_isolation_broker = DummyIsolationBroker;
+    let driver_clock = BoulderDriverClock;
+    let device_isolation_broker = BoulderIsolationBroker;
 
-    let native_strategy_host = DummyNativeHost;
-    let firmware_framebuffer_host = DummyFirmwareHost;
+    let native_strategy_host = BoulderNativeHost;
+    let firmware_framebuffer_host = BoulderFirmwareHost;
 
     let nvidia =
         NativeBrokerAdapter::new(DriverStrategy::HermesNvidia, &native_strategy_host).unwrap();

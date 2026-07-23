@@ -22,6 +22,7 @@ pub enum BridgeFault {
     NotFound,
     AsidMismatch,
     AlreadyEntangled,
+    InvalidMouth,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -99,6 +100,12 @@ impl ErEprFabric {
     ) -> Result<u64, BridgeFault> {
         if !self.allow {
             return Err(BridgeFault::Disabled);
+        }
+
+        // Validate PIDs (must be non-zero) and VA pages (must be in user space, i.e., < 0x0000_8000_0000_0000)
+        let is_valid_va = |va: u64| va < 0x0000_8000_0000_0000;
+        if a.pid == 0 || b.pid == 0 || !is_valid_va(a.va_page) || !is_valid_va(b.va_page) {
+            return Err(BridgeFault::InvalidMouth);
         }
         if a.pid == b.pid && a.va_page == b.va_page {
             return Err(BridgeFault::AlreadyEntangled);

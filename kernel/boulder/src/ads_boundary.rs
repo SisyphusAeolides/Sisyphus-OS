@@ -40,6 +40,7 @@ pub struct BoundaryOperator {
     pub src_pid: u32,
     pub dst_pid: u32,
     pub payload_len: u16,
+    pub flags: u16,
     /// Compressed payload living on the screen
     pub screen: [u8; BOUNDARY_MAX],
     /// Holographic hash (integrity of radial cut)
@@ -48,11 +49,14 @@ pub struct BoundaryOperator {
 }
 
 impl BoundaryOperator {
+    pub const FLAG_MACROPHAGE_PRIORITY: u16 = 1 << 0;
+
     pub const fn empty() -> Self {
         Self {
             src_pid: 0,
             dst_pid: 0,
             payload_len: 0,
+            flags: 0,
             screen: [0; BOUNDARY_MAX],
             hologram: [0; HOLOGRAPHIC_WORDS],
             bulk_entropy_fp: 0,
@@ -203,11 +207,12 @@ fn log2_fp(x: u32) -> u32 {
 
 /// Kernel-facing entry: project, then hand boundary to macrophage/wormhole.
 pub fn admit_ipc(bulk: BulkMessage<'_>) -> Result<BoundaryOperator, AdsFault> {
-    let op = project_to_boundary(bulk)?;
+    let mut op = project_to_boundary(bulk)?;
     // Hard policy: boundary entropy must not scream "packed exploit blob"
     // 7.5 bits ≈ 0x78000 in 16.16
     if op.bulk_entropy_fp > 0x0007_8000 && bulk.bytes.len() > 512 {
         // still admit, but hologram marks high entropy for macrophage priority
+        op.flags |= BoundaryOperator::FLAG_MACROPHAGE_PRIORITY;
     }
     Ok(op)
 }

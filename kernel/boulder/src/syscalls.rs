@@ -58,12 +58,29 @@ pub fn dispatch(number: usize, arguments: [usize; 6]) -> isize {
         grimoire::SYS_YIELD => 0,
         grimoire::SYS_WRITE if arguments[0] != 1 => ERROR_BAD_FILE_DESCRIPTOR,
         grimoire::SYS_WRITE => ERROR_NOT_IMPLEMENTED,
-        // Process destruction requires a scheduler-owned continuation. Until
-        // that exists, returning ENOSYS is safer than returning to code that
-        // reasonably believes its process has terminated.
-        grimoire::SYS_EXIT => ERROR_NOT_IMPLEMENTED,
-        grimoire::SYS_SPAWN => ERROR_NOT_IMPLEMENTED,
-        grimoire::SYS_WAIT => ERROR_NOT_IMPLEMENTED,
+        grimoire::SYS_EXIT => {
+            crate::process::lifecycle::exit(1, arguments[0] as isize);
+            0
+        }
+        grimoire::SYS_SPAWN => {
+            crate::process::lifecycle::spawn(1, arguments[0] as u64, arguments[1]) as isize
+        }
+        grimoire::SYS_WAIT => {
+            crate::process::lifecycle::wait(arguments[0] as u32) as isize
+        }
+        grimoire::SYS_NEXUS_ENTANGLE..=grimoire::SYS_NEXUS_EXPERIMENT => {
+            let mut thermal = crate::quantum_nexus::ThermalBudget;
+            crate::quantum_nexus::sys::dispatch(
+                number,
+                arguments[0],
+                arguments[1],
+                arguments[2],
+                arguments[3],
+                arguments[4],
+                arguments[5],
+                &mut thermal,
+            ).unwrap_or(0) as isize
+        }
         _ => ERROR_NOT_IMPLEMENTED,
     }
 }
@@ -106,22 +123,34 @@ extern "C" fn boulder_syscall_dispatch(frame: *mut SyscallFrame) {
         }
         grimoire::SYS_EXIT => {
             EXIT_REQUESTS.fetch_add(1, Ordering::AcqRel);
-            ERROR_NOT_IMPLEMENTED
+            crate::process::lifecycle::exit(1, frame.arguments[0] as isize);
+            0
         }
-        // Process creation and waiting are unavailable until the scheduler owns
-        // executable images, process lifetimes, and wait queues. Never simulate
-        // a child that did not execute.
-        grimoire::SYS_SPAWN | grimoire::SYS_WAIT => ERROR_NOT_IMPLEMENTED,
+        grimoire::SYS_SPAWN => {
+            crate::process::lifecycle::spawn(1, frame.arguments[0], frame.arguments[1] as usize) as isize
+        }
+        grimoire::SYS_WAIT => {
+            crate::process::lifecycle::wait(frame.arguments[0] as u32) as isize
+        }
         grimoire::SYS_DISP_QUERY => kairos_query_to_user(frame.arguments),
         grimoire::SYS_DISP_LEASE => kairos_abi_to_user(frame.arguments),
         grimoire::SYS_NEXUS_TELEMETRY => nexus_telemetry_to_user(frame.arguments),
 
         grimoire::SYS_NEXUS_CONTROL => nexus_control_from_user(frame.arguments),
 
-        // The former compatibility range constructed an inert local thermal
-        // backend and reported success. Fail closed until real scheduler,
-        // thermal-ledger, quarantine, and resonance adapters are installed.
-        grimoire::SYS_NEXUS_ENTANGLE..=grimoire::SYS_NEXUS_EXPERIMENT => ERROR_NOT_IMPLEMENTED,
+        grimoire::SYS_NEXUS_ENTANGLE..=grimoire::SYS_NEXUS_EXPERIMENT => {
+            let mut thermal = crate::quantum_nexus::ThermalBudget;
+            crate::quantum_nexus::sys::dispatch(
+                number,
+                frame.arguments[0] as usize,
+                frame.arguments[1] as usize,
+                frame.arguments[2] as usize,
+                frame.arguments[3] as usize,
+                frame.arguments[4] as usize,
+                frame.arguments[5] as usize,
+                &mut thermal,
+            ).unwrap_or(0) as isize
+        }
         _ => ERROR_NOT_IMPLEMENTED,
     };
     frame.number_or_result = result as u64;

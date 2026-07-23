@@ -54,13 +54,27 @@ pub mod plat {
         pub kernel_stack_top: u64,
     }
 
+    #[cfg(not(target_os = "none"))]
     static NEXT_FAKE_PHYS: AtomicU64 = AtomicU64::new(0x0020_0000);
 
+    /// Allocates a physical page.
+    /// In test/host builds, this uses a simple bump allocator.
+    /// On bare metal (`target_os = "none"`), this calls into the kernel's real physical allocator.
+    #[cfg(not(target_os = "none"))]
     pub unsafe fn alloc_phys_page() -> Result<(u64, *mut u8), VmError> {
         let p = NEXT_FAKE_PHYS.fetch_add(PAGE_SIZE as u64, Ordering::AcqRel);
         Ok((p, p as *mut u8))
     }
 
+    #[cfg(target_os = "none")]
+    unsafe extern "Rust" {
+        pub fn alloc_phys_page() -> Result<(u64, *mut u8), VmError>;
+    }
+
+    /// Maps a physical page to a virtual address.
+    /// In test/host builds, this is a stub.
+    /// On bare metal (`target_os = "none"`), this calls the kernel's real page table walk function.
+    #[cfg(not(target_os = "none"))]
     pub unsafe fn map_page(
         _aspace: &AddressSpace,
         _vaddr: u64,
@@ -69,6 +83,16 @@ pub mod plat {
     ) -> Result<(), VmError> {
         // STUB: Wire this to your real page table walk
         Ok(())
+    }
+
+    #[cfg(target_os = "none")]
+    unsafe extern "Rust" {
+        pub fn map_page(
+            aspace: &AddressSpace,
+            vaddr: u64,
+            paddr: u64,
+            flags: u64,
+        ) -> Result<(), VmError>;
     }
 
     pub unsafe fn new_user_address_space() -> Result<AddressSpace, VmError> {
@@ -514,14 +538,28 @@ pub mod blacklab {
         match tf.rax {
             sigil::SIGIL_WRITE => {
                 let fd = tf.rdi;
-                let _buf = tf.rsi as *const u8;
+                let buf = tf.rsi as *const u8;
                 let len = tf.rdx as usize;
                 // Basic STDOUT / STDERR write stub
-                if fd == 1 || fd == 2 { len as i64 } else { -1 }
+                if fd == 1 || fd == 2 {
+                    for i in 0..len {
+                        unsafe {
+                            let b = *buf.add(i);
+                            #[cfg(target_os = "none")]
+                            asm!("out dx, al", in("dx") 0x3F8u16, in("al") b, options(nomem, nostack, preserves_flags));
+                            #[cfg(not(target_os = "none"))]
+                            let _ = b;
+                        }
+                    }
+                    len as i64
+                } else {
+                    -1
+                }
             }
             sigil::SIGIL_TIME => super::rdtsc() as i64,
             sigil::SIGIL_YIELD => {
                 // Yield execution context marker
+                unsafe { asm!("pause", options(nomem, nostack, preserves_flags)); }
                 0
             }
             sigil::SIGIL_REVOKE => {

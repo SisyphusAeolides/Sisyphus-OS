@@ -128,6 +128,7 @@ impl SymbiosisEngine {
         pid_b: u32,
         coupling_fp: i64,
         a_is_larger: bool,
+        host_cr3: u64,
     ) -> bool {
         if coupling_fp > SYMBIOSIS_THRESHOLD_FP {
             // Initiate merger!
@@ -143,7 +144,7 @@ impl SymbiosisEngine {
                 .iter()
                 .position(|e| e.host_pid == host)
                 .unwrap_or_else(|| {
-                    self.eukaryotes.push(Eukaryote::new(host, 0x1000)); // fake CR3
+                    self.eukaryotes.push(Eukaryote::new(host, host_cr3));
                     self.eukaryotes.len() - 1
                 });
 

@@ -700,7 +700,7 @@ pub fn tick(now_tsc: u64) -> Option<Actuation> {
     }
     let orch = unsafe { global_mut() };
     match orch.tick(now_tsc) {
-        Ok(act) => {
+        Ok(mut act) => {
             EPOCH.store(act.epoch, Ordering::Relaxed);
             let _ = crate::tensor_kernel::observe(&act);
             let tensor_directive = crate::tensor_kernel::last_directive().ok().flatten();
@@ -728,7 +728,21 @@ pub fn tick(now_tsc: u64) -> Option<Actuation> {
                         };
 
                         // 10. Keep capability authorization separate (Verify the step)
-                        let _step_result = state.runtime.step(orch, &act, external);
+                        match state.runtime.step(orch, &act, external) {
+                            Ok(certified) => {
+                                // Enforce KKT/Syndrome proofs for genuine kernel resource management
+                                act.fair_class = certified.actuation.queue_class as u16;
+                                
+                                // 11. Integrate with Black-Lab history (Mnemosyne)
+                                // We don't have a global Mnemosyne instance yet, but we can write 
+                                // the certified roots to GhostChronicle for telemetry.
+                                orch.record(now_tsc, orch_kind::MANIFOLD_BOOT, certified.actuation.root, certified.actuation.stabilizer_root);
+                            }
+                            Err(_) => {
+                                // Actuation rejected by proofs.
+                                return None;
+                            }
+                        }
                     }
                 }
             }

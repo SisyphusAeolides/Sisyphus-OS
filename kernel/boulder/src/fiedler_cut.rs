@@ -97,32 +97,12 @@ fn i_sqrt(mut x: u32) -> u32 {
     r
 }
 
-/// Integer approx of 1/sqrt(d) in 16.16 given degree d≥1.
-fn inv_sqrt_fp(d: u32) -> Fp {
-    if d == 0 {
-        return 0;
-    }
-    // 1/sqrt(d) ≈ FP_ONE / sqrt(d)
-    let s = i_sqrt(d * 65536); // sqrt(d)*256 if perfect; better:
-    let s2 = i_sqrt(d);
-    if s2 == 0 {
-        return FP_ONE;
-    }
-    // FP_ONE / s2
-    ((FP_ONE as i64 * FP_ONE as i64) / (s2 as i64 * FP_ONE as i64 / FP_ONE as i64)) as Fp;
-    (FP_ONE as i64 / s2 as i64) as Fp * FP_ONE // wrong scale
-}
 
 fn inv_sqrt_fp_fixed(d: u32) -> Fp {
     if d == 0 {
         return 0;
     }
-    // inv_sqrt in 16.16: floor(65536 / sqrt(d))
-    let s = i_sqrt(d);
-    if s == 0 {
-        return FP_ONE;
-    }
-    (FP_ONE as u32 / s) as Fp
+    i_sqrt64((1u64 << 48) / d as u64) as Fp
 }
 
 fn dot(a: &[Fp], b: &[Fp], n: usize) -> i64 {
@@ -241,8 +221,6 @@ pub fn fiedler_bipartition(g: &Graph32, iters: usize) -> Result<FiedlerReport, S
             return Err(SpecFault::ZeroDegree);
         }
         inv_sqrt_d[i] = inv_sqrt_fp_fixed(d);
-        sqrt_d[i] = (i_sqrt(d) as Fp) * FP_ONE; // coarse
-        sqrt_d[i] = (i_sqrt(d) as Fp); // store sqrt(d) as int in low bits
         // use 16.16 sqrt: sqrt(d)*256 approx via i_sqrt(d<<16)
         sqrt_d[i] = i_sqrt(d << 16) as Fp;
     }
