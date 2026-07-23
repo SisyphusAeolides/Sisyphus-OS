@@ -90,6 +90,7 @@ pub mod temporal_echo;
 pub mod thermogenesis;
 pub mod tropical_crit;
 pub mod zx_rewrite;
+pub mod manifold_topo;
 
 use crate::axiom_manifold::{
     AxiomManifold, AxiomPolicy, CELL_READ_ONLY, CommitCertificate, DraftError, DriveOutcome,

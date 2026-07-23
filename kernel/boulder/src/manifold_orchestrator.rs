@@ -30,6 +30,10 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 const MAX_SEED_DEV: usize = 10;
 const GHOST_CAP: usize = 64;
 
+use crate::manifold_topo::{
+    cech_h1_on_hodge, fiedler_on_hodge, tropical_critical, zx_simplify_quiver, TropicalReport,
+};
+
 // ---------------------------------------------------------------------------
 // Public actuation surface
 // ---------------------------------------------------------------------------
@@ -49,6 +53,22 @@ pub struct Actuation {
     pub migrate: [HFp; MAX_V],
     pub n_migrate: u8,
     pub epoch: u64,
+    /// Fiedler bipartition: bit i set ⇒ vertex on positive side of cut.
+    pub fiedler_mask: u64,
+    pub fiedler_value_fp: i32,     // algebraic connectivity λ₂ (16.16)
+
+    /// Čech H¹: non-zero ⇒ cover fails to glue (obstruction present).
+    pub cech_h1_dim: u16,
+    pub cech_obstructed: bool,
+
+    /// Tropical critical chain (vertex indices, 0xFF = pad).
+    pub tropical_chain: [u8; 8],
+    pub tropical_chain_len: u8,
+    pub tropical_length_fp: i32,   // max-plus path weight
+
+    /// ZX rewrite stats
+    pub zx_edges_before: u16,
+    pub zx_edges_after: u16,
 }
 
 impl Actuation {
@@ -61,6 +81,15 @@ impl Actuation {
         migrate: [0; MAX_V],
         n_migrate: 0,
         epoch: 0,
+        fiedler_mask: 0,
+        fiedler_value_fp: 0,
+        cech_h1_dim: 0,
+        cech_obstructed: false,
+        tropical_chain: [0xFF; 8],
+        tropical_chain_len: 0,
+        tropical_length_fp: 0,
+        zx_edges_before: 0,
+        zx_edges_after: 0,
     };
 }
 
@@ -110,6 +139,12 @@ pub struct ManifoldOrchestrator {
     /// mutate if congestion > threshold
     mut_threshold: QFp,
     complex_ok: bool,
+    fiedler_mask: u64,
+    fiedler_value_fp: i32,
+    cech_h1_dim: u16,
+    cech_obstructed: bool,
+    zx_edges_before: u16,
+    zx_edges_after: u16,
 }
 
 impl ManifoldOrchestrator {
@@ -132,6 +167,12 @@ impl ManifoldOrchestrator {
             tau_fp: H_ONE / 8,
             mut_threshold: Q_ONE / 4,
             complex_ok: false,
+            fiedler_mask: 0,
+            fiedler_value_fp: 0,
+            cech_h1_dim: 0,
+            cech_obstructed: false,
+            zx_edges_before: 0,
+            zx_edges_after: 0,
         }
     }
 
@@ -191,7 +232,18 @@ impl ManifoldOrchestrator {
             rep.devices_kept, rep.strategy_nodes, rep.arrows
         );
 
-        // 2. Build Hodge nerve + 2-simplices
+        // 1b. ZX simplify quiver BEFORE first cluster mutation
+        let zx = zx_simplify_quiver(&mut self.quiver);
+        self.record(0, orch_kind::ZX_REWRITE, zx.edges_before as u64, zx.edges_after as u64);
+        let _ = writeln!(
+            serial,
+            "Manifold: ZX rewrite E {} -> {} fused={} cancel={}",
+            zx.edges_before, zx.edges_after, zx.fused_nodes, zx.canceled_cycles
+        );
+        self.zx_edges_before = zx.edges_before;
+        self.zx_edges_after = zx.edges_after;
+
+        // 2. Hodge from (simplified) quiver
         let faces = hodge_from_quiver(&self.quiver, &mut self.hodge);
         self.seed.faces = faces;
         self.boot_energy = self.hodge.nonharmonic_energy0();
@@ -200,6 +252,28 @@ impl ManifoldOrchestrator {
             "Manifold: Hodge V={} E={} F={} energy0={}",
             self.hodge.n_v, self.hodge.n_e, faces, self.boot_energy
         );
+
+        // 2b. Fiedler on Hodge adjacency
+        let fied = fiedler_on_hodge(&self.hodge);
+        self.record(0, orch_kind::FIEDLER_CUT, fied.mask, fied.lambda2_fp as u32 as u64);
+        let _ = writeln!(
+            serial,
+            "Manifold: Fiedler λ₂={} mask={:#x} +{}/-{}",
+            fied.lambda2_fp, fied.mask, fied.n_pos, fied.n_neg
+        );
+        self.fiedler_mask = fied.mask;
+        self.fiedler_value_fp = fied.lambda2_fp;
+
+        // 2c. Čech H¹ on same nerve
+        let h1 = cech_h1_on_hodge(&self.hodge);
+        self.record(0, orch_kind::CECH_H1, h1.betti1 as u64, h1.components as u64);
+        let _ = writeln!(
+            serial,
+            "Manifold: Čech H¹ β₁={} components={} obstructed={}",
+            h1.betti1, h1.components, h1.obstructed
+        );
+        self.cech_h1_dim = h1.betti1;
+        self.cech_obstructed = h1.obstructed;
 
         // 3. Prove δ₁ ∘ δ₀ = 0 on gradient
         self.complex_ok = prove_complex_identity(&mut self.hodge);
@@ -268,8 +342,22 @@ impl ManifoldOrchestrator {
             pick, self.fairq.picks
         );
 
+        // 6b. Tropical critical residual chain
+        let trop = tropical_critical(&self.quiver);
+        self.record(
+            0,
+            orch_kind::TROPICAL_CRIT,
+            trop.length_fp as u32 as u64,
+            trop.len as u64,
+        );
+        let _ = writeln!(
+            serial,
+            "Manifold: tropical crit len={} weight={}",
+            trop.len, trop.length_fp
+        );
+
         // 7. Publish actuation
-        let act = self.publish(pick, mut_node);
+        let act = self.publish(pick, mut_node, &trop);
         self.record(0, orch_kind::MANIFOLD_BOOT, self.phase as u64, act.energy0);
         if self.phase != OrchPhase::Degraded {
             self.phase = OrchPhase::Live;
@@ -310,6 +398,12 @@ impl ManifoldOrchestrator {
             let _ = self.quiver.set_congestion(i, c);
         }
 
+        if self.epoch & 7 == 0 {
+            let zx = zx_simplify_quiver(&mut self.quiver);
+            self.zx_edges_before = zx.edges_before;
+            self.zx_edges_after = zx.edges_after;
+        }
+
         let mut_node = match self.quiver.mutate_hottest(self.mut_threshold) {
             Ok(Some(k)) => {
                 self.record(
@@ -330,7 +424,18 @@ impl ManifoldOrchestrator {
         let pick = self.fairq.quantum(1) as u16;
         self.record(now_tsc, orch_kind::NTT_PICK, pick as u64, self.fairq.picks);
 
-        Ok(self.publish(pick, mut_node))
+        let trop = tropical_critical(&self.quiver);
+
+        if self.epoch & 31 == 0 {
+            let fied = fiedler_on_hodge(&self.hodge);
+            let h1 = cech_h1_on_hodge(&self.hodge);
+            self.fiedler_mask = fied.mask;
+            self.fiedler_value_fp = fied.lambda2_fp;
+            self.cech_h1_dim = h1.betti1;
+            self.cech_obstructed = h1.obstructed;
+        }
+
+        Ok(self.publish(pick, mut_node, &trop))
     }
 
     /// External subsystems charge fair-queue deficit (syscall class, IRQ storm, …).
@@ -340,7 +445,7 @@ impl ManifoldOrchestrator {
         }
     }
 
-    fn publish(&mut self, pick: u16, mut_node: u16) -> Actuation {
+    fn publish(&mut self, pick: u16, mut_node: u16, trop: &TropicalReport) -> Actuation {
         let mut act = Actuation::EMPTY;
         act.fair_class = pick;
         act.mutated_node = mut_node;
@@ -350,6 +455,17 @@ impl ManifoldOrchestrator {
         act.n_ceilings = self.quiver.n.min(MAX_N) as u8;
         self.hodge.migration_delta(&mut act.migrate);
         act.n_migrate = self.hodge.n_v.min(MAX_V) as u8;
+
+        act.fiedler_mask = self.fiedler_mask;
+        act.fiedler_value_fp = self.fiedler_value_fp;
+        act.cech_h1_dim = self.cech_h1_dim;
+        act.cech_obstructed = self.cech_obstructed;
+        act.zx_edges_before = self.zx_edges_before;
+        act.zx_edges_after = self.zx_edges_after;
+        act.tropical_chain = trop.chain;
+        act.tropical_chain_len = trop.len;
+        act.tropical_length_fp = trop.length_fp;
+
         self.last = act;
         act
     }

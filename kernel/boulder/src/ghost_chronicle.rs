@@ -197,4 +197,8 @@ pub mod ghost_kind {
     pub const NTT_PICK: u16 = 0xA004;
     pub const COMPLEX_ID: u16 = 0xA005;
     pub const SEED_REPORT: u16 = 0xA006;
+    pub const ZX_REWRITE: u16 = 0xA010;
+    pub const FIEDLER_CUT: u16 = 0xA011;
+    pub const CECH_H1: u16 = 0xA012;
+    pub const TROPICAL_CRIT: u16 = 0xA013;
 }
