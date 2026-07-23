@@ -1,6 +1,4 @@
-use core::sync::atomic::{
-    AtomicU64, Ordering,
-};
+use core::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CpuVector {
@@ -55,10 +53,7 @@ impl CpuShard {
 
     /// Exactly one writer per shard.
     fn publish(&self, vector: CpuVector) {
-        let odd = self
-            .guard
-            .fetch_add(1, Ordering::AcqRel)
-            .wrapping_add(1);
+        let odd = self.guard.fetch_add(1, Ordering::AcqRel).wrapping_add(1);
 
         self.epoch.store(vector.epoch, Ordering::Relaxed);
         self.logical_tick
@@ -66,14 +61,12 @@ impl CpuShard {
         self.heat.store(vector.heat, Ordering::Relaxed);
         self.queue_pressure
             .store(vector.queue_pressure, Ordering::Relaxed);
-        self.collapses
-            .store(vector.collapses, Ordering::Relaxed);
+        self.collapses.store(vector.collapses, Ordering::Relaxed);
         self.replay_rejections
             .store(vector.replay_rejections, Ordering::Relaxed);
 
         self.phase_and_coherence.store(
-            u64::from(vector.phase_bin)
-                | (u64::from(vector.coherence) << 16),
+            u64::from(vector.phase_bin) | (u64::from(vector.coherence) << 16),
             Ordering::Relaxed,
         );
 
@@ -90,17 +83,12 @@ impl CpuShard {
             }
 
             let epoch = self.epoch.load(Ordering::Relaxed);
-            let logical_tick =
-                self.logical_tick.load(Ordering::Relaxed);
+            let logical_tick = self.logical_tick.load(Ordering::Relaxed);
             let heat = self.heat.load(Ordering::Relaxed);
-            let queue_pressure =
-                self.queue_pressure.load(Ordering::Relaxed);
-            let collapses =
-                self.collapses.load(Ordering::Relaxed);
-            let replay_rejections =
-                self.replay_rejections.load(Ordering::Relaxed);
-            let phase =
-                self.phase_and_coherence.load(Ordering::Relaxed);
+            let queue_pressure = self.queue_pressure.load(Ordering::Relaxed);
+            let collapses = self.collapses.load(Ordering::Relaxed);
+            let replay_rejections = self.replay_rejections.load(Ordering::Relaxed);
+            let phase = self.phase_and_coherence.load(Ordering::Relaxed);
 
             let after = self.guard.load(Ordering::Acquire);
 
@@ -151,15 +139,8 @@ impl<const CPUS: usize> EpochCrystal<CPUS> {
         }
     }
 
-    pub fn publish(
-        &self,
-        cpu: usize,
-        vector: CpuVector,
-    ) -> Result<(), CrystalError> {
-        let shard = self
-            .shards
-            .get(cpu)
-            .ok_or(CrystalError::CpuOutOfRange)?;
+    pub fn publish(&self, cpu: usize, vector: CpuVector) -> Result<(), CrystalError> {
+        let shard = self.shards.get(cpu).ok_or(CrystalError::CpuOutOfRange)?;
 
         shard.publish(vector);
         Ok(())
@@ -187,24 +168,19 @@ impl<const CPUS: usize> EpochCrystal<CPUS> {
                 continue;
             }
 
-            result.active_cpus =
-                result.active_cpus.saturating_add(1);
+            result.active_cpus = result.active_cpus.saturating_add(1);
 
-            result.newest_epoch =
-                result.newest_epoch.max(vector.epoch);
+            result.newest_epoch = result.newest_epoch.max(vector.epoch);
 
-            result.newest_logical_tick =
-                result.newest_logical_tick.max(vector.logical_tick);
+            result.newest_logical_tick = result.newest_logical_tick.max(vector.logical_tick);
 
-            result.maximum_heat =
-                result.maximum_heat.max(vector.heat);
+            result.maximum_heat = result.maximum_heat.max(vector.heat);
 
             result.total_queue_pressure = result
                 .total_queue_pressure
                 .saturating_add(vector.queue_pressure);
 
-            result.total_collapses =
-                result.total_collapses.saturating_add(vector.collapses);
+            result.total_collapses = result.total_collapses.saturating_add(vector.collapses);
 
             result.total_replay_rejections = result
                 .total_replay_rejections

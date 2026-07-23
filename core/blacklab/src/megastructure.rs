@@ -1,36 +1,47 @@
 #![allow(unsafe_op_in_unsafe_fn)]
-#![allow(dead_code, unused_variables, non_snake_case, clippy::missing_safety_doc)]
+#![allow(
+    dead_code,
+    unused_variables,
+    non_snake_case,
+    clippy::missing_safety_doc
+)]
 
 //! The BlackLab Codex Megastructure
-//! 
-//! An intertwined, highly-experimental kernel substrate combining 7 forbidden 
+//!
+//! An intertwined, highly-experimental kernel substrate combining 7 forbidden
 //! architectural paradigms into a unified lock-free topology.
 
-use core::sync::atomic::{AtomicU8, AtomicU64, AtomicPtr, AtomicBool, Ordering};
 use core::ptr;
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicU64, Ordering};
 
-/// The Heartbeat. This single pulse function cross-wires the state of all 
+/// The Heartbeat. This single pulse function cross-wires the state of all
 /// 7 subsystems, causing them to actively feed into one another.
 pub fn blacklab_pulse() -> u64 {
     static CODEX_PULSE: AtomicU64 = AtomicU64::new(0);
     let p = CODEX_PULSE.fetch_add(1, Ordering::SeqCst);
-    
+
     {
         // HELIOS heat bleeds into MNEMOSYNE semantic graph
         let heat = helios::HELIOS_STAR.thermal_core.load(Ordering::Relaxed);
-        mnemosyne::MNEMOSYNE_GRAPH.semantic_heat.fetch_add(heat / 10, Ordering::Relaxed);
-        
+        mnemosyne::MNEMOSYNE_GRAPH
+            .semantic_heat
+            .fetch_add(heat / 10, Ordering::Relaxed);
+
         // CHRONOS causal flux twists PROTEUS bus entropy
         let flux = chronos::CHRONOS_BRAID.causal_flux.load(Ordering::Relaxed);
-        proteus::PROTEUS_BUS.entropy_pool.fetch_xor(flux, Ordering::Relaxed);
+        proteus::PROTEUS_BUS
+            .entropy_pool
+            .fetch_xor(flux, Ordering::Relaxed);
 
         // NYX ambient darkness from shadow realms accelerates AION immortal epochs
         let darkness = nyx::NYX_ABYSS.ambient_darkness.load(Ordering::Relaxed);
-        aion::AION_CORE.global_epoch.fetch_add(darkness / 100, Ordering::Relaxed);
-        
+        aion::AION_CORE
+            .global_epoch
+            .fetch_add(darkness / 100, Ordering::Relaxed);
+
         // LOGOS absolute truth tempers the return pulse
         let truth = logos::LOGOS_FORGE.absolute_truth.load(Ordering::Relaxed);
-        
+
         p ^ truth ^ flux
     }
 }
@@ -66,8 +77,9 @@ pub mod mnemosyne {
     pub unsafe fn materialize_node(vaddr: u64, tags: u64) -> *mut MemoryNode {
         // Intrusive static bump allocator for graph nodes
         static NEXT_NODE: AtomicU64 = AtomicU64::new(0xFFFF_8000_1000_0000);
-        let ptr = NEXT_NODE.fetch_add(core::mem::size_of::<MemoryNode>() as u64, Ordering::SeqCst) as *mut MemoryNode;
-        
+        let ptr = NEXT_NODE.fetch_add(core::mem::size_of::<MemoryNode>() as u64, Ordering::SeqCst)
+            as *mut MemoryNode;
+
         ptr.write(MemoryNode {
             virtual_base: vaddr,
             semantic_tags: tags,
@@ -81,7 +93,12 @@ pub mod mnemosyne {
         let mut current_root = MNEMOSYNE_GRAPH.root.load(Ordering::Relaxed);
         loop {
             (*ptr).next_sibling.store(current_root, Ordering::Relaxed);
-            match MNEMOSYNE_GRAPH.root.compare_exchange_weak(current_root, ptr, Ordering::Release, Ordering::Relaxed) {
+            match MNEMOSYNE_GRAPH.root.compare_exchange_weak(
+                current_root,
+                ptr,
+                Ordering::Release,
+                Ordering::Relaxed,
+            ) {
                 Ok(_) => break,
                 Err(new_root) => current_root = new_root,
             }
@@ -92,7 +109,9 @@ pub mod mnemosyne {
     pub unsafe fn induce_temporal_rollback(target_epoch: u64) {
         let current = MNEMOSYNE_GRAPH.replay_epoch.load(Ordering::Acquire);
         if target_epoch < current {
-            MNEMOSYNE_GRAPH.replay_epoch.store(target_epoch, Ordering::Release);
+            MNEMOSYNE_GRAPH
+                .replay_epoch
+                .store(target_epoch, Ordering::Release);
             // In a full implementation, this isolates newer nodes as 'ghosts'
         }
     }
@@ -126,20 +145,32 @@ pub mod helios {
 
     pub unsafe fn inject_thread(thread: *mut OrbitingThread) {
         let mass = (*thread).thermal_mass;
-        
+
         // The scheduler classifies based on thermal density
         if mass > 500 {
             let mut head = HELIOS_STAR.inner_orbit.load(Ordering::Relaxed);
             loop {
                 (*thread).next_orbit.store(head, Ordering::Relaxed);
-                if HELIOS_STAR.inner_orbit.compare_exchange_weak(head, thread, Ordering::Release, Ordering::Relaxed).is_ok() { break; }
+                if HELIOS_STAR
+                    .inner_orbit
+                    .compare_exchange_weak(head, thread, Ordering::Release, Ordering::Relaxed)
+                    .is_ok()
+                {
+                    break;
+                }
                 head = HELIOS_STAR.inner_orbit.load(Ordering::Relaxed);
             }
         } else {
             let mut head = HELIOS_STAR.outer_orbit.load(Ordering::Relaxed);
             loop {
                 (*thread).next_orbit.store(head, Ordering::Relaxed);
-                if HELIOS_STAR.outer_orbit.compare_exchange_weak(head, thread, Ordering::Release, Ordering::Relaxed).is_ok() { break; }
+                if HELIOS_STAR
+                    .outer_orbit
+                    .compare_exchange_weak(head, thread, Ordering::Release, Ordering::Relaxed)
+                    .is_ok()
+                {
+                    break;
+                }
                 head = HELIOS_STAR.outer_orbit.load(Ordering::Relaxed);
             }
         }
@@ -154,7 +185,12 @@ pub mod proteus {
     use super::*;
 
     #[derive(Clone, Copy, PartialEq, Eq)]
-    pub enum Dialect { Void, X86_64, RiscV, AArch64 }
+    pub enum Dialect {
+        Void,
+        X86_64,
+        RiscV,
+        AArch64,
+    }
 
     pub struct BusAlchemist {
         pub active_dialect: AtomicU8,
@@ -168,13 +204,17 @@ pub mod proteus {
 
     pub unsafe fn transmute_payload(payload: *mut u8, len: usize, target: Dialect) {
         // Dialect shifting applies cryptographic/entropy masking to raw bus DMA payloads
-        let shift = PROTEUS_BUS.entropy_pool.fetch_add(len as u64, Ordering::Relaxed);
+        let shift = PROTEUS_BUS
+            .entropy_pool
+            .fetch_add(len as u64, Ordering::Relaxed);
         let p = core::slice::from_raw_parts_mut(payload, len);
-        
+
         for (i, byte) in p.iter_mut().enumerate() {
             *byte ^= ((shift.rotate_left(i as u32)) & 0xFF) as u8;
         }
-        PROTEUS_BUS.active_dialect.store(target as u8, Ordering::Relaxed);
+        PROTEUS_BUS
+            .active_dialect
+            .store(target as u8, Ordering::Relaxed);
     }
 }
 
@@ -204,25 +244,33 @@ pub mod chronos {
 
     pub unsafe fn fork_timeline(current: *mut TimelineStrand) -> *mut TimelineStrand {
         static NEXT_STRAND: AtomicU64 = AtomicU64::new(0xFFFF_9000_1000_0000);
-        let ptr = NEXT_STRAND.fetch_add(core::mem::size_of::<TimelineStrand>() as u64, Ordering::SeqCst) as *mut TimelineStrand;
-        
+        let ptr = NEXT_STRAND.fetch_add(
+            core::mem::size_of::<TimelineStrand>() as u64,
+            Ordering::SeqCst,
+        ) as *mut TimelineStrand;
+
         ptr.write(TimelineStrand {
             braid_id: (*current).braid_id + 1,
             causal_vector: (*current).causal_vector ^ 0xCA5CA1_CA5CA1,
             divergent: AtomicBool::new(true),
             next_strand: AtomicPtr::new(CHRONOS_BRAID.master_strand.load(Ordering::Relaxed)),
         });
-        
+
         // Push to master braid lock-free
         let mut master = CHRONOS_BRAID.master_strand.load(Ordering::Relaxed);
         loop {
             (*ptr).next_strand.store(master, Ordering::Relaxed);
-            match CHRONOS_BRAID.master_strand.compare_exchange_weak(master, ptr, Ordering::Release, Ordering::Relaxed) {
+            match CHRONOS_BRAID.master_strand.compare_exchange_weak(
+                master,
+                ptr,
+                Ordering::Release,
+                Ordering::Relaxed,
+            ) {
                 Ok(_) => break,
                 Err(new_master) => master = new_master,
             }
         }
-        
+
         CHRONOS_BRAID.causal_flux.fetch_add(1, Ordering::Relaxed);
         ptr
     }
@@ -258,12 +306,19 @@ pub mod nyx {
         let mut head = (*new_realm).walkers.load(Ordering::Relaxed);
         loop {
             (*walker).next_walker.store(head, Ordering::Relaxed);
-            match (*new_realm).walkers.compare_exchange_weak(head, walker, Ordering::Release, Ordering::Relaxed) {
+            match (*new_realm).walkers.compare_exchange_weak(
+                head,
+                walker,
+                Ordering::Release,
+                Ordering::Relaxed,
+            ) {
                 Ok(_) => break,
                 Err(new_head) => head = new_head,
             }
         }
-        (*new_realm).ambient_darkness.fetch_add((*walker).stealth_level, Ordering::Relaxed);
+        (*new_realm)
+            .ambient_darkness
+            .fetch_add((*walker).stealth_level, Ordering::Relaxed);
     }
 }
 
@@ -290,7 +345,9 @@ pub mod logos {
         // A theorem forge where policies are strictly mathematical bitwise reductions
         let truth = axiom.truth_value;
         {
-            let old = LOGOS_FORGE.absolute_truth.fetch_or(truth, Ordering::Release);
+            let old = LOGOS_FORGE
+                .absolute_truth
+                .fetch_or(truth, Ordering::Release);
             (old | truth) != 0
         }
     }

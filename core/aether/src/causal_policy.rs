@@ -1,6 +1,4 @@
-use crate::resonance_policy::{
-    POLICY_REPHASE, PolicyError, ResonancePolicy,
-};
+use crate::resonance_policy::{POLICY_REPHASE, PolicyError, ResonancePolicy};
 
 pub const MAXIMUM_POLICY_OPERATIONS: usize = 16;
 
@@ -54,11 +52,7 @@ impl CausalPolicyOperation {
         value: 0,
     };
 
-    pub const fn new(
-        kind: PolicyMutationKind,
-        dependencies: u16,
-        value: u64,
-    ) -> Self {
+    pub const fn new(kind: PolicyMutationKind, dependencies: u16, value: u64) -> Self {
         Self {
             kind: kind as u8,
             reserved: 0,
@@ -73,10 +67,7 @@ impl CausalPolicyOperation {
 #[repr(C)]
 pub struct CausalPolicyBatch {
     pub expected_epoch: u64,
-    pub operations: [
-        CausalPolicyOperation;
-        MAXIMUM_POLICY_OPERATIONS
-    ],
+    pub operations: [CausalPolicyOperation; MAXIMUM_POLICY_OPERATIONS],
     pub length: u8,
     pub reserved: [u8; 7],
     pub checksum: u64,
@@ -86,10 +77,7 @@ impl CausalPolicyBatch {
     pub const fn empty(expected_epoch: u64) -> Self {
         Self {
             expected_epoch,
-            operations: [
-                CausalPolicyOperation::EMPTY;
-                MAXIMUM_POLICY_OPERATIONS
-            ],
+            operations: [CausalPolicyOperation::EMPTY; MAXIMUM_POLICY_OPERATIONS],
             length: 0,
             reserved: [0; 7],
             checksum: 0,
@@ -129,31 +117,18 @@ impl CausalPolicyBatch {
         for index in 0..length {
             let operation = self.operations[index];
 
-            let allowed_dependencies = if index == 0 {
-                0
-            } else {
-                (1_u16 << index) - 1
-            };
+            let allowed_dependencies = if index == 0 { 0 } else { (1_u16 << index) - 1 };
 
             if operation.dependencies & !allowed_dependencies != 0 {
-                return Err(
-                    CausalPolicyError::ForwardDependency(index),
-                );
+                return Err(CausalPolicyError::ForwardDependency(index));
             }
 
-            if operation.dependencies & completed
-                != operation.dependencies
-            {
-                return Err(
-                    CausalPolicyError::UnsatisfiedDependency(index),
-                );
+            if operation.dependencies & completed != operation.dependencies {
+                return Err(CausalPolicyError::UnsatisfiedDependency(index));
             }
 
-            let kind =
-                PolicyMutationKind::from_raw(operation.kind)
-                    .ok_or(
-                        CausalPolicyError::UnknownMutation(index),
-                    )?;
+            let kind = PolicyMutationKind::from_raw(operation.kind)
+                .ok_or(CausalPolicyError::UnknownMutation(index))?;
 
             apply_operation(&mut policy, kind, operation.value)
                 .map_err(CausalPolicyError::Policy)?;
@@ -161,35 +136,25 @@ impl CausalPolicyBatch {
             completed |= 1_u16 << index;
         }
 
-        let policy =
-            policy.validate().map_err(CausalPolicyError::Policy)?;
+        let policy = policy.validate().map_err(CausalPolicyError::Policy)?;
 
         Ok(PolicyTransition {
             expected_epoch: current_epoch,
             next_epoch: current_epoch.wrapping_add(1).max(1),
             policy,
-            digest: transition_digest(
-                current_epoch,
-                completed,
-                policy,
-            ),
+            digest: transition_digest(current_epoch, completed, policy),
         })
     }
 
     fn compute_checksum(&self) -> u64 {
-        let mut digest =
-            mix(0x243f_6a88_85a3_08d3, self.expected_epoch);
+        let mut digest = mix(0x243f_6a88_85a3_08d3, self.expected_epoch);
 
         digest = mix(digest, u64::from(self.length));
 
-        for operation in
-            &self.operations[..usize::from(self.length).min(
-                MAXIMUM_POLICY_OPERATIONS,
-            )]
+        for operation in &self.operations[..usize::from(self.length).min(MAXIMUM_POLICY_OPERATIONS)]
         {
             digest = mix(digest, u64::from(operation.kind));
-            digest =
-                mix(digest, u64::from(operation.dependencies));
+            digest = mix(digest, u64::from(operation.dependencies));
             digest = mix(digest, operation.value);
         }
 
@@ -209,10 +174,7 @@ pub struct PolicyTransition {
 pub enum CausalPolicyError {
     InvalidLength,
     BadChecksum,
-    StaleEpoch {
-        expected: u64,
-        observed: u64,
-    },
+    StaleEpoch { expected: u64, observed: u64 },
     ForwardDependency(usize),
     UnsatisfiedDependency(usize),
     UnknownMutation(usize),
@@ -239,52 +201,36 @@ fn apply_operation(
         }
 
         PolicyMutationKind::SetPriorityMass => {
-            policy.priority_mass =
-                u16::try_from(value)
-                    .map_err(|_| PolicyError::TargetPhase)?;
+            policy.priority_mass = u16::try_from(value).map_err(|_| PolicyError::TargetPhase)?;
         }
 
         PolicyMutationKind::SetTargetPhase => {
-            policy.target_phase =
-                u16::try_from(value)
-                    .map_err(|_| PolicyError::TargetPhase)?;
+            policy.target_phase = u16::try_from(value).map_err(|_| PolicyError::TargetPhase)?;
 
             policy.flags |= POLICY_REPHASE;
         }
 
         PolicyMutationKind::SetMaximumPairs => {
-            policy.maximum_pairs =
-                u16::try_from(value)
-                    .map_err(|_| PolicyError::MaximumPairs)?;
+            policy.maximum_pairs = u16::try_from(value).map_err(|_| PolicyError::MaximumPairs)?;
         }
 
         PolicyMutationKind::SetFlags => {
-            policy.flags =
-                u32::try_from(value)
-                    .map_err(|_| PolicyError::Flags)?;
+            policy.flags = u32::try_from(value).map_err(|_| PolicyError::Flags)?;
         }
 
         PolicyMutationKind::AddFlags => {
-            policy.flags |=
-                u32::try_from(value)
-                    .map_err(|_| PolicyError::Flags)?;
+            policy.flags |= u32::try_from(value).map_err(|_| PolicyError::Flags)?;
         }
 
         PolicyMutationKind::RemoveFlags => {
-            policy.flags &=
-                !u32::try_from(value)
-                    .map_err(|_| PolicyError::Flags)?;
+            policy.flags &= !u32::try_from(value).map_err(|_| PolicyError::Flags)?;
         }
     }
 
     Ok(())
 }
 
-fn transition_digest(
-    epoch: u64,
-    completed: u16,
-    policy: ResonancePolicy,
-) -> u64 {
+fn transition_digest(epoch: u64, completed: u16, policy: ResonancePolicy) -> u64 {
     let mut digest = mix(epoch, u64::from(completed));
     digest = mix(digest, policy.collapse_threshold);
     digest = mix(digest, policy.heat_ceiling);

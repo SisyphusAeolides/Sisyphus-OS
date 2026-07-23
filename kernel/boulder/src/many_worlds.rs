@@ -104,21 +104,14 @@ impl<const N: usize> ManyWorlds<N> {
         })
     }
 
-    pub fn policy(
-        &self,
-        token: WorldToken,
-    ) -> Result<SchedulerPolicy, WorldError> {
+    pub fn policy(&self, token: WorldToken) -> Result<SchedulerPolicy, WorldError> {
         self.policies
             .get(token.index())
             .copied()
             .ok_or(WorldError::InvalidToken)
     }
 
-    pub fn observe(
-        &mut self,
-        token: WorldToken,
-        outcome: WorldOutcome,
-    ) -> Result<i64, WorldError> {
+    pub fn observe(&mut self, token: WorldToken, outcome: WorldOutcome) -> Result<i64, WorldError> {
         let index = token.index();
 
         let policy = self
@@ -127,10 +120,7 @@ impl<const N: usize> ManyWorlds<N> {
             .copied()
             .ok_or(WorldError::InvalidToken)?;
 
-        let stat = self
-            .stats
-            .get_mut(index)
-            .ok_or(WorldError::InvalidToken)?;
+        let stat = self.stats.get_mut(index).ok_or(WorldError::InvalidToken)?;
 
         if token.epoch <= stat.last_observed_epoch {
             return Err(WorldError::DuplicateObservation);
@@ -139,8 +129,7 @@ impl<const N: usize> ManyWorlds<N> {
         let reward = reward(policy, outcome);
 
         stat.samples = stat.samples.saturating_add(1);
-        stat.reward_sum =
-            stat.reward_sum.saturating_add(i128::from(reward));
+        stat.reward_sum = stat.reward_sum.saturating_add(i128::from(reward));
         stat.last_observed_epoch = token.epoch;
 
         self.total_samples = self.total_samples.saturating_add(1);
@@ -163,10 +152,7 @@ impl<const N: usize> ManyWorlds<N> {
             .enumerate()
             .max_by_key(|(_, stat)| {
                 let mean = mean_reward(stat);
-                let exploration = exploration_bonus(
-                    self.total_samples,
-                    stat.samples,
-                );
+                let exploration = exploration_bonus(self.total_samples, stat.samples);
 
                 mean.saturating_add(exploration)
             })
@@ -175,18 +161,11 @@ impl<const N: usize> ManyWorlds<N> {
     }
 }
 
-fn reward(
-    policy: SchedulerPolicy,
-    outcome: WorldOutcome,
-) -> i64 {
-    let latency =
-        weighted(policy.latency_weight, outcome.latency_q16);
-    let throughput =
-        weighted(policy.throughput_weight, outcome.throughput_q16);
-    let heat =
-        weighted(policy.heat_weight, outcome.heat_q16);
-    let fairness =
-        weighted(policy.fairness_weight, outcome.fairness_q16);
+fn reward(policy: SchedulerPolicy, outcome: WorldOutcome) -> i64 {
+    let latency = weighted(policy.latency_weight, outcome.latency_q16);
+    let throughput = weighted(policy.throughput_weight, outcome.throughput_q16);
+    let heat = weighted(policy.heat_weight, outcome.heat_q16);
+    let fairness = weighted(policy.fairness_weight, outcome.fairness_q16);
 
     throughput
         .saturating_add(fairness)
@@ -196,8 +175,7 @@ fn reward(
 
 fn weighted(weight_q8: i16, metric_q16: u32) -> i64 {
     let product = i128::from(weight_q8) * i128::from(metric_q16);
-    (product >> 8)
-        .clamp(i64::MIN as i128, i64::MAX as i128) as i64
+    (product >> 8).clamp(i64::MIN as i128, i64::MAX as i128) as i64
 }
 
 fn mean_reward(stat: &WorldStat) -> i64 {
@@ -205,8 +183,7 @@ fn mean_reward(stat: &WorldStat) -> i64 {
         return i64::MIN / 2;
     }
 
-    (stat.reward_sum / stat.samples as i128)
-        .clamp(i64::MIN as i128, i64::MAX as i128) as i64
+    (stat.reward_sum / stat.samples as i128).clamp(i64::MIN as i128, i64::MAX as i128) as i64
 }
 
 fn exploration_bonus(total: u64, samples: u64) -> i64 {
@@ -215,8 +192,7 @@ fn exploration_bonus(total: u64, samples: u64) -> i64 {
     }
 
     let numerator = (u128::from(total.saturating_add(1))) << 32;
-    integer_sqrt(numerator / u128::from(samples))
-        .min(i64::MAX as u128) as i64
+    integer_sqrt(numerator / u128::from(samples)).min(i64::MAX as u128) as i64
 }
 
 fn integer_sqrt(value: u128) -> u128 {

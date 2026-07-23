@@ -1,10 +1,5 @@
 #![allow(dead_code)]
-use alloc::{
-    collections::BTreeMap,
-    string::String,
-    vec,
-    vec::Vec,
-};
+use alloc::{collections::BTreeMap, string::String, vec, vec::Vec};
 use core::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
 // ─────────────────────────────────────────────
@@ -14,32 +9,36 @@ use core::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 #[repr(u8)]
 pub enum SleepStage {
-    Awake     = 0,
-    Nrem1     = 1,  // Light sleep — 5-15 min idle
-    Nrem2     = 2,  // Sleep spindles — 15-60 min idle
-    Nrem3     = 3,  // Slow-wave — 1-4 hr idle
-    Nrem4     = 4,  // Deep slow-wave — 4+ hr idle
-    Rem       = 5,  // Dreaming — predictive prefetch phase
-    Suspended = 6,  // Cryogenic — cgroup frozen
+    Awake = 0,
+    Nrem1 = 1,     // Light sleep — 5-15 min idle
+    Nrem2 = 2,     // Sleep spindles — 15-60 min idle
+    Nrem3 = 3,     // Slow-wave — 1-4 hr idle
+    Nrem4 = 4,     // Deep slow-wave — 4+ hr idle
+    Rem = 5,       // Dreaming — predictive prefetch phase
+    Suspended = 6, // Cryogenic — cgroup frozen
 }
 
 impl SleepStage {
     pub fn from_u8(v: u8) -> Self {
         match v {
-            1 => Self::Nrem1, 2 => Self::Nrem2, 3 => Self::Nrem3,
-            4 => Self::Nrem4, 5 => Self::Rem,   6 => Self::Suspended,
+            1 => Self::Nrem1,
+            2 => Self::Nrem2,
+            3 => Self::Nrem3,
+            4 => Self::Nrem4,
+            5 => Self::Rem,
+            6 => Self::Suspended,
             _ => Self::Awake,
         }
     }
 
     pub fn deepen(self) -> Self {
         match self {
-            Self::Awake     => Self::Nrem1,
-            Self::Nrem1     => Self::Nrem2,
-            Self::Nrem2     => Self::Nrem3,
-            Self::Nrem3     => Self::Rem,    // cycle through REM before NREM4
-            Self::Rem       => Self::Nrem4,
-            Self::Nrem4     => Self::Suspended,
+            Self::Awake => Self::Nrem1,
+            Self::Nrem1 => Self::Nrem2,
+            Self::Nrem2 => Self::Nrem3,
+            Self::Nrem3 => Self::Rem, // cycle through REM before NREM4
+            Self::Rem => Self::Nrem4,
+            Self::Nrem4 => Self::Suspended,
             Self::Suspended => Self::Suspended,
         }
     }
@@ -47,36 +46,36 @@ impl SleepStage {
     pub fn lighten(self) -> Self {
         match self {
             Self::Suspended => Self::Nrem4,
-            Self::Nrem4     => Self::Rem,
-            Self::Rem       => Self::Nrem3,
-            Self::Nrem3     => Self::Nrem2,
-            Self::Nrem2     => Self::Nrem1,
-            Self::Nrem1     => Self::Awake,
-            Self::Awake     => Self::Awake,
+            Self::Nrem4 => Self::Rem,
+            Self::Rem => Self::Nrem3,
+            Self::Nrem3 => Self::Nrem2,
+            Self::Nrem2 => Self::Nrem1,
+            Self::Nrem1 => Self::Awake,
+            Self::Awake => Self::Awake,
         }
     }
 
     /// Resource release multiplier — how much does this stage free?
     pub fn resource_release_pct(&self) -> f64 {
         match self {
-            Self::Awake     => 0.0,
-            Self::Nrem1     => 0.1,   // 10% heap released
-            Self::Nrem2     => 0.3,   // 30% + IPC queue compressed
-            Self::Nrem3     => 0.6,   // 60% + FDs released
-            Self::Nrem4     => 0.85,  // 85% + sockets suspended
-            Self::Rem       => 0.75,  // 75% (slightly more awake for prefetch)
-            Self::Suspended => 0.99,  // 99% — only kernel footprint remains
+            Self::Awake => 0.0,
+            Self::Nrem1 => 0.1,      // 10% heap released
+            Self::Nrem2 => 0.3,      // 30% + IPC queue compressed
+            Self::Nrem3 => 0.6,      // 60% + FDs released
+            Self::Nrem4 => 0.85,     // 85% + sockets suspended
+            Self::Rem => 0.75,       // 75% (slightly more awake for prefetch)
+            Self::Suspended => 0.99, // 99% — only kernel footprint remains
         }
     }
 
     pub fn wake_latency_ms(&self) -> u64 {
         match self {
-            Self::Awake     => 0,
-            Self::Nrem1     => 5,
-            Self::Nrem2     => 50,
-            Self::Nrem3     => 200,
-            Self::Nrem4     => 500,
-            Self::Rem       => 100,   // REM is pre-warming — faster than NREM4
+            Self::Awake => 0,
+            Self::Nrem1 => 5,
+            Self::Nrem2 => 50,
+            Self::Nrem3 => 200,
+            Self::Nrem4 => 500,
+            Self::Rem => 100, // REM is pre-warming — faster than NREM4
             Self::Suspended => 2000,
         }
     }
@@ -94,7 +93,10 @@ pub struct DreamCompressor {
 
 impl DreamCompressor {
     pub fn new() -> Self {
-        Self { dictionary: BTreeMap::new(), next_code: 256 }
+        Self {
+            dictionary: BTreeMap::new(),
+            next_code: 256,
+        }
     }
 
     /// Compress a heap snapshot to a dream token stream
@@ -141,7 +143,11 @@ impl DreamCompressor {
 
     /// Delta encode — store only changes between snapshots
     pub fn delta_encode(prev: &[u8], curr: &[u8]) -> Vec<(usize, u8)> {
-        let len = if prev.len() < curr.len() { prev.len() } else { curr.len() };
+        let len = if prev.len() < curr.len() {
+            prev.len()
+        } else {
+            curr.len()
+        };
         let mut deltas = Vec::new();
         for i in 0..len {
             if prev[i] != curr[i] {
@@ -161,11 +167,11 @@ impl DreamCompressor {
 pub struct DreamEntry {
     pub timestamp_ns: u64,
     pub stage: SleepStage,
-    pub heap_tokens: Vec<u16>,          // compressed heap snapshot
-    pub delta_patches: Vec<(usize, u8)>,// delta from previous entry
-    pub fd_list: Vec<i32>,              // open file descriptors at checkpoint
-    pub env_hash: u64,                  // xxhash of environment
-    pub markov_state: [u8; 4],          // 2nd-order Markov state at checkpoint
+    pub heap_tokens: Vec<u16>,           // compressed heap snapshot
+    pub delta_patches: Vec<(usize, u8)>, // delta from previous entry
+    pub fd_list: Vec<i32>,               // open file descriptors at checkpoint
+    pub env_hash: u64,                   // xxhash of environment
+    pub markov_state: [u8; 4],           // 2nd-order Markov state at checkpoint
 }
 
 // ─────────────────────────────────────────────
@@ -206,7 +212,9 @@ impl MarkovWakePredictor {
     /// Predict most likely next access event
     pub fn predict_next(&self) -> u8 {
         if let Some(counts) = self.transitions.get(&self.state) {
-            counts.iter().enumerate()
+            counts
+                .iter()
+                .enumerate()
                 .max_by_key(|(_, c)| **c)
                 .map(|(i, _)| i as u8)
                 .unwrap_or(0)
@@ -214,11 +222,15 @@ impl MarkovWakePredictor {
             // No history — fall back to 1st-order
             let s1_state = (0u8, self.state.1);
             if let Some(counts) = self.transitions.get(&s1_state) {
-                counts.iter().enumerate()
+                counts
+                    .iter()
+                    .enumerate()
                     .max_by_key(|(_, c)| **c)
                     .map(|(i, _)| i as u8)
                     .unwrap_or(0)
-            } else { 0 }
+            } else {
+                0
+            }
         }
     }
 
@@ -235,21 +247,33 @@ impl MarkovWakePredictor {
     pub fn state_entropy(&self) -> f64 {
         if let Some(counts) = self.transitions.get(&self.state) {
             let total: u32 = counts.iter().sum();
-            if total == 0 { return 1.0; }
+            if total == 0 {
+                return 1.0;
+            }
             let n = total as f64;
-            -counts.iter()
+            -counts
+                .iter()
                 .filter(|&&c| c > 0)
-                .map(|&c| { let p = c as f64 / n; p * libm::log2(p) })
-                .sum::<f64>() / 4.0 // normalize by log2(16)
-        } else { 1.0 }
+                .map(|&c| {
+                    let p = c as f64 / n;
+                    p * libm::log2(p)
+                })
+                .sum::<f64>()
+                / 4.0 // normalize by log2(16)
+        } else {
+            1.0
+        }
     }
 
     /// Update prediction accuracy metric
     pub fn validate_prediction(&mut self, predicted: u8, actual: u8) {
         self.total_predictions += 1;
-        if predicted == actual { self.correct_predictions += 1; }
+        if predicted == actual {
+            self.correct_predictions += 1;
+        }
         if self.total_predictions > 0 {
-            self.prediction_accuracy = self.correct_predictions as f64 / self.total_predictions as f64;
+            self.prediction_accuracy =
+                self.correct_predictions as f64 / self.total_predictions as f64;
         }
     }
 }
@@ -267,17 +291,18 @@ pub struct SleepingService {
     pub dream_journal: Vec<DreamEntry>,
     pub markov: MarkovWakePredictor,
     pub compressor: DreamCompressor,
-    pub prefetch_ready: bool,         // true if REM pre-warming completed
+    pub prefetch_ready: bool, // true if REM pre-warming completed
     pub checkpoint_count: u64,
     pub total_sleep_ns: u64,
-    pub sleep_efficiency: f64,        // sleep time / idle time — how well we're hibernating
-    pub heap_snapshot: Vec<u8>,       // last full heap snapshot
+    pub sleep_efficiency: f64, // sleep time / idle time — how well we're hibernating
+    pub heap_snapshot: Vec<u8>, // last full heap snapshot
 }
 
 impl SleepingService {
     pub fn new(pid: u32, name: &str) -> Self {
         Self {
-            pid, name: String::from(name),
+            pid,
+            name: String::from(name),
             stage: AtomicU8::new(SleepStage::Awake as u8),
             idle_since_ns: AtomicU64::new(0),
             last_wake_ns: AtomicU64::new(0),
@@ -316,7 +341,9 @@ impl SleepingService {
         let delta = DreamCompressor::delta_encode(&self.heap_snapshot, heap_data);
         let tokens = self.compressor.compress(heap_data);
         let markov_state = [self.markov.state.0, self.markov.state.1, 0, 0];
-        let env_hash = heap_data.iter().enumerate()
+        let env_hash = heap_data
+            .iter()
+            .enumerate()
             .fold(0u64, |h, (i, &b)| h ^ (b as u64).wrapping_mul(i as u64 + 1));
 
         let entry = DreamEntry {
@@ -329,7 +356,9 @@ impl SleepingService {
             markov_state,
         };
         self.dream_journal.push(entry);
-        if self.dream_journal.len() > 32 { self.dream_journal.remove(0); }
+        if self.dream_journal.len() > 32 {
+            self.dream_journal.remove(0);
+        }
         self.heap_snapshot = heap_data.to_vec();
         self.checkpoint_count += 1;
     }
@@ -341,21 +370,29 @@ impl SleepingService {
         // Map predicted event code to likely memory regions (heuristic)
         let base: u64 = self.pid as u64 * 0x1000;
         match next_event {
-            0 => vec![base, base + 0x1000, base + 0x2000],           // sequential read
-            1 => vec![base + 0x8000, base + 0x9000],                  // heap access
-            2 => vec![base + 0x4000, base + 0x5000, base + 0x6000],  // stack
-            3 => vec![base + 0x10000],                                  // mmap region
+            0 => vec![base, base + 0x1000, base + 0x2000], // sequential read
+            1 => vec![base + 0x8000, base + 0x9000],       // heap access
+            2 => vec![base + 0x4000, base + 0x5000, base + 0x6000], // stack
+            3 => vec![base + 0x10000],                     // mmap region
             _ => vec![base],
         }
     }
 
     pub fn compression_ratio(&self) -> f64 {
-        if self.heap_snapshot.is_empty() { return 1.0; }
+        if self.heap_snapshot.is_empty() {
+            return 1.0;
+        }
         if let Some(last) = self.dream_journal.last() {
             let compressed_size = last.heap_tokens.len() * 2 + last.delta_patches.len() * 9;
-            let csize = if compressed_size == 0 { 1 } else { compressed_size };
+            let csize = if compressed_size == 0 {
+                1
+            } else {
+                compressed_size
+            };
             self.heap_snapshot.len() as f64 / csize as f64
-        } else { 1.0 }
+        } else {
+            1.0
+        }
     }
 }
 
@@ -364,15 +401,15 @@ impl SleepingService {
 // ─────────────────────────────────────────────
 
 pub struct Morpheus {
-    pub services:        BTreeMap<u32, SleepingService>,
-    pub wall_ns:         u64,
+    pub services: BTreeMap<u32, SleepingService>,
+    pub wall_ns: u64,
     /// Idle thresholds per stage (nanoseconds of idle time to trigger deepening)
     pub stage_thresholds: [u64; 6],
     /// Pre-wake lead time: how early to start REM prefetch before predicted wake
     pub prefetch_lead_ns: u64,
     pub total_bytes_freed: u64,
     pub total_checkpoints: u64,
-    pub rem_sessions:    u64,
+    pub rem_sessions: u64,
 }
 
 impl Morpheus {
@@ -460,7 +497,7 @@ impl Morpheus {
                 let action = match next {
                     SleepStage::Nrem2 => SleepAction::CheckpointIpc,
                     SleepStage::Nrem3 => SleepAction::ReleaseFds,
-                    SleepStage::Rem   => {
+                    SleepStage::Rem => {
                         self.rem_sessions += 1;
                         svc.prefetch_ready = false;
                         SleepAction::BeginRemPrefetch(svc.rem_prefetch_plan())
@@ -498,15 +535,20 @@ impl Morpheus {
 
     /// Summary: bytes freed across all sleeping services
     pub fn total_resource_freed_pct(&self) -> f64 {
-        if self.services.is_empty() { return 0.0; }
-        self.services.values()
+        if self.services.is_empty() {
+            return 0.0;
+        }
+        self.services
+            .values()
             .map(|s| s.current_stage().resource_release_pct())
-            .sum::<f64>() / self.services.len() as f64
+            .sum::<f64>()
+            / self.services.len() as f64
     }
 
     /// Services currently in REM — dreaming and pre-warming
     pub fn dreaming_services(&self) -> Vec<(u32, Vec<u64>)> {
-        self.services.values()
+        self.services
+            .values()
             .filter(|s| s.current_stage() == SleepStage::Rem && s.prefetch_ready)
             .map(|s| (s.pid, s.rem_prefetch_plan()))
             .collect()
@@ -514,8 +556,14 @@ impl Morpheus {
 
     /// Return hypnogram: sleep stage history for a service
     pub fn hypnogram(&self, pid: u32) -> Vec<(u64, SleepStage)> {
-        self.services.get(&pid)
-            .map(|s| s.dream_journal.iter().map(|e| (e.timestamp_ns, e.stage)).collect())
+        self.services
+            .get(&pid)
+            .map(|s| {
+                s.dream_journal
+                    .iter()
+                    .map(|e| (e.timestamp_ns, e.stage))
+                    .collect()
+            })
             .unwrap_or_default()
     }
 }
@@ -524,21 +572,21 @@ impl Morpheus {
 #[derive(Clone, Debug)]
 pub enum SleepAction {
     None,
-    PageOutHeap(u8),           // page out N% of heap
-    CheckpointIpc,             // serialize and compress IPC queues
-    ReleaseFds,                // close non-essential file descriptors
-    BeginRemPrefetch(Vec<u64>),// start predictive memory prefetch
-    SuspendSockets,            // TCP keepalive only, data sockets suspended
-    CgroupFreeze,              // cgroup v2 freeze the entire service
-    PreWarm(Vec<u64>),         // pre-load pages back into cache
+    PageOutHeap(u8),            // page out N% of heap
+    CheckpointIpc,              // serialize and compress IPC queues
+    ReleaseFds,                 // close non-essential file descriptors
+    BeginRemPrefetch(Vec<u64>), // start predictive memory prefetch
+    SuspendSockets,             // TCP keepalive only, data sockets suspended
+    CgroupFreeze,               // cgroup v2 freeze the entire service
+    PreWarm(Vec<u64>),          // pre-load pages back into cache
 }
 
 #[derive(Clone, Copy)]
 pub enum WakeReason {
-    IncomingIpc  = 1,
-    TimerFired   = 2,
-    UserInput    = 3,
-    PeerWoke     = 4,
+    IncomingIpc = 1,
+    TimerFired = 2,
+    UserInput = 3,
+    PeerWoke = 4,
     WatchdogKick = 5,
-    SystemEvent  = 6,
+    SystemEvent = 6,
 }

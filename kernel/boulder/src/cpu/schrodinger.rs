@@ -5,7 +5,7 @@
 //
 // Concept: When a branch outcome is uncertain (e.g. waiting on slow I/O or
 //   a cache miss), instead of guessing one path and suffering pipeline flushes,
-//   the kernel physically splits the execution state and runs BOTH branches 
+//   the kernel physically splits the execution state and runs BOTH branches
 //   concurrently in isolated "superposition contexts".
 //
 // State representation: |ψ⟩ = α|True⟩ + β|False⟩
@@ -15,8 +15,8 @@
 //   Writes to memory are trapped and kept in the local quantum buffer.
 //
 // Collapse (Observation): Once the actual branch condition resolves (the I/O
-//   returns or memory fetch completes), the wave function collapses. The 
-//   correct path's quantum buffer is atomically committed to main memory, 
+//   returns or memory fetch completes), the wave function collapses. The
+//   correct path's quantum buffer is atomically committed to main memory,
 //   and the incorrect path's state is instantly destroyed.
 //
 // Entanglement: If two speculative threads interact via IPC (e.g., Wormhole),
@@ -24,8 +24,8 @@
 
 #![allow(dead_code)]
 extern crate alloc;
-use alloc::vec::Vec;
 use alloc::collections::BTreeMap;
+use alloc::vec::Vec;
 
 // ─────────────────────────────────────────────
 // CONSTANTS
@@ -46,7 +46,9 @@ pub struct QuantumBuffer {
 
 impl QuantumBuffer {
     pub fn new() -> Self {
-        Self { writes: BTreeMap::new() }
+        Self {
+            writes: BTreeMap::new(),
+        }
     }
     pub fn read(&self, paddr: u64) -> Option<u8> {
         self.writes.get(&paddr).copied()
@@ -67,20 +69,33 @@ impl QuantumBuffer {
 
 #[derive(Clone)]
 pub struct RegisterFile {
-    pub rax: u64, pub rbx: u64, pub rcx: u64, pub rdx: u64,
-    pub rsi: u64, pub rdi: u64, pub rbp: u64, pub rsp: u64,
-    pub r8:  u64, pub r9:  u64, pub r10: u64, pub r11: u64,
-    pub r12: u64, pub r13: u64, pub r14: u64, pub r15: u64,
-    pub rip: u64, pub rflags: u64,
+    pub rax: u64,
+    pub rbx: u64,
+    pub rcx: u64,
+    pub rdx: u64,
+    pub rsi: u64,
+    pub rdi: u64,
+    pub rbp: u64,
+    pub rsp: u64,
+    pub r8: u64,
+    pub r9: u64,
+    pub r10: u64,
+    pub r11: u64,
+    pub r12: u64,
+    pub r13: u64,
+    pub r14: u64,
+    pub r15: u64,
+    pub rip: u64,
+    pub rflags: u64,
 }
 
 pub struct SuperpositionState {
-    pub id:          u32,
+    pub id: u32,
     pub branch_cond: bool, // Which reality this represents (True or False)
-    pub regs:        RegisterFile,
-    pub memory:      QuantumBuffer,
-    pub cycles_run:  u64,
-    pub decohered:   bool, // True if the state failed (e.g., buffer overflow or crash)
+    pub regs: RegisterFile,
+    pub memory: QuantumBuffer,
+    pub cycles_run: u64,
+    pub decohered: bool, // True if the state failed (e.g., buffer overflow or crash)
 }
 
 // ─────────────────────────────────────────────
@@ -88,11 +103,11 @@ pub struct SuperpositionState {
 // ─────────────────────────────────────────────
 
 pub struct WaveFunction {
-    pub thread_id:     u32,
-    pub base_regs:     RegisterFile,
-    pub states:        Vec<SuperpositionState>,
-    pub observation:   Option<bool>, // When set, wave collapses
-    pub entangled_with: Vec<u32>,    // Other thread IDs
+    pub thread_id: u32,
+    pub base_regs: RegisterFile,
+    pub states: Vec<SuperpositionState>,
+    pub observation: Option<bool>, // When set, wave collapses
+    pub entangled_with: Vec<u32>,  // Other thread IDs
 }
 
 impl WaveFunction {
@@ -147,7 +162,7 @@ impl WaveFunction {
     /// The hardware finally observed the truth. Collapse the wave function!
     pub fn collapse(&mut self, truth: bool) -> Option<QuantumBuffer> {
         self.observation = Some(truth);
-        
+
         // Find the surviving universe
         let mut survivor_buffer = None;
         while let Some(state) = self.states.pop() {
@@ -157,7 +172,7 @@ impl WaveFunction {
                 self.base_regs = state.regs;
             }
         }
-        
+
         survivor_buffer
     }
 }

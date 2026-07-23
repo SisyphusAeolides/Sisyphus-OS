@@ -1,9 +1,6 @@
-use crate::many_worlds::{
-    ManyWorlds, SchedulerPolicy,
-};
+use crate::many_worlds::{ManyWorlds, SchedulerPolicy};
 
-pub static SCHEDULER_WORLDS:
-    crate::sync::SpinLock<ManyWorlds<4>> =
+pub static SCHEDULER_WORLDS: crate::sync::SpinLock<ManyWorlds<4>> =
     crate::sync::SpinLock::new(ManyWorlds::new([
         SchedulerPolicy {
             latency_weight: 0x0180,

@@ -1,7 +1,7 @@
 extern crate alloc;
 
-use alloc::vec::Vec;
 use alloc::collections::BTreeMap;
+use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
 pub type EndpointId = u64;
@@ -62,8 +62,20 @@ impl NeuromorphicRouter {
 
     pub fn create_endpoint(&mut self) -> EndpointId {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst) as EndpointId;
-        self.axons.insert(id, Axon { id, synapses: Vec::new() });
-        self.dendrites.insert(id, Dendrite { id, inbox: alloc::collections::VecDeque::new() });
+        self.axons.insert(
+            id,
+            Axon {
+                id,
+                synapses: Vec::new(),
+            },
+        );
+        self.dendrites.insert(
+            id,
+            Dendrite {
+                id,
+                inbox: alloc::collections::VecDeque::new(),
+            },
+        );
         id
     }
 
@@ -98,7 +110,9 @@ impl NeuromorphicRouter {
     }
 
     pub fn receive(&mut self, id: EndpointId) -> Option<Message> {
-        self.dendrites.get_mut(&id).and_then(|d| d.inbox.pop_front())
+        self.dendrites
+            .get_mut(&id)
+            .and_then(|d| d.inbox.pop_front())
     }
 }
 

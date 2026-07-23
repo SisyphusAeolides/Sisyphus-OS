@@ -6,14 +6,14 @@ pub type NodeId = u32;
 /// A simplicial complex representing the IPC mesh
 pub struct TopologicalMesh {
     nodes: BTreeMap<NodeId, MeshNode>,
-    edges: Vec<(NodeId, NodeId, f64)>,  // (from, to, weight/latency)
+    edges: Vec<(NodeId, NodeId, f64)>, // (from, to, weight/latency)
     dead_nodes: Vec<NodeId>,
 }
 
 pub struct MeshNode {
     pub id: NodeId,
     pub alive: AtomicBool,
-    pub betti_number: u32,  // topological connectivity measure
+    pub betti_number: u32, // topological connectivity measure
 }
 
 impl TopologicalMesh {
@@ -26,11 +26,14 @@ impl TopologicalMesh {
     }
 
     pub fn register(&mut self, id: NodeId) {
-        self.nodes.insert(id, MeshNode {
+        self.nodes.insert(
             id,
-            alive: AtomicBool::new(true),
-            betti_number: 0,
-        });
+            MeshNode {
+                id,
+                alive: AtomicBool::new(true),
+                betti_number: 0,
+            },
+        );
         // Recompute Betti numbers (connected components)
         self.recompute_topology();
     }
@@ -40,7 +43,9 @@ impl TopologicalMesh {
         // Dijkstra over alive nodes only
         let mut dist: BTreeMap<NodeId, f64> = BTreeMap::new();
         let mut prev: BTreeMap<NodeId, NodeId> = BTreeMap::new();
-        let mut unvisited: Vec<NodeId> = self.nodes.keys()
+        let mut unvisited: Vec<NodeId> = self
+            .nodes
+            .keys()
             .filter(|&&id| self.nodes[&id].alive.load(Ordering::Relaxed))
             .copied()
             .collect();
@@ -49,25 +54,35 @@ impl TopologicalMesh {
 
         while !unvisited.is_empty() {
             // Pick closest unvisited
-            let current = *unvisited.iter()
-                .min_by(|a, b| {
-                    let da = dist.get(a).copied().unwrap_or(core::f64::INFINITY);
-                    let db = dist.get(b).copied().unwrap_or(core::f64::INFINITY);
-                    da.partial_cmp(&db).unwrap()
-                })?;
+            let current = *unvisited.iter().min_by(|a, b| {
+                let da = dist.get(a).copied().unwrap_or(core::f64::INFINITY);
+                let db = dist.get(b).copied().unwrap_or(core::f64::INFINITY);
+                da.partial_cmp(&db).unwrap()
+            })?;
 
-            if current == to { break; }
+            if current == to {
+                break;
+            }
             unvisited.retain(|&n| n != current);
 
             // Relax edges
             for &(a, b, w) in &self.edges {
-                let neighbor = if a == current { b }
-                               else if b == current { a }
-                               else { continue };
+                let neighbor = if a == current {
+                    b
+                } else if b == current {
+                    a
+                } else {
+                    continue;
+                };
 
-                if !self.nodes.get(&neighbor)
+                if !self
+                    .nodes
+                    .get(&neighbor)
                     .map(|n| n.alive.load(Ordering::Relaxed))
-                    .unwrap_or(false) { continue; }
+                    .unwrap_or(false)
+                {
+                    continue;
+                }
 
                 let new_dist = dist.get(&current).copied().unwrap_or(core::f64::INFINITY) + w;
                 if new_dist < dist.get(&neighbor).copied().unwrap_or(core::f64::INFINITY) {
@@ -86,7 +101,11 @@ impl TopologicalMesh {
         }
         path.push(from);
         path.reverse();
-        if path.first() == Some(&from) { Some(path) } else { None }
+        if path.first() == Some(&from) {
+            Some(path)
+        } else {
+            None
+        }
     }
 
     fn recompute_topology(&mut self) {

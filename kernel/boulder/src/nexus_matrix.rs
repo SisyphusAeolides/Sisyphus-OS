@@ -1,21 +1,12 @@
 use aether::nexus_wire::NexusOpcode;
-use aether::resonance_policy::{
-    POLICY_REPHASE, ResonancePolicy,
-};
+use aether::resonance_policy::{POLICY_REPHASE, ResonancePolicy};
 
 use crate::blacklab::ResonanceField;
 use crate::chronovore::{ChronoTick, TickDevourer};
-use crate::kairos::{
-    CriticalMoment, KairosScheduler, KairosWindow, MomentPriority,
-    FLAG_KAIROS,
-};
-use crate::ouroboros::{
-    ConstructiveRing, ExecutorHook, PhaseHint, TaskId,
-};
+use crate::kairos::{CriticalMoment, FLAG_KAIROS, KairosScheduler, KairosWindow, MomentPriority};
+use crate::ouroboros::{ConstructiveRing, ExecutorHook, PhaseHint, TaskId};
 use crate::quantum_nexus::Amplitude;
-use crate::tartarus_deep::{
-    DecoherenceEvent, QuarantineLevel, TartarusCage,
-};
+use crate::tartarus_deep::{DecoherenceEvent, QuarantineLevel, TartarusCage};
 use crate::thermogenesis::Thermogenesis;
 
 pub const MATRIX_PHASE_BINS: u16 = 1024;
@@ -99,20 +90,17 @@ pub struct NexusMatrix<
 }
 
 impl<
-        const TASKS: usize,
-        const PAIRS: usize,
-        const CAGES: usize,
-        const MOMENTS: usize,
-        const BINS: usize,
-    > NexusMatrix<TASKS, PAIRS, CAGES, MOMENTS, BINS>
+    const TASKS: usize,
+    const PAIRS: usize,
+    const CAGES: usize,
+    const MOMENTS: usize,
+    const BINS: usize,
+> NexusMatrix<TASKS, PAIRS, CAGES, MOMENTS, BINS>
 {
     pub const fn new(wall_origin: u64) -> Self {
         Self {
             scheduler: ConstructiveRing::new(),
-            chrono: TickDevourer::new(
-                ChronoTick(wall_origin),
-                ChronoTick(wall_origin),
-            ),
+            chrono: TickDevourer::new(ChronoTick(wall_origin), ChronoTick(wall_origin)),
             field: ResonanceField::new(),
             cage: TartarusCage::new(),
             kairos: KairosScheduler::new(),
@@ -138,11 +126,9 @@ impl<
                 let stats = self.stats();
 
                 Ok([
-                    u64::from(stats.pairs_live)
-                        | (u64::from(stats.generation) << 32),
+                    u64::from(stats.pairs_live) | (u64::from(stats.generation) << 32),
                     stats.logical_tick,
-                    u64::from(stats.global_phase)
-                        | (stats.collapses << 16),
+                    u64::from(stats.global_phase) | (stats.collapses << 16),
                 ])
             }
 
@@ -161,8 +147,7 @@ impl<
                 let task_a = task_from_raw(arguments[0])?;
                 let task_b = task_from_raw(arguments[1])?;
 
-                let phase_bin =
-                    (arguments[2] as u16) & (MATRIX_PHASE_BINS - 1);
+                let phase_bin = (arguments[2] as u16) & (MATRIX_PHASE_BINS - 1);
                 let flags = (arguments[2] >> 32) as u32;
 
                 let amplitude_word = arguments[3];
@@ -209,8 +194,8 @@ impl<
             }
 
             NexusOpcode::OfferKairos => {
-                let pair_index = usize::try_from(arguments[0])
-                    .map_err(|_| MatrixError::InvalidPair)?;
+                let pair_index =
+                    usize::try_from(arguments[0]).map_err(|_| MatrixError::InvalidPair)?;
 
                 let pair = self
                     .pairs
@@ -246,38 +231,25 @@ impl<
         )
     }
 
-    pub fn apply_policy(
-        &mut self,
-        policy: ResonancePolicy,
-        wall_tick: u64,
-    ) {
+    pub fn apply_policy(&mut self, policy: ResonancePolicy, wall_tick: u64) {
         self.collapse_threshold = policy.collapse_threshold;
 
-        self.chrono.set_priority_mass(
-            policy.priority_mass,
-            ChronoTick(wall_tick),
-        );
+        self.chrono
+            .set_priority_mass(policy.priority_mass, ChronoTick(wall_tick));
 
         if policy.flags & POLICY_REPHASE != 0 {
-            self.global_phase =
-                policy.target_phase & (MATRIX_PHASE_BINS - 1);
+            self.global_phase = policy.target_phase & (MATRIX_PHASE_BINS - 1);
         }
 
-        self.generation =
-            self.generation.wrapping_add(1).max(1);
+        self.generation = self.generation.wrapping_add(1).max(1);
     }
 
-    pub fn heartbeat(
-        &mut self,
-        wall_tick: u64,
-        thermal: &Thermogenesis,
-    ) -> MatrixPulse {
+    pub fn heartbeat(&mut self, wall_tick: u64, thermal: &Thermogenesis) -> MatrixPulse {
         let logical_tick = self.chrono.now_tick(ChronoTick(wall_tick)).0;
         self.last_logical_tick = logical_tick;
         self.last_heat = thermal.current_heat();
 
-        self.global_phase =
-            self.global_phase.wrapping_add(1) & (MATRIX_PHASE_BINS - 1);
+        self.global_phase = self.global_phase.wrapping_add(1) & (MATRIX_PHASE_BINS - 1);
 
         self.kairos
             .retire_expired(logical_tick, &mut self.scheduler);
@@ -301,13 +273,10 @@ impl<
             pair.amplitude = pair.amplitude.rotate_bin(rotor);
 
             // Gentle amplitude leakage toward zero.
-            pair.amplitude.re =
-                pair.amplitude.re.saturating_sub(pair.amplitude.re >> 12);
-            pair.amplitude.im =
-                pair.amplitude.im.saturating_sub(pair.amplitude.im >> 12);
+            pair.amplitude.re = pair.amplitude.re.saturating_sub(pair.amplitude.re >> 12);
+            pair.amplitude.im = pair.amplitude.im.saturating_sub(pair.amplitude.im >> 12);
 
-            pair.phase_bin =
-                pair.phase_bin.wrapping_add(1) & (MATRIX_PHASE_BINS - 1);
+            pair.phase_bin = pair.phase_bin.wrapping_add(1) & (MATRIX_PHASE_BINS - 1);
 
             self.field.accumulate(
                 pair.phase_bin << 6,
@@ -320,8 +289,7 @@ impl<
                 pair.active = false;
                 pair.amplitude = Amplitude::ZERO;
 
-                let pair_id =
-                    (u64::from(pair.generation) << 32) | index as u64;
+                let pair_id = (u64::from(pair.generation) << 32) | index as u64;
 
                 let event = DecoherenceEvent {
                     pair_id,
@@ -343,8 +311,7 @@ impl<
             }
 
             if pair.flags & PAIR_FLAG_KAIROS != 0 {
-                let pair_id =
-                    (u64::from(pair.generation) << 32) | index as u64;
+                let pair_id = (u64::from(pair.generation) << 32) | index as u64;
 
                 let _ = self.kairos.offer(
                     CriticalMoment {
@@ -411,10 +378,7 @@ impl<
         amplitude: Amplitude,
         thermal: &Thermogenesis,
     ) -> Result<usize, MatrixError> {
-        if task_a == task_b
-            || task_a == TaskId::INVALID
-            || task_b == TaskId::INVALID
-        {
+        if task_a == task_b || task_a == TaskId::INVALID || task_b == TaskId::INVALID {
             return Err(MatrixError::InvalidTask);
         }
 
@@ -424,8 +388,7 @@ impl<
             .position(|pair| !pair.active)
             .ok_or(MatrixError::Capacity)?;
 
-        let heat_cost =
-            8_u64.saturating_add(amplitude.mag_sq() >> 20);
+        let heat_cost = 8_u64.saturating_add(amplitude.mag_sq() >> 20);
 
         thermal
             .charge(heat_cost)
@@ -472,13 +435,11 @@ pub const fn task_to_raw(task: TaskId) -> u64 {
 }
 
 fn q16_to_q31(value: i32) -> i32 {
-    ((i64::from(value)) << 15)
-        .clamp(i32::MIN as i64, i32::MAX as i64) as i32
+    ((i64::from(value)) << 15).clamp(i32::MIN as i64, i32::MAX as i64) as i32
 }
 
 fn entanglement_q15(amplitude: Amplitude) -> i16 {
-    (amplitude.mag_sq() >> 17)
-        .min(i16::MAX as u64) as i16
+    (amplitude.mag_sq() >> 17).min(i16::MAX as u64) as i16
 }
 
 fn wrapped_phase_delta(from: u16, to: u16) -> i16 {

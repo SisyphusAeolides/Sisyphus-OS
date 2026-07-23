@@ -45,13 +45,7 @@ impl PhaseHint {
 
 pub fn yield_with_hint(hint: PhaseHint) -> Result<(), SyscallError> {
     // SAFETY: Every argument is scalar and follows Slope's syscall ABI.
-    unsafe {
-        syscall(
-            grimoire::SYS_YIELD,
-            [hint.packed() as usize, 0, 0, 0, 0, 0],
-        )
-    }
-    .map(|_| ())
+    unsafe { syscall(grimoire::SYS_YIELD, [hint.packed() as usize, 0, 0, 0, 0, 0]) }.map(|_| ())
 }
 
 pub fn set_priority(priority: Priority) -> Result<(), SyscallError> {
@@ -70,11 +64,5 @@ pub fn sleep_ns(nanoseconds: u64) -> Result<(), SyscallError> {
     let high = (nanoseconds >> 32) as u32 as usize;
 
     // SAFETY: The duration is split into two scalar words.
-    unsafe {
-        syscall(
-            grimoire::SYS_CLOCK_SLEEP,
-            [low, high, 0, 0, 0, 0],
-        )
-    }
-    .map(|_| ())
+    unsafe { syscall(grimoire::SYS_CLOCK_SLEEP, [low, high, 0, 0, 0, 0]) }.map(|_| ())
 }

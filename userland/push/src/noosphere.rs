@@ -1,11 +1,5 @@
 #![allow(dead_code)]
-use alloc::{
-    collections::BTreeMap,
-    string::String,
-    vec,
-    vec::Vec,
-};
-
+use alloc::{collections::BTreeMap, string::String, vec, vec::Vec};
 
 // ─────────────────────────────────────────────
 // CONSTANTS
@@ -41,37 +35,56 @@ pub struct MindState {
 
 impl MindState {
     pub fn zero(pid: u32) -> Self {
-        Self { v: [0.0; MIND_DIM], pid, active: false }
+        Self {
+            v: [0.0; MIND_DIM],
+            pid,
+            active: false,
+        }
     }
 
     /// Encode service vitals into mind-state vector
     pub fn encode(
         pid: u32,
-        cpu_pct: f64, mem_mb: f64, ipc_send: f64, ipc_recv: f64,
-        fd_count: f64, syscall_freq: f64, page_faults: f64,
-        ctx_switches: f64, net_tx: f64, net_rx: f64,
+        cpu_pct: f64,
+        mem_mb: f64,
+        ipc_send: f64,
+        ipc_recv: f64,
+        fd_count: f64,
+        syscall_freq: f64,
+        page_faults: f64,
+        ctx_switches: f64,
+        net_tx: f64,
+        net_rx: f64,
     ) -> Self {
         let mut v = [0.0f64; MIND_DIM];
-        let clamp = |val: f64| -> f64 { if val < 0.0 { 0.0 } else if val > 1.0 { 1.0 } else { val } };
+        let clamp = |val: f64| -> f64 {
+            if val < 0.0 {
+                0.0
+            } else if val > 1.0 {
+                1.0
+            } else {
+                val
+            }
+        };
 
         // Raw features (normalized to [0,1])
-        v[0]  = clamp(cpu_pct / 100.0);
-        v[1]  = clamp(mem_mb / 32768.0);
-        v[2]  = clamp(ipc_send / 10000.0);
-        v[3]  = clamp(ipc_recv / 10000.0);
-        v[4]  = clamp(fd_count / 1024.0);
-        v[5]  = clamp(syscall_freq / 100000.0);
-        v[6]  = clamp(page_faults / 1000.0);
-        v[7]  = clamp(ctx_switches / 10000.0);
-        v[8]  = clamp(net_tx / 1_000_000.0);
-        v[9]  = clamp(net_rx / 1_000_000.0);
+        v[0] = clamp(cpu_pct / 100.0);
+        v[1] = clamp(mem_mb / 32768.0);
+        v[2] = clamp(ipc_send / 10000.0);
+        v[3] = clamp(ipc_recv / 10000.0);
+        v[4] = clamp(fd_count / 1024.0);
+        v[5] = clamp(syscall_freq / 100000.0);
+        v[6] = clamp(page_faults / 1000.0);
+        v[7] = clamp(ctx_switches / 10000.0);
+        v[8] = clamp(net_tx / 1_000_000.0);
+        v[9] = clamp(net_rx / 1_000_000.0);
 
         // Cross-product features — capture nonlinear relationships
-        v[10] = v[0] * v[1];               // cpu × mem (compute-bound signature)
-        v[11] = v[2] * v[3];               // ipc_send × ipc_recv (messaging service)
-        v[12] = v[8] * v[9];               // net_tx × net_rx (network service)
-        v[13] = v[5] * v[6];               // syscall × page_fault (I/O bound)
-        v[14] = v[0] * v[5];               // cpu × syscall (kernel intensive)
+        v[10] = v[0] * v[1]; // cpu × mem (compute-bound signature)
+        v[11] = v[2] * v[3]; // ipc_send × ipc_recv (messaging service)
+        v[12] = v[8] * v[9]; // net_tx × net_rx (network service)
+        v[13] = v[5] * v[6]; // syscall × page_fault (I/O bound)
+        v[14] = v[0] * v[5]; // cpu × syscall (kernel intensive)
         v[15] = (v[0] + v[1] + v[5]) / 3.0; // general load average
 
         // Fourier-like frequency features on cpu (detect periodic behavior)
@@ -86,7 +99,11 @@ impl MindState {
             v[i] = 1.0 / (1.0 + libm::exp(-10.0 * (x - 0.5))); // sigmoid
         }
 
-        Self { v, pid, active: true }
+        Self {
+            v,
+            pid,
+            active: true,
+        }
     }
 
     /// L2 norm of the mind-state vector
@@ -96,16 +113,25 @@ impl MindState {
 
     /// Cosine similarity with another mind state
     pub fn similarity(&self, other: &MindState) -> f64 {
-        let dot: f64 = self.v.iter().zip(other.v.iter()).map(|(&a, &b)| a * b).sum();
+        let dot: f64 = self
+            .v
+            .iter()
+            .zip(other.v.iter())
+            .map(|(&a, &b)| a * b)
+            .sum();
         let denom = self.norm() * other.norm();
         if denom < 1e-12 { 0.0 } else { dot / denom }
     }
 
     /// Euclidean distance (for SOM matching)
     pub fn distance(&self, other: &MindState) -> f64 {
-        libm::sqrt(self.v.iter().zip(other.v.iter())
-            .map(|(&a, &b)| (a - b) * (a - b))
-            .sum::<f64>())
+        libm::sqrt(
+            self.v
+                .iter()
+                .zip(other.v.iter())
+                .map(|(&a, &b)| (a - b) * (a - b))
+                .sum::<f64>(),
+        )
     }
 
     /// Binarize to {-1, +1} for Hopfield network
@@ -131,24 +157,39 @@ pub struct HebbianMatrix {
 
 impl HebbianMatrix {
     pub fn new() -> Self {
-        Self { w: [[0.0f64; MAX_NEURONS]; MAX_NEURONS], tick: 0 }
+        Self {
+            w: [[0.0f64; MAX_NEURONS]; MAX_NEURONS],
+            tick: 0,
+        }
     }
 
     /// Hebbian update: Δw_ij = η*x_i*x_j - λ*w_ij (with weight decay)
     /// Called every tick for all active service pairs
     pub fn update(&mut self, states: &[MindState]) {
         self.tick += 1;
-        let n = if states.len() < MAX_NEURONS { states.len() } else { MAX_NEURONS };
+        let n = if states.len() < MAX_NEURONS {
+            states.len()
+        } else {
+            MAX_NEURONS
+        };
         for i in 0..n {
-            if !states[i].active { continue; }
-            for j in (i+1)..n {
-                if !states[j].active { continue; }
+            if !states[i].active {
+                continue;
+            }
+            for j in (i + 1)..n {
+                if !states[j].active {
+                    continue;
+                }
 
                 // Oja's rule: normalized Hebbian — prevents runaway weights
                 // Δw_ij = η * (x_i · x_j - (x_j²) * w_ij)
-                let dot: f64 = states[i].v.iter().zip(states[j].v.iter())
-                    .map(|(&a, &b)| a * b).sum();
-                let norm_sq_j: f64 = states[j].v.iter().map(|&x| x*x).sum();
+                let dot: f64 = states[i]
+                    .v
+                    .iter()
+                    .zip(states[j].v.iter())
+                    .map(|(&a, &b)| a * b)
+                    .sum();
+                let norm_sq_j: f64 = states[j].v.iter().map(|&x| x * x).sum();
                 let delta = ETA * (dot - norm_sq_j * self.w[i][j]) - DECAY * self.w[i][j];
 
                 self.w[i][j] += delta;
@@ -160,10 +201,16 @@ impl HebbianMatrix {
     /// Anti-Hebbian suppression: services that fire out-of-phase get inhibited
     /// Detects conflicting services (e.g., two disk schedulers fighting)
     pub fn anti_hebbian_suppress(&mut self, i: usize, j: usize, states: &[MindState]) {
-        if i >= states.len() || j >= states.len() { return; }
+        if i >= states.len() || j >= states.len() {
+            return;
+        }
         // If phases are anti-correlated (dot product < 0), apply inhibitory delta
-        let dot: f64 = states[i].v.iter().zip(states[j].v.iter())
-            .map(|(&a, &b)| a * b).sum();
+        let dot: f64 = states[i]
+            .v
+            .iter()
+            .zip(states[j].v.iter())
+            .map(|(&a, &b)| a * b)
+            .sum();
         if dot < -0.3 {
             let dot_abs = if dot < 0.0 { -dot } else { dot };
             self.w[i][j] -= ETA * 2.0 * dot_abs;
@@ -185,14 +232,22 @@ impl HebbianMatrix {
     /// Hopfield energy: E = -½ Σ_ij w_ij*s_i*s_j + Σ_i θ_i*s_i
     /// Lower energy = more stable configuration
     pub fn hopfield_energy(&self, states: &[MindState]) -> f64 {
-        let n = if states.len() < MAX_NEURONS { states.len() } else { MAX_NEURONS };
+        let n = if states.len() < MAX_NEURONS {
+            states.len()
+        } else {
+            MAX_NEURONS
+        };
         let binary: Vec<[i8; MIND_DIM]> = states.iter().map(|s| s.binarize()).collect();
         let mut e = 0.0f64;
         for i in 0..n {
-            for j in (i+1)..n {
+            for j in (i + 1)..n {
                 // Sum over all dimensions of the state product
-                let s_dot: f64 = binary[i].iter().zip(binary[j].iter())
-                    .map(|(&a, &b)| a as f64 * b as f64).sum::<f64>() / MIND_DIM as f64;
+                let s_dot: f64 = binary[i]
+                    .iter()
+                    .zip(binary[j].iter())
+                    .map(|(&a, &b)| a as f64 * b as f64)
+                    .sum::<f64>()
+                    / MIND_DIM as f64;
                 e -= 0.5 * self.w[i][j] * s_dot;
             }
             // Threshold term
@@ -204,8 +259,17 @@ impl HebbianMatrix {
 
     /// Hopfield recall: given a partial/corrupted service state,
     /// recover the nearest stable attractor (the "healthy" state)
-    pub fn hopfield_recall(&self, corrupted: &MindState, states: &[MindState], iters: usize) -> MindState {
-        let n = if states.len() < MAX_NEURONS { states.len() } else { MAX_NEURONS };
+    pub fn hopfield_recall(
+        &self,
+        corrupted: &MindState,
+        states: &[MindState],
+        iters: usize,
+    ) -> MindState {
+        let n = if states.len() < MAX_NEURONS {
+            states.len()
+        } else {
+            MAX_NEURONS
+        };
         let mut s = corrupted.clone();
         for _ in 0..iters {
             // Asynchronous update — pick dimensions in random order (deterministic here)
@@ -214,7 +278,11 @@ impl HebbianMatrix {
                 for j in 0..n {
                     let sj_d = states[j].v[d];
                     // Find index of this service in the weight matrix
-                    let j_idx = if j < MAX_NEURONS - 1 { j } else { MAX_NEURONS - 1 };
+                    let j_idx = if j < MAX_NEURONS - 1 {
+                        j
+                    } else {
+                        MAX_NEURONS - 1
+                    };
                     let i_idx = (corrupted.pid as usize) % MAX_NEURONS;
                     h += self.w[i_idx][j_idx] * sj_d;
                 }
@@ -243,16 +311,26 @@ impl SomNode {
         let mut w = [0.0f64; MIND_DIM];
         let mut s = seed;
         for x in &mut w {
-            s ^= s << 13; s ^= s >> 7; s ^= s << 17;
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
             *x = (s & 0xFFFF) as f64 / 65535.0;
         }
-        Self { weights: w, cluster_label: None, member_pids: Vec::new() }
+        Self {
+            weights: w,
+            cluster_label: None,
+            member_pids: Vec::new(),
+        }
     }
 
     pub fn distance_to(&self, state: &MindState) -> f64 {
-        libm::sqrt(self.weights.iter().zip(state.v.iter())
-            .map(|(&w, &x)| (w - x) * (w - x))
-            .sum::<f64>())
+        libm::sqrt(
+            self.weights
+                .iter()
+                .zip(state.v.iter())
+                .map(|(&w, &x)| (w - x) * (w - x))
+                .sum::<f64>(),
+        )
     }
 }
 
@@ -268,15 +346,23 @@ impl KohonenSOM {
         let nodes: [SomNode; SOM_NODES] = core::array::from_fn(|i| {
             SomNode::new_random(0xdeadbeef ^ (i as u64).wrapping_mul(0x9e3779b97f4a7c15))
         });
-        Self { nodes, learning_rate: 0.5, neighborhood_radius: 3.0, iteration: 0 }
+        Self {
+            nodes,
+            learning_rate: 0.5,
+            neighborhood_radius: 3.0,
+            iteration: 0,
+        }
     }
 
     /// Find Best Matching Unit (BMU) — the node closest to input state
     pub fn bmu(&self, state: &MindState) -> usize {
-        self.nodes.iter()
+        self.nodes
+            .iter()
             .enumerate()
             .min_by(|(_, a), (_, b)| {
-                a.distance_to(state).partial_cmp(&b.distance_to(state)).unwrap()
+                a.distance_to(state)
+                    .partial_cmp(&b.distance_to(state))
+                    .unwrap()
             })
             .map(|(i, _)| i)
             .unwrap_or(0)
@@ -299,11 +385,14 @@ impl KohonenSOM {
         for (idx, node) in self.nodes.iter_mut().enumerate() {
             let row = (idx / SOM_W) as f64;
             let col = (idx % SOM_W) as f64;
-            let grid_dist_sq = (row - bmu_row) * (row - bmu_row) + (col - bmu_col) * (col - bmu_col);
+            let grid_dist_sq =
+                (row - bmu_row) * (row - bmu_row) + (col - bmu_col) * (col - bmu_col);
 
             // Gaussian neighborhood function
             let neighborhood = libm::exp(-grid_dist_sq / (2.0 * radius_sq));
-            if neighborhood < 0.001 { continue; }
+            if neighborhood < 0.001 {
+                continue;
+            }
 
             // Update node weights toward input
             for d in 0..MIND_DIM {
@@ -318,7 +407,9 @@ impl KohonenSOM {
         let row = bmu / SOM_W;
         let col = bmu % SOM_W;
         // Auto-generate cluster label from grid position + BMU dominant feature
-        let dominant_dim = self.nodes[bmu].weights.iter()
+        let dominant_dim = self.nodes[bmu]
+            .weights
+            .iter()
             .enumerate()
             .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
             .map(|(i, _)| i)
@@ -336,10 +427,14 @@ impl KohonenSOM {
 
     /// Return quantization error — overall SOM fit quality
     pub fn quantization_error(&self, states: &[MindState]) -> f64 {
-        if states.is_empty() { return 0.0; }
-        states.iter()
+        if states.is_empty() {
+            return 0.0;
+        }
+        states
+            .iter()
             .map(|s| self.nodes[self.bmu(s)].distance_to(s))
-            .sum::<f64>() / states.len() as f64
+            .sum::<f64>()
+            / states.len() as f64
     }
 }
 
@@ -352,23 +447,28 @@ impl KohonenSOM {
 /// Based on Kuramoto model of coupled oscillators
 pub struct KuramotoOscillator {
     pub pid: u32,
-    pub phase: f64,       // θ_i ∈ [0, 2π)
-    pub frequency: f64,   // ω_i — natural frequency (from service type)
-    pub coupling: f64,    // K — coupling strength to peers
+    pub phase: f64,     // θ_i ∈ [0, 2π)
+    pub frequency: f64, // ω_i — natural frequency (from service type)
+    pub coupling: f64,  // K — coupling strength to peers
 }
 
 impl KuramotoOscillator {
     pub fn new(pid: u32, frequency: f64) -> Self {
-        Self { pid, phase: 0.0, frequency, coupling: 2.0 }
+        Self {
+            pid,
+            phase: 0.0,
+            frequency,
+            coupling: 2.0,
+        }
     }
 
     /// Kuramoto update: dθ_i/dt = ω_i + (K/N) Σ_j sin(θ_j - θ_i)
     pub fn step(&mut self, peers: &[KuramotoOscillator], dt: f64) {
         let n = peers.len() as f64;
-        if n < 1.0 { return; }
-        let coupling_sum: f64 = peers.iter()
-            .map(|p| libm::sin(p.phase - self.phase))
-            .sum();
+        if n < 1.0 {
+            return;
+        }
+        let coupling_sum: f64 = peers.iter().map(|p| libm::sin(p.phase - self.phase)).sum();
         let dphi = self.frequency + (self.coupling / n) * coupling_sum;
         self.phase = (self.phase + dphi * dt) % core::f64::consts::TAU;
     }
@@ -376,7 +476,9 @@ impl KuramotoOscillator {
     /// Order parameter r = |Σ exp(iθ_j)| / N — measures synchronization
     /// r=1 → perfect sync, r=0 → total incoherence
     pub fn order_parameter(oscillators: &[KuramotoOscillator]) -> f64 {
-        if oscillators.is_empty() { return 0.0; }
+        if oscillators.is_empty() {
+            return 0.0;
+        }
         let n = oscillators.len() as f64;
         let re: f64 = oscillators.iter().map(|o| libm::cos(o.phase)).sum::<f64>() / n;
         let im: f64 = oscillators.iter().map(|o| libm::sin(o.phase)).sum::<f64>() / n;
@@ -389,27 +491,27 @@ impl KuramotoOscillator {
 // ─────────────────────────────────────────────
 
 pub struct Noosphere {
-    pub states:      Vec<MindState>,
-    pub pid_to_idx:  BTreeMap<u32, usize>,
-    pub hebbian:     HebbianMatrix,
-    pub som:         KohonenSOM,
+    pub states: Vec<MindState>,
+    pub pid_to_idx: BTreeMap<u32, usize>,
+    pub hebbian: HebbianMatrix,
+    pub som: KohonenSOM,
     pub oscillators: Vec<KuramotoOscillator>,
-    pub tick:        u64,
-    pub energy_log:  Vec<f64>,   // Hopfield energy history
-    pub sync_log:    Vec<f64>,   // Kuramoto order parameter history
+    pub tick: u64,
+    pub energy_log: Vec<f64>, // Hopfield energy history
+    pub sync_log: Vec<f64>,   // Kuramoto order parameter history
 }
 
 impl Noosphere {
     pub fn new() -> Self {
         Self {
-            states:      Vec::new(),
-            pid_to_idx:  BTreeMap::new(),
-            hebbian:     HebbianMatrix::new(),
-            som:         KohonenSOM::new(),
+            states: Vec::new(),
+            pid_to_idx: BTreeMap::new(),
+            hebbian: HebbianMatrix::new(),
+            som: KohonenSOM::new(),
             oscillators: Vec::new(),
-            tick:        0,
-            energy_log:  Vec::new(),
-            sync_log:    Vec::new(),
+            tick: 0,
+            energy_log: Vec::new(),
+            sync_log: Vec::new(),
         }
     }
 
@@ -418,17 +520,28 @@ impl Noosphere {
         let idx = self.states.len();
         self.states.push(MindState::zero(pid));
         self.pid_to_idx.insert(pid, idx);
-        self.oscillators.push(KuramotoOscillator::new(pid, natural_freq));
+        self.oscillators
+            .push(KuramotoOscillator::new(pid, natural_freq));
     }
 
     /// Update a service's mind-state from its current vitals
     pub fn update_service(
-        &mut self, pid: u32,
-        cpu: f64, mem: f64, ipc_s: f64, ipc_r: f64,
-        fd: f64, sys: f64, pf: f64, ctx: f64, ntx: f64, nrx: f64,
+        &mut self,
+        pid: u32,
+        cpu: f64,
+        mem: f64,
+        ipc_s: f64,
+        ipc_r: f64,
+        fd: f64,
+        sys: f64,
+        pf: f64,
+        ctx: f64,
+        ntx: f64,
+        nrx: f64,
     ) {
         if let Some(&idx) = self.pid_to_idx.get(&pid) {
-            self.states[idx] = MindState::encode(pid, cpu, mem, ipc_s, ipc_r, fd, sys, pf, ctx, ntx, nrx);
+            self.states[idx] =
+                MindState::encode(pid, cpu, mem, ipc_s, ipc_r, fd, sys, pf, ctx, ntx, nrx);
             self.som.train_step(&self.states[idx]);
         }
     }
@@ -452,8 +565,15 @@ impl Noosphere {
         self.hebbian.update(&self.states);
 
         // 2. Kuramoto oscillator update — each service oscillates with peers
-        let peers_snapshot: Vec<KuramotoOscillator> = self.oscillators.iter()
-            .map(|o| KuramotoOscillator { pid: o.pid, phase: o.phase, frequency: o.frequency, coupling: o.coupling })
+        let peers_snapshot: Vec<KuramotoOscillator> = self
+            .oscillators
+            .iter()
+            .map(|o| KuramotoOscillator {
+                pid: o.pid,
+                phase: o.phase,
+                frequency: o.frequency,
+                coupling: o.coupling,
+            })
             .collect();
         for osc in &mut self.oscillators {
             osc.step(&peers_snapshot, dt);
@@ -463,22 +583,29 @@ impl Noosphere {
         if self.tick % 16 == 0 {
             let e = self.hebbian.hopfield_energy(&self.states);
             self.energy_log.push(e);
-            if self.energy_log.len() > 512 { self.energy_log.remove(0); }
+            if self.energy_log.len() > 512 {
+                self.energy_log.remove(0);
+            }
 
             let r = KuramotoOscillator::order_parameter(&self.oscillators);
             self.sync_log.push(r);
-            if self.sync_log.len() > 512 { self.sync_log.remove(0); }
+            if self.sync_log.len() > 512 {
+                self.sync_log.remove(0);
+            }
         }
     }
 
     /// Get services clustered together with pid (co-activation partners)
     pub fn cluster_mates(&self, pid: u32) -> Vec<u32> {
         let idx = match self.pid_to_idx.get(&pid) {
-            Some(&i) => i, None => return Vec::new(),
+            Some(&i) => i,
+            None => return Vec::new(),
         };
         let partners = self.hebbian.strongest_partners(idx, 8);
-        let idx_to_pid: BTreeMap<usize, u32> = self.pid_to_idx.iter().map(|(&p, &i)| (i, p)).collect();
-        partners.iter()
+        let idx_to_pid: BTreeMap<usize, u32> =
+            self.pid_to_idx.iter().map(|(&p, &i)| (i, p)).collect();
+        partners
+            .iter()
             .filter(|(_, w)| *w > 0.1)
             .filter_map(|(j, _)| idx_to_pid.get(j).copied())
             .collect()
@@ -488,8 +615,12 @@ impl Noosphere {
     pub fn detect_anomalous_services(&self) -> Vec<(u32, f64)> {
         let mut anomalies = Vec::new();
         for (&pid, &idx) in &self.pid_to_idx {
-            if !self.states[idx].active { continue; }
-            let recalled = self.hebbian.hopfield_recall(&self.states[idx], &self.states, 5);
+            if !self.states[idx].active {
+                continue;
+            }
+            let recalled = self
+                .hebbian
+                .hopfield_recall(&self.states[idx], &self.states, 5);
             let deviation = self.states[idx].distance(&recalled);
             if deviation > 0.3 {
                 anomalies.push((pid, deviation));
@@ -505,22 +636,35 @@ impl Noosphere {
         let mut assigned = vec![false; self.oscillators.len()];
 
         for i in 0..self.oscillators.len() {
-            if assigned[i] { continue; }
+            if assigned[i] {
+                continue;
+            }
             let mut group = vec![self.oscillators[i].pid];
             assigned[i] = true;
-            for j in (i+1)..self.oscillators.len() {
-                if assigned[j] { continue; }
+            for j in (i + 1)..self.oscillators.len() {
+                if assigned[j] {
+                    continue;
+                }
                 let mut phase_diff = self.oscillators[i].phase - self.oscillators[j].phase;
-                if phase_diff < 0.0 { phase_diff = -phase_diff; }
+                if phase_diff < 0.0 {
+                    phase_diff = -phase_diff;
+                }
                 let alt_diff = core::f64::consts::TAU - phase_diff;
-                let normalized_diff = if phase_diff < alt_diff { phase_diff } else { alt_diff };
-                
-                if normalized_diff < 0.3 { // within 0.3 rad — phase-locked
+                let normalized_diff = if phase_diff < alt_diff {
+                    phase_diff
+                } else {
+                    alt_diff
+                };
+
+                if normalized_diff < 0.3 {
+                    // within 0.3 rad — phase-locked
                     group.push(self.oscillators[j].pid);
                     assigned[j] = true;
                 }
             }
-            if group.len() > 1 { groups.push(group); }
+            if group.len() > 1 {
+                groups.push(group);
+            }
         }
         groups
     }
@@ -528,14 +672,16 @@ impl Noosphere {
     /// Identify the "conductor" — highest-coupling oscillator, the service
     /// that all others synchronize to (the heartbeat of each group)
     pub fn conductor_pid(&self) -> Option<u32> {
-        self.oscillators.iter()
+        self.oscillators
+            .iter()
             .max_by(|a, b| a.coupling.partial_cmp(&b.coupling).unwrap())
             .map(|o| o.pid)
     }
 
     /// SOM topology map — returns (pid, cluster_label, bmu_index) for all services
     pub fn topology_map(&self) -> Vec<(u32, String, usize)> {
-        self.pid_to_idx.iter()
+        self.pid_to_idx
+            .iter()
             .filter(|&(_, &idx)| self.states[idx].active)
             .map(|(&pid, &idx)| {
                 let (bmu, label) = self.som.classify(&self.states[idx]);
@@ -546,18 +692,22 @@ impl Noosphere {
 
     /// Is the noosphere converging? (Energy decreasing monotonically)
     pub fn is_converging(&self) -> bool {
-        if self.energy_log.len() < 4 { return false; }
-        let last4 = &self.energy_log[self.energy_log.len()-4..];
+        if self.energy_log.len() < 4 {
+            return false;
+        }
+        let last4 = &self.energy_log[self.energy_log.len() - 4..];
         last4.windows(2).all(|w| w[1] <= w[0])
     }
 
     /// Critical transition detector — sudden energy spike = phase transition
     /// (e.g., a cascading failure about to happen)
     pub fn detect_phase_transition(&self) -> Option<f64> {
-        if self.energy_log.len() < 8 { return None; }
+        if self.energy_log.len() < 8 {
+            return None;
+        }
         let n = self.energy_log.len();
-        let recent_mean = self.energy_log[n-4..].iter().sum::<f64>() / 4.0;
-        let older_mean  = self.energy_log[n-8..n-4].iter().sum::<f64>() / 4.0;
+        let recent_mean = self.energy_log[n - 4..].iter().sum::<f64>() / 4.0;
+        let older_mean = self.energy_log[n - 8..n - 4].iter().sum::<f64>() / 4.0;
         let d = recent_mean - older_mean;
         let delta = if d < 0.0 { -d } else { d };
         if delta > 5.0 { Some(delta) } else { None }

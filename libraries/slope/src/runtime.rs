@@ -5,8 +5,7 @@ use crate::kairos::{
     CpuAffinityHint, KairosBootError, KairosInit, WorkPartition, WorkloadClass, features,
 };
 
-pub const DEFAULT_REQUIRED_FEATURES: u64 =
-    features::SYSCALL_BASIC;
+pub const DEFAULT_REQUIRED_FEATURES: u64 = features::SYSCALL_BASIC;
 pub const DEFAULT_OPTIONAL_FEATURES: u64 = features::ASYNC_IO
     | features::THERMAL_PAGE
     | features::KAIROS_PAGE

@@ -120,8 +120,7 @@ impl<const N: usize> GhostChronicle<N> {
             return true;
         }
 
-        let start =
-            (self.write_index + N - self.retained) % N;
+        let start = (self.write_index + N - self.retained) % N;
 
         let first = self.slots[start];
         if !first.valid {
@@ -137,8 +136,7 @@ impl<const N: usize> GhostChronicle<N> {
                 return false;
             }
 
-            let expected_after =
-                fold_event(slot.before, slot.event);
+            let expected_after = fold_event(slot.before, slot.event);
 
             if slot.after != expected_after {
                 return false;

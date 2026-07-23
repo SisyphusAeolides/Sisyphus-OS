@@ -1,9 +1,7 @@
 use core::cell::UnsafeCell;
 use core::mem::MaybeUninit;
 use core::ops::Deref;
-use core::sync::atomic::{
-    AtomicBool, AtomicU8, AtomicU64, Ordering,
-};
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 
 const STATE_EMPTY: u8 = 0;
 const STATE_INITIALIZING: u8 = 1;
@@ -27,10 +25,7 @@ pub struct PolicyConstellation<P: Copy> {
     banks: [UnsafeCell<MaybeUninit<P>>; 2],
 }
 
-unsafe impl<P: Copy + Send + Sync> Sync
-    for PolicyConstellation<P>
-{
-}
+unsafe impl<P: Copy + Send + Sync> Sync for PolicyConstellation<P> {}
 
 impl<P: Copy + Send + Sync> PolicyConstellation<P> {
     pub const fn new() -> Self {
@@ -39,10 +34,7 @@ impl<P: Copy + Send + Sync> PolicyConstellation<P> {
             writer: AtomicBool::new(false),
             active: AtomicU8::new(0),
             generation: AtomicU64::new(0),
-            readers: [
-                AtomicU64::new(0),
-                AtomicU64::new(0),
-            ],
+            readers: [AtomicU64::new(0), AtomicU64::new(0)],
             banks: [
                 UnsafeCell::new(MaybeUninit::uninit()),
                 UnsafeCell::new(MaybeUninit::uninit()),
@@ -50,10 +42,7 @@ impl<P: Copy + Send + Sync> PolicyConstellation<P> {
         }
     }
 
-    pub fn initialize(
-        &self,
-        initial: P,
-    ) -> Result<(), ConstellationError> {
+    pub fn initialize(&self, initial: P) -> Result<(), ConstellationError> {
         match self.state.compare_exchange(
             STATE_EMPTY,
             STATE_INITIALIZING,
@@ -84,27 +73,20 @@ impl<P: Copy + Send + Sync> PolicyConstellation<P> {
         Ok(())
     }
 
-    pub fn read(
-        &self,
-    ) -> Result<PolicyGuard<'_, P>, ConstellationError> {
+    pub fn read(&self) -> Result<PolicyGuard<'_, P>, ConstellationError> {
         if self.state.load(Ordering::Acquire) != STATE_READY {
             return Err(ConstellationError::Uninitialized);
         }
 
         loop {
-            let index =
-                usize::from(self.active.load(Ordering::Acquire));
+            let index = usize::from(self.active.load(Ordering::Acquire));
 
             self.readers[index].fetch_add(1, Ordering::AcqRel);
 
-            if usize::from(self.active.load(Ordering::Acquire))
-                == index
-            {
+            if usize::from(self.active.load(Ordering::Acquire)) == index {
                 // SAFETY: STATE_READY initialized both banks. The reader count
                 // prevents a writer from replacing this bank.
-                let value = unsafe {
-                    (*self.banks[index].get()).assume_init_ref()
-                };
+                let value = unsafe { (*self.banks[index].get()).assume_init_ref() };
 
                 return Ok(PolicyGuard {
                     constellation: self,
@@ -118,22 +100,14 @@ impl<P: Copy + Send + Sync> PolicyConstellation<P> {
         }
     }
 
-    pub fn publish(
-        &self,
-        next: P,
-    ) -> Result<u64, ConstellationError> {
+    pub fn publish(&self, next: P) -> Result<u64, ConstellationError> {
         if self.state.load(Ordering::Acquire) != STATE_READY {
             return Err(ConstellationError::Uninitialized);
         }
 
         if self
             .writer
-            .compare_exchange(
-                false,
-                true,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            )
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_err()
         {
             return Err(ConstellationError::WriterBusy);
@@ -190,7 +164,6 @@ impl<P: Copy + Send + Sync> Deref for PolicyGuard<'_, P> {
 
 impl<P: Copy + Send + Sync> Drop for PolicyGuard<'_, P> {
     fn drop(&mut self) {
-        self.constellation.readers[self.index]
-            .fetch_sub(1, Ordering::Release);
+        self.constellation.readers[self.index].fetch_sub(1, Ordering::Release);
     }
 }

@@ -21,9 +21,9 @@
 // The trampoline is `extern "C"` with a specific calling convention.
 // No heap use in the signal path. No allocator calls. No locks.
 
-use crate::syscalls::SYS_SIGNAL_DELIVER;
-use crate::syscall;
 use crate::SyscallError;
+use crate::syscall;
+use crate::syscalls::SYS_SIGNAL_DELIVER;
 
 pub const MAX_DISCHARGE_CLASSES: usize = 256;
 pub const DISCHARGE_PAYLOAD_BYTES: usize = 48;
@@ -33,14 +33,14 @@ pub const DISCHARGE_PAYLOAD_BYTES: usize = 48;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
 pub enum DischargeClass {
-    Reserved          = 0,
-    TerminationRequest= 1,
+    Reserved = 0,
+    TerminationRequest = 1,
     FaultNotification = 2,
-    ResourcePressure  = 3,
-    ThermalThrottle   = 4,
-    PeerDisconnected  = 5,
+    ResourcePressure = 3,
+    ThermalThrottle = 4,
+    PeerDisconnected = 5,
     CapabilityRevoked = 6,
-    UserDefined(u8),  // 7–255
+    UserDefined(u8), // 7–255
 }
 
 impl DischargeClass {
@@ -59,14 +59,14 @@ impl DischargeClass {
 
     pub const fn to_raw(self) -> u8 {
         match self {
-            Self::Reserved           => 0,
+            Self::Reserved => 0,
             Self::TerminationRequest => 1,
-            Self::FaultNotification  => 2,
-            Self::ResourcePressure   => 3,
-            Self::ThermalThrottle    => 4,
-            Self::PeerDisconnected   => 5,
-            Self::CapabilityRevoked  => 6,
-            Self::UserDefined(n)     => n,
+            Self::FaultNotification => 2,
+            Self::ResourcePressure => 3,
+            Self::ThermalThrottle => 4,
+            Self::PeerDisconnected => 5,
+            Self::CapabilityRevoked => 6,
+            Self::UserDefined(n) => n,
         }
     }
 }
@@ -76,8 +76,8 @@ impl DischargeClass {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct DischargeEvent {
-    pub class:   u8,
-    pub _pad:    [u8; 7],
+    pub class: u8,
+    pub _pad: [u8; 7],
     pub payload: [u8; DISCHARGE_PAYLOAD_BYTES],
     pub sender_pid: u64,
 }
@@ -101,7 +101,9 @@ pub struct CoronalMatrix {
 
 impl CoronalMatrix {
     pub const fn new() -> Self {
-        Self { handlers: [default_handler; MAX_DISCHARGE_CLASSES] }
+        Self {
+            handlers: [default_handler; MAX_DISCHARGE_CLASSES],
+        }
     }
 
     pub fn set(&mut self, class: DischargeClass, handler: DischargeHandler) {
@@ -122,11 +124,7 @@ impl CoronalMatrix {
     /// Register the trampoline with the Boulder kernel.
     /// `trampoline` is an `extern "C" fn(*const DischargeEvent)` set up by _start.
     pub fn install(&self, trampoline: usize) -> Result<(), SyscallError> {
-        let args = [
-            trampoline,
-            self as *const Self as usize,
-            0, 0, 0, 0,
-        ];
+        let args = [trampoline, self as *const Self as usize, 0, 0, 0, 0];
         unsafe { syscall(SYS_SIGNAL_DELIVER, args) }.map(|_| ())
     }
 }
@@ -136,10 +134,14 @@ impl CoronalMatrix {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn _coronal_trampoline(
     matrix_ptr: *const CoronalMatrix,
-    event_ptr:  *const DischargeEvent,
+    event_ptr: *const DischargeEvent,
 ) {
-    if matrix_ptr.is_null() || event_ptr.is_null() { return; }
-    unsafe { (*matrix_ptr).dispatch(&*event_ptr); }
+    if matrix_ptr.is_null() || event_ptr.is_null() {
+        return;
+    }
+    unsafe {
+        (*matrix_ptr).dispatch(&*event_ptr);
+    }
 }
 
 #[cfg(test)]
@@ -158,9 +160,9 @@ mod tests {
         let mut matrix = CoronalMatrix::new();
         matrix.set(DischargeClass::ThermalThrottle, test_handler);
         let event = DischargeEvent {
-            class:      DischargeClass::ThermalThrottle.to_raw(),
-            _pad:       [0; 7],
-            payload:    [0; DISCHARGE_PAYLOAD_BYTES],
+            class: DischargeClass::ThermalThrottle.to_raw(),
+            _pad: [0; 7],
+            payload: [0; DISCHARGE_PAYLOAD_BYTES],
             sender_pid: 0,
         };
         matrix.dispatch(&event);

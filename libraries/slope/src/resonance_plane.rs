@@ -1,11 +1,8 @@
 use aether::lockfree::QueueError;
 pub use aether::nexus_wire::{
-    NexusCommand, NexusOpcode, NexusReply,
-    NexusStatus, NexusTelemetry, WireError,
+    NexusCommand, NexusOpcode, NexusReply, NexusStatus, NexusTelemetry, WireError,
 };
-use aether::resonance_split::{
-    ResonanceIngressPage, ResonanceObservationPage,
-};
+use aether::resonance_split::{ResonanceIngressPage, ResonanceObservationPage};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PendingCommand {
@@ -19,10 +16,7 @@ pub enum PlaneClientError {
     IncompatiblePlane,
     CommandAlreadyPending,
     Queue(QueueError),
-    UnexpectedReply {
-        expected: u64,
-        observed: u64,
-    },
+    UnexpectedReply { expected: u64, observed: u64 },
     Wire(WireError),
     Kernel(NexusStatus),
 }
@@ -88,15 +82,9 @@ impl ResonancePlaneClient {
         }
 
         let sequence = self.next_sequence;
-        self.next_sequence =
-            self.next_sequence.wrapping_add(1).max(1);
+        self.next_sequence = self.next_sequence.wrapping_add(1).max(1);
 
-        let command = NexusCommand::new(
-            opcode,
-            sequence,
-            self.capability,
-            arguments,
-        );
+        let command = NexusCommand::new(opcode, sequence, self.capability, arguments);
 
         self.ingress.submit(&command);
 
@@ -105,9 +93,7 @@ impl ResonancePlaneClient {
         Ok(PendingCommand { sequence })
     }
 
-    pub fn poll_reply(
-        &mut self,
-    ) -> Result<Option<NexusReply>, PlaneClientError> {
+    pub fn poll_reply(&mut self) -> Result<Option<NexusReply>, PlaneClientError> {
         let Some(expected) = self.pending else {
             return Ok(None);
         };
@@ -116,9 +102,7 @@ impl ResonancePlaneClient {
             return Ok(None);
         };
 
-        let status = reply
-            .validate(expected)
-            .map_err(PlaneClientError::Wire)?;
+        let status = reply.validate(expected).map_err(PlaneClientError::Wire)?;
 
         self.pending = None;
 

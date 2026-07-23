@@ -8,38 +8,38 @@ use core::sync::atomic::{AtomicU64, Ordering};
 // CONSTANTS
 // ─────────────────────────────────────────────
 
-pub const MAX_VECTORS:        usize = 256;
-pub const MAX_SYNAPSES:       usize = 1024;   // total weighted connections
-pub const HEBBIAN_ETA_FP:     u32   = 0x0000_0666; // η ≈ 0.025 in 16.16 fp
-pub const LTP_WINDOW_TICKS:   u64   = 200;
-pub const LTD_WINDOW_TICKS:   u64   = 2000;
-pub const PRUNE_THRESHOLD_FP: u32   = 0x0000_0100; // weight < 0.004 → prune
-pub const STDP_PRE_WINDOW_NS: u64   = 5_000_000;   // 5ms STDP causal window
-pub const FIRE_HISTORY_LEN:   usize = 64;           // ring buffer of recent spikes
-pub const CORTEX_ROWS:        usize = 8;
-pub const CORTEX_COLS:        usize = 8;            // 8×8 = 64 core cortical map
-pub const REFRACTORY_TICKS:   u64   = 4;            // ticks before neuron can re-fire
+pub const MAX_VECTORS: usize = 256;
+pub const MAX_SYNAPSES: usize = 1024; // total weighted connections
+pub const HEBBIAN_ETA_FP: u32 = 0x0000_0666; // η ≈ 0.025 in 16.16 fp
+pub const LTP_WINDOW_TICKS: u64 = 200;
+pub const LTD_WINDOW_TICKS: u64 = 2000;
+pub const PRUNE_THRESHOLD_FP: u32 = 0x0000_0100; // weight < 0.004 → prune
+pub const STDP_PRE_WINDOW_NS: u64 = 5_000_000; // 5ms STDP causal window
+pub const FIRE_HISTORY_LEN: usize = 64; // ring buffer of recent spikes
+pub const CORTEX_ROWS: usize = 8;
+pub const CORTEX_COLS: usize = 8; // 8×8 = 64 core cortical map
+pub const REFRACTORY_TICKS: u64 = 4; // ticks before neuron can re-fire
 
 // ─────────────────────────────────────────────
 // NEURON — One IRQ Vector
 // ─────────────────────────────────────────────
 
 pub struct Neuron {
-    pub vector:           u8,
-    pub membrane_pot_fp:  i32,        // membrane potential (16.16 fp, resting = 0)
-    pub threshold_fp:     i32,        // fire threshold (16.16 fp)
-    pub resting_pot_fp:   i32,        // resting potential (negative)
-    pub refractory_until: u64,        // tick until neuron can fire again
-    pub fire_count:       AtomicU64,
-    pub last_fire_tick:   u64,
-    pub last_fire_ns:     u64,
-    pub fire_history:     [u64; FIRE_HISTORY_LEN], // ring of recent fire timestamps (ns)
-    pub fire_hist_idx:    usize,
-    pub cortex_row:       u8,         // position in cortical map
-    pub cortex_col:       u8,
-    pub assigned_core:    u8,         // which CPU core handles this IRQ
-    pub is_active:        bool,       // registered / unregistered
-    pub decay_rate_fp:    u32,        // membrane decay per tick (16.16 fp)
+    pub vector: u8,
+    pub membrane_pot_fp: i32,  // membrane potential (16.16 fp, resting = 0)
+    pub threshold_fp: i32,     // fire threshold (16.16 fp)
+    pub resting_pot_fp: i32,   // resting potential (negative)
+    pub refractory_until: u64, // tick until neuron can fire again
+    pub fire_count: AtomicU64,
+    pub last_fire_tick: u64,
+    pub last_fire_ns: u64,
+    pub fire_history: [u64; FIRE_HISTORY_LEN], // ring of recent fire timestamps (ns)
+    pub fire_hist_idx: usize,
+    pub cortex_row: u8, // position in cortical map
+    pub cortex_col: u8,
+    pub assigned_core: u8,  // which CPU core handles this IRQ
+    pub is_active: bool,    // registered / unregistered
+    pub decay_rate_fp: u32, // membrane decay per tick (16.16 fp)
 }
 
 impl Clone for Neuron {
@@ -69,7 +69,7 @@ impl Neuron {
         Self {
             vector,
             membrane_pot_fp: 0,
-            threshold_fp: 0x0000_8000,   // 0.5 in 16.16
+            threshold_fp: 0x0000_8000,    // 0.5 in 16.16
             resting_pot_fp: -0x0000_1000, // -0.0625
             refractory_until: 0,
             fire_count: AtomicU64::new(0),
@@ -87,7 +87,9 @@ impl Neuron {
 
     /// Receive input current and potentially fire
     pub fn stimulate(&mut self, current_fp: i32, tick: u64, now_ns: u64) -> bool {
-        if tick < self.refractory_until { return false; }
+        if tick < self.refractory_until {
+            return false;
+        }
         self.membrane_pot_fp += current_fp;
         // Decay toward resting potential
         let delta = self.membrane_pot_fp - self.resting_pot_fp;
@@ -131,7 +133,11 @@ impl Neuron {
                 count += 1;
             }
         }
-        if count == 0 { u64::MAX } else { intervals / count as u64 }
+        if count == 0 {
+            u64::MAX
+        } else {
+            intervals / count as u64
+        }
     }
 }
 
@@ -141,22 +147,24 @@ impl Neuron {
 
 #[derive(Clone, Copy)]
 pub struct Synapse {
-    pub pre_vector:    u8,
-    pub post_vector:   u8,
-    pub weight_fp:     u32,     // 16.16 fp — synaptic strength
+    pub pre_vector: u8,
+    pub post_vector: u8,
+    pub weight_fp: u32, // 16.16 fp — synaptic strength
     pub last_ltp_tick: u64,
     pub last_ltd_tick: u64,
     pub co_fire_count: u32,
-    pub is_excitatory: bool,    // true = excitatory, false = inhibitory
-    pub stdp_score_fp: i32,     // STDP running score (positive = potentiation)
+    pub is_excitatory: bool, // true = excitatory, false = inhibitory
+    pub stdp_score_fp: i32,  // STDP running score (positive = potentiation)
 }
 
 impl Synapse {
     pub fn new(pre: u8, post: u8) -> Self {
         Self {
-            pre_vector: pre, post_vector: post,
+            pre_vector: pre,
+            post_vector: post,
             weight_fp: 0x0000_1000, // 0.0625 initial weight
-            last_ltp_tick: 0, last_ltd_tick: 0,
+            last_ltp_tick: 0,
+            last_ltd_tick: 0,
             co_fire_count: 0,
             is_excitatory: true,
             stdp_score_fp: 0,
@@ -183,14 +191,16 @@ impl Synapse {
     /// Pre fires before post → potentiate (A+)
     /// Post fires before pre → depress (A-)
     pub fn stdp_update(&mut self, pre_ns: u64, post_ns: u64) {
-        if pre_ns == 0 || post_ns == 0 { return; }
+        if pre_ns == 0 || post_ns == 0 {
+            return;
+        }
         if post_ns > pre_ns {
             let dt = post_ns - pre_ns;
             if dt <= STDP_PRE_WINDOW_NS {
                 // Causal: pre before post → LTP
                 // A+ * exp(-dt / τ+)  — simplified: linear falloff
-                let strength = (0x0001_0000u64
-                    .saturating_sub(dt * 0x0001_0000 / STDP_PRE_WINDOW_NS)) as i32;
+                let strength =
+                    (0x0001_0000u64.saturating_sub(dt * 0x0001_0000 / STDP_PRE_WINDOW_NS)) as i32;
                 self.stdp_score_fp = self.stdp_score_fp.saturating_add(strength);
                 let ltp = ((self.weight_fp as u64 * strength.unsigned_abs() as u64) >> 20) as u32;
                 self.weight_fp = self.weight_fp.saturating_add(ltp);
@@ -199,8 +209,8 @@ impl Synapse {
             let dt = pre_ns - post_ns;
             if dt <= STDP_PRE_WINDOW_NS {
                 // Anti-causal: post before pre → LTD
-                let strength = (0x0001_0000u64
-                    .saturating_sub(dt * 0x0001_0000 / STDP_PRE_WINDOW_NS)) as i32;
+                let strength =
+                    (0x0001_0000u64.saturating_sub(dt * 0x0001_0000 / STDP_PRE_WINDOW_NS)) as i32;
                 self.stdp_score_fp = self.stdp_score_fp.saturating_sub(strength);
                 let ltd = ((self.weight_fp as u64 * strength.unsigned_abs() as u64) >> 20) as u32;
                 self.weight_fp = self.weight_fp.saturating_sub(ltd);
@@ -219,9 +229,9 @@ impl Synapse {
 
 pub struct CorticalMap {
     // cortex[row][col] = assigned CPU core
-    pub grid:       [[u8; CORTEX_COLS]; CORTEX_ROWS],
-    pub core_load:  [u32; 64],    // IRQs assigned per core
-    pub num_cores:  usize,
+    pub grid: [[u8; CORTEX_COLS]; CORTEX_ROWS],
+    pub core_load: [u32; 64], // IRQs assigned per core
+    pub num_cores: usize,
 }
 
 impl CorticalMap {
@@ -269,14 +279,14 @@ impl CorticalMap {
 // ─────────────────────────────────────────────
 
 pub struct SynapticCortex {
-    pub neurons:         [Neuron; MAX_VECTORS],
-    pub synapses:        Vec<Synapse>,
-    pub cortex:          CorticalMap,
-    pub tick:            u64,
-    pub total_spikes:    AtomicU64,
-    pub total_pruned:    AtomicU64,
-    pub total_ltp:       AtomicU64,
-    pub total_colocate:  AtomicU64,
+    pub neurons: [Neuron; MAX_VECTORS],
+    pub synapses: Vec<Synapse>,
+    pub cortex: CorticalMap,
+    pub tick: u64,
+    pub total_spikes: AtomicU64,
+    pub total_pruned: AtomicU64,
+    pub total_ltp: AtomicU64,
+    pub total_colocate: AtomicU64,
 }
 
 impl SynapticCortex {
@@ -286,9 +296,9 @@ impl SynapticCortex {
             synapses: Vec::new(),
             cortex: CorticalMap::new(),
             tick: 0,
-            total_spikes:   AtomicU64::new(0),
-            total_pruned:   AtomicU64::new(0),
-            total_ltp:      AtomicU64::new(0),
+            total_spikes: AtomicU64::new(0),
+            total_pruned: AtomicU64::new(0),
+            total_ltp: AtomicU64::new(0),
             total_colocate: AtomicU64::new(0),
         }
     }
@@ -312,10 +322,14 @@ impl SynapticCortex {
             let n = &mut self.neurons[vector as usize];
             n.stimulate(n.threshold_fp + 1, tick, now_ns)
         };
-        if fired { self.total_spikes.fetch_add(1, Ordering::Relaxed); }
+        if fired {
+            self.total_spikes.fetch_add(1, Ordering::Relaxed);
+        }
 
         // Propagate spike through synapses (excitatory/inhibitory)
-        let post_vectors: Vec<(u8, i32)> = self.synapses.iter()
+        let post_vectors: Vec<(u8, i32)> = self
+            .synapses
+            .iter()
             .filter(|s| s.pre_vector == vector)
             .map(|s| {
                 let current = if s.is_excitatory {
@@ -341,7 +355,9 @@ impl SynapticCortex {
     fn hebbian_tick(&mut self, tick: u64, now_ns: u64, fired_vector: u8) {
         // Update synapses where pre = fired_vector
         for syn in &mut self.synapses {
-            if syn.pre_vector != fired_vector { continue; }
+            if syn.pre_vector != fired_vector {
+                continue;
+            }
             let post_active = self.neurons[syn.post_vector as usize]
                 .fired_recently(LTP_WINDOW_TICKS * 1_000_000, now_ns);
             syn.hebbian_update(true, post_active, tick);
@@ -349,23 +365,28 @@ impl SynapticCortex {
                 self.total_ltp.fetch_add(1, Ordering::Relaxed);
             }
             // STDP
-            let pre_ns  = self.neurons[fired_vector as usize].last_fire_ns;
+            let pre_ns = self.neurons[fired_vector as usize].last_fire_ns;
             let post_ns = self.neurons[syn.post_vector as usize].last_fire_ns;
             syn.stdp_update(pre_ns, post_ns);
         }
 
         // Prune weak synapses
-        let _pruned_pairs: Vec<(u8, u8)> = self.synapses.iter()
+        let _pruned_pairs: Vec<(u8, u8)> = self
+            .synapses
+            .iter()
             .filter(|s| s.should_prune())
             .map(|s| (s.pre_vector, s.post_vector))
             .collect();
         let pre_prune = self.synapses.len();
         self.synapses.retain(|s| !s.should_prune());
         let pruned = pre_prune - self.synapses.len();
-        self.total_pruned.fetch_add(pruned as u64, Ordering::Relaxed);
+        self.total_pruned
+            .fetch_add(pruned as u64, Ordering::Relaxed);
 
         // Co-locate strongly connected pairs in cortical map
-        let strong_pairs: Vec<(u8, u8)> = self.synapses.iter()
+        let strong_pairs: Vec<(u8, u8)> = self
+            .synapses
+            .iter()
             .filter(|s| s.weight_fp > 0x0001_0000) // weight > 1.0
             .map(|s| (s.pre_vector, s.post_vector))
             .collect();
@@ -384,8 +405,16 @@ impl SynapticCortex {
 
     /// Register a new synaptic connection between two vectors
     pub fn connect(&mut self, pre: u8, post: u8, excitatory: bool) {
-        if self.synapses.len() >= MAX_SYNAPSES { return; }
-        if self.synapses.iter().any(|s| s.pre_vector == pre && s.post_vector == post) { return; }
+        if self.synapses.len() >= MAX_SYNAPSES {
+            return;
+        }
+        if self
+            .synapses
+            .iter()
+            .any(|s| s.pre_vector == pre && s.post_vector == post)
+        {
+            return;
+        }
         let mut syn = Synapse::new(pre, post);
         syn.is_excitatory = excitatory;
         self.synapses.push(syn);
@@ -399,11 +428,11 @@ impl SynapticCortex {
     pub fn stats(&self) -> CortexStats {
         CortexStats {
             active_synapses: self.synapses.len() as u32,
-            total_spikes:    self.total_spikes.load(Ordering::Relaxed),
-            total_pruned:    self.total_pruned.load(Ordering::Relaxed),
-            total_ltp:       self.total_ltp.load(Ordering::Relaxed),
-            total_colocate:  self.total_colocate.load(Ordering::Relaxed),
-            tick:            self.tick,
+            total_spikes: self.total_spikes.load(Ordering::Relaxed),
+            total_pruned: self.total_pruned.load(Ordering::Relaxed),
+            total_ltp: self.total_ltp.load(Ordering::Relaxed),
+            total_colocate: self.total_colocate.load(Ordering::Relaxed),
+            tick: self.tick,
         }
     }
 }
@@ -411,9 +440,9 @@ impl SynapticCortex {
 #[derive(Clone, Copy, Debug)]
 pub struct CortexStats {
     pub active_synapses: u32,
-    pub total_spikes:    u64,
-    pub total_pruned:    u64,
-    pub total_ltp:       u64,
-    pub total_colocate:  u64,
-    pub tick:            u64,
+    pub total_spikes: u64,
+    pub total_pruned: u64,
+    pub total_ltp: u64,
+    pub total_colocate: u64,
+    pub tick: u64,
 }

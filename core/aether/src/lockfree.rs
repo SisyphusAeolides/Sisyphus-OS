@@ -1,8 +1,6 @@
 use core::cell::UnsafeCell;
 use core::mem::MaybeUninit;
-use core::sync::atomic::{
-    AtomicU8, AtomicU64, Ordering,
-};
+use core::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
 const STATE_UNINITIALIZED: u8 = 0;
 const STATE_INITIALIZING: u8 = 1;
@@ -48,10 +46,7 @@ pub struct BoundedMpmc<T, const N: usize> {
     slots: [QueueSlot<T>; N],
 }
 
-unsafe impl<T: Copy + Send, const N: usize> Sync
-    for BoundedMpmc<T, N>
-{
-}
+unsafe impl<T: Copy + Send, const N: usize> Sync for BoundedMpmc<T, N> {}
 
 impl<T: Copy + Send, const N: usize> BoundedMpmc<T, N> {
     pub const fn new() -> Self {
@@ -104,14 +99,12 @@ impl<T: Copy + Send, const N: usize> BoundedMpmc<T, N> {
             return Err(QueueError::Uninitialized);
         }
 
-        let mut position =
-            self.enqueue_position.load(Ordering::Relaxed);
+        let mut position = self.enqueue_position.load(Ordering::Relaxed);
 
         loop {
             let slot = &self.slots[position as usize % N];
             let sequence = slot.sequence.load(Ordering::Acquire);
-            let difference =
-                sequence.wrapping_sub(position) as i64;
+            let difference = sequence.wrapping_sub(position) as i64;
 
             if difference == 0 {
                 match self.enqueue_position.compare_exchange_weak(
@@ -127,10 +120,8 @@ impl<T: Copy + Send, const N: usize> BoundedMpmc<T, N> {
                             (*slot.value.get()).write(value);
                         }
 
-                        slot.sequence.store(
-                            position.wrapping_add(1),
-                            Ordering::Release,
-                        );
+                        slot.sequence
+                            .store(position.wrapping_add(1), Ordering::Release);
 
                         return Ok(());
                     }
@@ -140,8 +131,7 @@ impl<T: Copy + Send, const N: usize> BoundedMpmc<T, N> {
             } else if difference < 0 {
                 return Err(QueueError::Full);
             } else {
-                position =
-                    self.enqueue_position.load(Ordering::Relaxed);
+                position = self.enqueue_position.load(Ordering::Relaxed);
             }
 
             core::hint::spin_loop();
@@ -153,15 +143,13 @@ impl<T: Copy + Send, const N: usize> BoundedMpmc<T, N> {
             return Err(QueueError::Uninitialized);
         }
 
-        let mut position =
-            self.dequeue_position.load(Ordering::Relaxed);
+        let mut position = self.dequeue_position.load(Ordering::Relaxed);
 
         loop {
             let slot = &self.slots[position as usize % N];
             let expected = position.wrapping_add(1);
             let sequence = slot.sequence.load(Ordering::Acquire);
-            let difference =
-                sequence.wrapping_sub(expected) as i64;
+            let difference = sequence.wrapping_sub(expected) as i64;
 
             if difference == 0 {
                 match self.dequeue_position.compare_exchange_weak(
@@ -173,14 +161,10 @@ impl<T: Copy + Send, const N: usize> BoundedMpmc<T, N> {
                     Ok(_) => {
                         // SAFETY: The producer published this initialized value
                         // with Release and this consumer exclusively owns it.
-                        let value = unsafe {
-                            (*slot.value.get()).assume_init_read()
-                        };
+                        let value = unsafe { (*slot.value.get()).assume_init_read() };
 
-                        slot.sequence.store(
-                            position.wrapping_add(N as u64),
-                            Ordering::Release,
-                        );
+                        slot.sequence
+                            .store(position.wrapping_add(N as u64), Ordering::Release);
 
                         return Ok(value);
                     }
@@ -190,8 +174,7 @@ impl<T: Copy + Send, const N: usize> BoundedMpmc<T, N> {
             } else if difference < 0 {
                 return Err(QueueError::Empty);
             } else {
-                position =
-                    self.dequeue_position.load(Ordering::Relaxed);
+                position = self.dequeue_position.load(Ordering::Relaxed);
             }
 
             core::hint::spin_loop();
@@ -199,20 +182,14 @@ impl<T: Copy + Send, const N: usize> BoundedMpmc<T, N> {
     }
 
     pub fn length_approximate(&self) -> usize {
-        let enqueue =
-            self.enqueue_position.load(Ordering::Acquire);
-        let dequeue =
-            self.dequeue_position.load(Ordering::Acquire);
+        let enqueue = self.enqueue_position.load(Ordering::Acquire);
+        let dequeue = self.dequeue_position.load(Ordering::Acquire);
 
-        enqueue
-            .wrapping_sub(dequeue)
-            .min(N as u64) as usize
+        enqueue.wrapping_sub(dequeue).min(N as u64) as usize
     }
 }
 
-impl<T: Copy + Send, const N: usize> Default
-    for BoundedMpmc<T, N>
-{
+impl<T: Copy + Send, const N: usize> Default for BoundedMpmc<T, N> {
     fn default() -> Self {
         Self::new()
     }

@@ -292,11 +292,7 @@ impl MmioWindow {
         Ok(value)
     }
 
-    pub fn write_u32(
-        &self,
-        offset: usize,
-        value: u32,
-    ) -> Result<(), MmioAccessError> {
+    pub fn write_u32(&self, offset: usize, value: u32) -> Result<(), MmioAccessError> {
         let pointer = self.checked_pointer::<u32>(offset)?;
         compiler_fence(Ordering::SeqCst);
 
@@ -308,10 +304,7 @@ impl MmioWindow {
         Ok(())
     }
 
-    pub fn close(
-        self,
-        _authority: &Capability<'_, DeviceMemoryRight>,
-    ) -> Status {
+    pub fn close(self, _authority: &Capability<'_, DeviceMemoryRight>) -> Status {
         kernel_mmio().unmap(self.id.0)
     }
 

@@ -103,12 +103,7 @@ impl NexusCommand {
         checksum: 0,
     };
 
-    pub fn new(
-        opcode: NexusOpcode,
-        sequence: u64,
-        capability: u64,
-        arguments: [u64; 4],
-    ) -> Self {
+    pub fn new(opcode: NexusOpcode, sequence: u64, capability: u64, arguments: [u64; 4]) -> Self {
         let mut command = Self {
             magic: NEXUS_WIRE_MAGIC,
             version: NEXUS_WIRE_VERSION,
@@ -215,10 +210,7 @@ impl NexusReply {
         reply
     }
 
-    pub fn validate(
-        &self,
-        expected_sequence: u64,
-    ) -> Result<NexusStatus, WireError> {
+    pub fn validate(&self, expected_sequence: u64) -> Result<NexusStatus, WireError> {
         if self.magic != NEXUS_WIRE_MAGIC {
             return Err(WireError::BadMagic);
         }
@@ -340,12 +332,10 @@ impl NexusTelemetry {
     }
 
     fn compute_checksum(&self) -> u64 {
-        let header = u64::from(self.magic)
-            | (u64::from(self.version) << 32)
-            | (u64::from(self.flags) << 48);
+        let header =
+            u64::from(self.magic) | (u64::from(self.version) << 32) | (u64::from(self.flags) << 48);
 
-        let counts =
-            u64::from(self.pairs_live) | (u64::from(self.generation) << 32);
+        let counts = u64::from(self.pairs_live) | (u64::from(self.generation) << 32);
 
         let mut digest = fold(0x3c6e_f372_fe94_f82b, header);
         digest = fold(digest, self.sequence);

@@ -3,10 +3,10 @@ use core::alloc::Layout;
 /// A spacetime coordinate for a memory page
 #[derive(Clone, Copy, Debug)]
 pub struct SpacetimeAddr {
-    pub x: u16,  // spatial dimension 1
-    pub y: u16,  // spatial dimension 2
-    pub z: u16,  // spatial dimension 3
-    pub t: u16,  // temporal index (allocation epoch)
+    pub x: u16, // spatial dimension 1
+    pub y: u16, // spatial dimension 2
+    pub z: u16, // spatial dimension 3
+    pub t: u16, // temporal index (allocation epoch)
 }
 
 impl SpacetimeAddr {
@@ -16,7 +16,7 @@ impl SpacetimeAddr {
         let dy = self.y as f64 - other.y as f64;
         let dz = self.z as f64 - other.z as f64;
         let dt = (self.t as f64 - other.t as f64) * 2.998e8_f64;
-        let ds2 = dx*dx + dy*dy + dz*dz - dt*dt;
+        let ds2 = dx * dx + dy * dy + dz * dz - dt * dt;
         libm::sqrt(libm::fabs(ds2))
     }
 
@@ -43,7 +43,7 @@ fn hilbert_encode_4d(x: u64, y: u64, z: u64, t: u64) -> u64 {
 pub struct GravitationalSlab {
     base: *mut u8,
     capacity: usize,
-    free_map: [u64; 512],  // 512 * 64 = 32768 slots
+    free_map: [u64; 512], // 512 * 64 = 32768 slots
     epoch: u16,
 }
 
@@ -52,7 +52,12 @@ unsafe impl Sync for GravitationalSlab {}
 
 impl GravitationalSlab {
     pub const fn new(base: *mut u8, capacity: usize) -> Self {
-        Self { base, capacity, free_map: [!0u64; 512], epoch: 0 }
+        Self {
+            base,
+            capacity,
+            free_map: [!0u64; 512],
+            epoch: 0,
+        }
     }
 
     pub fn alloc_at_epoch(&mut self, layout: Layout) -> *mut u8 {

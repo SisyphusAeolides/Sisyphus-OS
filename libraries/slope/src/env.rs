@@ -16,10 +16,10 @@
 // PhaseKey: environment variable key hashed at compile time via FNV-1a const fn.
 //   Use phase_key!("HOME") instead of string scanning at runtime.
 
-pub const MAX_ARGV:     usize = 64;
+pub const MAX_ARGV: usize = 64;
 pub const MAX_ENV_VARS: usize = 128;
-pub const MAX_ENV_KEY:  usize = 64;
-pub const MAX_ENV_VAL:  usize = 256;
+pub const MAX_ENV_KEY: usize = 64;
+pub const MAX_ENV_VAL: usize = 256;
 
 // ─── QUANTUM ARGV ──────────────────────────────────────────────────────────
 
@@ -39,24 +39,38 @@ impl QuantumArgv {
     pub const unsafe fn from_stack(stack_ptr: *const u8) -> Self {
         let base = stack_ptr as *const u64;
         let argc = unsafe { *base } as usize;
-        Self { base, argc: if argc < MAX_ARGV { argc } else { MAX_ARGV } }
+        Self {
+            base,
+            argc: if argc < MAX_ARGV { argc } else { MAX_ARGV },
+        }
     }
 
-    pub const fn len(&self) -> usize { self.argc }
-    pub const fn is_empty(&self) -> bool { self.argc == 0 }
+    pub const fn len(&self) -> usize {
+        self.argc
+    }
+    pub const fn is_empty(&self) -> bool {
+        self.argc == 0
+    }
 
     /// Observe (collapse) argument `index`. Returns None if out of range or null.
     pub fn get(&self, index: usize) -> Option<&'static [u8]> {
-        if index >= self.argc { return None; }
+        if index >= self.argc {
+            return None;
+        }
         // SAFETY: The stack ABI guarantees argc+1 valid pointers after base.
         let ptr = unsafe { *self.base.add(1 + index) } as *const u8;
-        if ptr.is_null() { return None; }
+        if ptr.is_null() {
+            return None;
+        }
         Some(unsafe { cstr_to_bytes(ptr) })
     }
 
     /// Returns a raw iterator over all observed arguments.
     pub fn iter(&self) -> ArgvIter<'_> {
-        ArgvIter { argv: self, index: 0 }
+        ArgvIter {
+            argv: self,
+            index: 0,
+        }
     }
 
     /// Returns the raw pointer to the envp block (first entry after null terminator).
@@ -67,7 +81,7 @@ impl QuantumArgv {
 }
 
 pub struct ArgvIter<'a> {
-    argv:  &'a QuantumArgv,
+    argv: &'a QuantumArgv,
     index: usize,
 }
 
@@ -92,7 +106,7 @@ impl PhaseKey {
 }
 
 const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-const FNV_PRIME:  u64 = 0x0000_0100_0000_01b3;
+const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 
 pub const fn fnv1a_const(bytes: &[u8]) -> u64 {
     let mut hash = FNV_OFFSET;
@@ -134,11 +148,11 @@ impl QuantumEnv {
         let mut i = 0usize;
         loop {
             let ptr = unsafe { *self.base.add(i) } as *const u8;
-            if ptr.is_null() { break; }
+            if ptr.is_null() {
+                break;
+            }
             let entry = unsafe { cstr_to_bytes(ptr) };
-            if entry.len() > key.len() + 1
-                && &entry[..key.len()] == key
-                && entry[key.len()] == b'='
+            if entry.len() > key.len() + 1 && &entry[..key.len()] == key && entry[key.len()] == b'='
             {
                 return Some(&entry[key.len() + 1..]);
             }
@@ -152,7 +166,9 @@ impl QuantumEnv {
         let mut i = 0usize;
         loop {
             let ptr = unsafe { *self.base.add(i) } as *const u8;
-            if ptr.is_null() { break; }
+            if ptr.is_null() {
+                break;
+            }
             let entry = unsafe { cstr_to_bytes(ptr) };
             // Find '=' separator
             let sep = entry.iter().position(|&b| b == b'=')?;
@@ -173,19 +189,23 @@ impl QuantumEnv {
 #[derive(Clone, Copy)]
 pub struct EnvEntry {
     pub key_hash: u64,
-    pub value:    *const u8,
+    pub value: *const u8,
     pub value_len: u16,
 }
 
 pub struct EnvSnapshot {
     entries: [EnvEntry; MAX_ENV_VARS],
-    count:   usize,
+    count: usize,
 }
 
 impl EnvSnapshot {
     pub const fn empty() -> Self {
         Self {
-            entries: [EnvEntry { key_hash: 0, value: core::ptr::null(), value_len: 0 }; MAX_ENV_VARS],
+            entries: [EnvEntry {
+                key_hash: 0,
+                value: core::ptr::null(),
+                value_len: 0,
+            }; MAX_ENV_VARS],
             count: 0,
         }
     }
@@ -195,13 +215,15 @@ impl EnvSnapshot {
         let mut i = 0usize;
         loop {
             let ptr = unsafe { *env.base.add(i) } as *const u8;
-            if ptr.is_null() { break; }
+            if ptr.is_null() {
+                break;
+            }
             let entry = unsafe { cstr_to_bytes(ptr) };
             if let Some(sep) = entry.iter().position(|&b| b == b'=') {
                 if snap.count < MAX_ENV_VARS {
                     snap.entries[snap.count] = EnvEntry {
-                        key_hash:  fnv1a_const(&entry[..sep]),
-                        value:     entry[sep + 1..].as_ptr(),
+                        key_hash: fnv1a_const(&entry[..sep]),
+                        value: entry[sep + 1..].as_ptr(),
                         value_len: entry[sep + 1..].len().min(u16::MAX as usize) as u16,
                     };
                     snap.count += 1;
@@ -216,9 +238,7 @@ impl EnvSnapshot {
         self.entries[..self.count]
             .iter()
             .find(|e| e.key_hash == key.0)
-            .map(|e| unsafe {
-                core::slice::from_raw_parts(e.value, e.value_len as usize)
-            })
+            .map(|e| unsafe { core::slice::from_raw_parts(e.value, e.value_len as usize) })
     }
 }
 
@@ -228,7 +248,9 @@ impl EnvSnapshot {
 /// # Safety: `ptr` must be a valid, null-terminated C string in mapped memory.
 unsafe fn cstr_to_bytes(ptr: *const u8) -> &'static [u8] {
     let mut len = 0usize;
-    while unsafe { *ptr.add(len) } != 0 { len += 1; }
+    while unsafe { *ptr.add(len) } != 0 {
+        len += 1;
+    }
     unsafe { core::slice::from_raw_parts(ptr, len) }
 }
 

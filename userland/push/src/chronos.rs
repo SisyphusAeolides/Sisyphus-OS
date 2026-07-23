@@ -1,8 +1,5 @@
 #![allow(dead_code)]
-use alloc::{
-    collections::BTreeMap,
-    vec::Vec,
-};
+use alloc::{collections::BTreeMap, vec::Vec};
 use core::sync::atomic::{AtomicU64, Ordering};
 
 // ─────────────────────────────────────────────
@@ -28,25 +25,25 @@ const SLOTS_PER_LEVEL: usize = 256;
 pub struct SpacetimeEvent {
     pub id: u64,
     pub pid: u32,
-    pub wall_deadline_ns: u64,      // coordinate time (what the kernel sees)
-    pub proper_deadline_ns: u64,    // proper time (what the service experiences)
-    pub lorentz_factor: f64,        // γ = 1/sqrt(1 - v²/c²) at time of registration
+    pub wall_deadline_ns: u64,   // coordinate time (what the kernel sees)
+    pub proper_deadline_ns: u64, // proper time (what the service experiences)
+    pub lorentz_factor: f64,     // γ = 1/sqrt(1 - v²/c²) at time of registration
     pub event_type: EventType,
     pub payload: EventPayload,
-    pub worldline_x: f64,           // spatial coordinate (cpu_load at registration)
-    pub worldline_t: u64,           // temporal coordinate (wall time at registration)
-    pub is_lightlike: bool,         // true if this is a signal/IPC (propagates at c)
+    pub worldline_x: f64,   // spatial coordinate (cpu_load at registration)
+    pub worldline_t: u64,   // temporal coordinate (wall time at registration)
+    pub is_lightlike: bool, // true if this is a signal/IPC (propagates at c)
 }
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum EventType {
-    Timeout,         // service requested a sleep/wait
-    Heartbeat,       // periodic liveness check
-    WatchdogBark,    // watchdog firing
-    ServiceStart,    // deferred service launch
-    ServiceStop,     // deferred service termination
-    ProperSync,      // synchronize a group's proper time
-    LightCone,       // causal signal (IPC, signal delivery)
+    Timeout,      // service requested a sleep/wait
+    Heartbeat,    // periodic liveness check
+    WatchdogBark, // watchdog firing
+    ServiceStart, // deferred service launch
+    ServiceStop,  // deferred service termination
+    ProperSync,   // synchronize a group's proper time
+    LightCone,    // causal signal (IPC, signal delivery)
 }
 
 #[derive(Clone)]
@@ -54,7 +51,10 @@ pub enum EventPayload {
     None,
     Signal(i32),
     Message(Vec<u8>),
-    ProperTimeSync { group_id: u32, target_proper_ns: u64 },
+    ProperTimeSync {
+        group_id: u32,
+        target_proper_ns: u64,
+    },
 }
 
 // ─────────────────────────────────────────────
@@ -78,12 +78,24 @@ pub struct Worldline {
 
 impl Worldline {
     pub fn new(pid: u32) -> Self {
-        Self { pid, points: Vec::new(), proper_time_ns: 0, gamma: 1.0, velocity: 0.0 }
+        Self {
+            pid,
+            points: Vec::new(),
+            proper_time_ns: 0,
+            gamma: 1.0,
+            velocity: 0.0,
+        }
     }
 
     /// Record a new spacetime point and advance proper time
     pub fn advance(&mut self, wall_time_ns: u64, cpu_load: f64) {
-        let v = if cpu_load < 0.0 { 0.0 } else if cpu_load > 0.9999 { 0.9999 } else { cpu_load };
+        let v = if cpu_load < 0.0 {
+            0.0
+        } else if cpu_load > 0.9999 {
+            0.9999
+        } else {
+            cpu_load
+        };
         let gamma = 1.0 / libm::sqrt(1.0 - v * v / (C * C));
         self.gamma = gamma;
         self.velocity = v;
@@ -96,7 +108,9 @@ impl Worldline {
         }
         self.points.push((wall_time_ns, cpu_load));
         // Keep only last 256 points
-        if self.points.len() > 256 { self.points.remove(0); }
+        if self.points.len() > 256 {
+            self.points.remove(0);
+        }
     }
 
     /// Compute proper time from wall time for this service (inverse: wall from proper)
@@ -119,15 +133,19 @@ impl Worldline {
     /// Geodesic deviation: how much is this worldline curving?
     /// High curvature = rapid load changes = turbulent service
     pub fn curvature(&self) -> f64 {
-        if self.points.len() < 3 { return 0.0; }
+        if self.points.len() < 3 {
+            return 0.0;
+        }
         let n = self.points.len();
-        let p0 = &self.points[n-3];
-        let p1 = &self.points[n-2];
-        let p2 = &self.points[n-1];
+        let p0 = &self.points[n - 3];
+        let p1 = &self.points[n - 2];
+        let p2 = &self.points[n - 1];
         // Second derivative of cpu_load w.r.t. time
         let dt1 = (p1.0 - p0.0) as f64;
         let dt2 = (p2.0 - p1.0) as f64;
-        if dt1 < 1.0 || dt2 < 1.0 { return 0.0; }
+        if dt1 < 1.0 || dt2 < 1.0 {
+            return 0.0;
+        }
         let d_load1 = (p1.1 - p0.1) / dt1;
         let d_load2 = (p2.1 - p1.1) / dt2;
         let diff = (d_load2 - d_load1) / ((dt1 + dt2) / 2.0);
@@ -145,7 +163,9 @@ pub struct WheelSlot {
 }
 
 impl WheelSlot {
-    pub fn new() -> Self { Self { events: Vec::new() } }
+    pub fn new() -> Self {
+        Self { events: Vec::new() }
+    }
 }
 
 /// 4-level hierarchical timer wheel
@@ -155,7 +175,7 @@ impl WheelSlot {
 /// Level 3: 4.6hr resolution, 49 days range
 pub struct TimerWheel {
     pub levels: [[WheelSlot; SLOTS_PER_LEVEL]; WHEEL_LEVELS],
-    pub cursors: [usize; WHEEL_LEVELS],  // current position in each level
+    pub cursors: [usize; WHEEL_LEVELS], // current position in each level
     pub wall_ns: AtomicU64,
     pub resolution_ns: [u64; WHEEL_LEVELS],
     pub event_count: u64,
@@ -179,13 +199,17 @@ impl TimerWheel {
         let delta_ns = event.wall_deadline_ns.saturating_sub(now);
 
         // Find appropriate level based on delta
-        let level = if delta_ns < self.resolution_ns[1] { 0 }
-                    else if delta_ns < self.resolution_ns[2] { 1 }
-                    else if delta_ns < self.resolution_ns[3] { 2 }
-                    else { 3 };
+        let level = if delta_ns < self.resolution_ns[1] {
+            0
+        } else if delta_ns < self.resolution_ns[2] {
+            1
+        } else if delta_ns < self.resolution_ns[3] {
+            2
+        } else {
+            3
+        };
 
-        let slot_idx = (self.cursors[level] +
-            (delta_ns / self.resolution_ns[level]) as usize)
+        let slot_idx = (self.cursors[level] + (delta_ns / self.resolution_ns[level]) as usize)
             % SLOTS_PER_LEVEL;
 
         self.levels[level][slot_idx].events.push(event);
@@ -213,7 +237,9 @@ impl TimerWheel {
     }
 
     fn cascade_level(&mut self, level: usize) {
-        if level >= WHEEL_LEVELS { return; }
+        if level >= WHEEL_LEVELS {
+            return;
+        }
         let slot = self.cursors[level];
         let now = self.wall_ns.load(Ordering::Relaxed);
 
@@ -223,7 +249,8 @@ impl TimerWheel {
             if event.wall_deadline_ns <= now + self.resolution_ns[0] * SLOTS_PER_LEVEL as u64 {
                 // Fits in level 0 — insert precisely
                 let delta = event.wall_deadline_ns.saturating_sub(now);
-                let slot0 = (self.cursors[0] + (delta / self.resolution_ns[0]) as usize) % SLOTS_PER_LEVEL;
+                let slot0 =
+                    (self.cursors[0] + (delta / self.resolution_ns[0]) as usize) % SLOTS_PER_LEVEL;
                 self.levels[0][slot0].events.push(event);
             } else {
                 // Re-insert into same or lower level
@@ -258,28 +285,47 @@ impl TimerWheel {
 pub struct ProperTimeGroup {
     pub group_id: u32,
     pub member_pids: Vec<u32>,
-    pub group_velocity: f64,     // group's collective "velocity" (avg load)
-    pub proper_epoch_ns: u64,    // when this group's clock started
-    pub proper_now_ns: u64,      // group's current proper time
-    pub gamma: f64,              // Lorentz factor for the group frame
+    pub group_velocity: f64,  // group's collective "velocity" (avg load)
+    pub proper_epoch_ns: u64, // when this group's clock started
+    pub proper_now_ns: u64,   // group's current proper time
+    pub gamma: f64,           // Lorentz factor for the group frame
 }
 
 impl ProperTimeGroup {
     pub fn new(group_id: u32) -> Self {
-        Self { group_id, member_pids: Vec::new(), group_velocity: 0.0,
-               proper_epoch_ns: 0, proper_now_ns: 0, gamma: 1.0 }
+        Self {
+            group_id,
+            member_pids: Vec::new(),
+            group_velocity: 0.0,
+            proper_epoch_ns: 0,
+            proper_now_ns: 0,
+            gamma: 1.0,
+        }
     }
 
-    pub fn add_member(&mut self, pid: u32) { self.member_pids.push(pid); }
+    pub fn add_member(&mut self, pid: u32) {
+        self.member_pids.push(pid);
+    }
 
     /// Update group velocity from member worldlines (average cpu load)
     pub fn update_velocity(&mut self, worldlines: &BTreeMap<u32, Worldline>) {
-        if self.member_pids.is_empty() { return; }
-        let avg_v: f64 = self.member_pids.iter()
+        if self.member_pids.is_empty() {
+            return;
+        }
+        let avg_v: f64 = self
+            .member_pids
+            .iter()
             .filter_map(|pid| worldlines.get(pid))
             .map(|wl| wl.velocity)
-            .sum::<f64>() / self.member_pids.len() as f64;
-        self.group_velocity = if avg_v < 0.0 { 0.0 } else if avg_v > 0.9999 { 0.9999 } else { avg_v };
+            .sum::<f64>()
+            / self.member_pids.len() as f64;
+        self.group_velocity = if avg_v < 0.0 {
+            0.0
+        } else if avg_v > 0.9999 {
+            0.9999
+        } else {
+            avg_v
+        };
         self.gamma = 1.0 / libm::sqrt(1.0 - self.group_velocity * self.group_velocity);
     }
 
@@ -311,12 +357,12 @@ impl ProperTimeGroup {
 // ─────────────────────────────────────────────
 
 pub struct Chronos {
-    pub wheel:       TimerWheel,
-    pub worldlines:  BTreeMap<u32, Worldline>,
-    pub groups:      BTreeMap<u32, ProperTimeGroup>,
-    pub event_seq:   AtomicU64,
-    pub wall_ns:     u64,
-    pub tick_count:  u64,
+    pub wheel: TimerWheel,
+    pub worldlines: BTreeMap<u32, Worldline>,
+    pub groups: BTreeMap<u32, ProperTimeGroup>,
+    pub event_seq: AtomicU64,
+    pub wall_ns: u64,
+    pub tick_count: u64,
     /// Light-cone enforcement: map of event_id → (t, x) for causal checking
     pub light_cone_map: BTreeMap<u64, (u64, f64)>,
 }
@@ -324,12 +370,12 @@ pub struct Chronos {
 impl Chronos {
     pub fn new() -> Self {
         Self {
-            wheel:          TimerWheel::new(),
-            worldlines:     BTreeMap::new(),
-            groups:         BTreeMap::new(),
-            event_seq:      AtomicU64::new(1),
-            wall_ns:        0,
-            tick_count:     0,
+            wheel: TimerWheel::new(),
+            worldlines: BTreeMap::new(),
+            groups: BTreeMap::new(),
+            event_seq: AtomicU64::new(1),
+            wall_ns: 0,
+            tick_count: 0,
             light_cone_map: BTreeMap::new(),
         }
     }
@@ -347,10 +393,16 @@ impl Chronos {
 
     /// Schedule a relativistic timeout — deadline is in proper time of the service
     pub fn schedule_proper_timeout(
-        &mut self, pid: u32, proper_delay_ns: u64, event_type: EventType, payload: EventPayload,
+        &mut self,
+        pid: u32,
+        proper_delay_ns: u64,
+        event_type: EventType,
+        payload: EventPayload,
     ) -> u64 {
         let id = self.event_seq.fetch_add(1, Ordering::Relaxed);
-        let (gamma, velocity) = self.worldlines.get(&pid)
+        let (gamma, velocity) = self
+            .worldlines
+            .get(&pid)
             .map(|wl| (wl.gamma, wl.velocity))
             .unwrap_or((1.0, 0.0));
 
@@ -362,7 +414,9 @@ impl Chronos {
             id,
             pid,
             wall_deadline_ns: wall_deadline,
-            proper_deadline_ns: self.worldlines.get(&pid)
+            proper_deadline_ns: self
+                .worldlines
+                .get(&pid)
                 .map(|wl| wl.proper_time_ns + proper_delay_ns)
                 .unwrap_or(proper_delay_ns),
             lorentz_factor: gamma,
@@ -381,14 +435,21 @@ impl Chronos {
     /// Schedule in group proper time — entire group wakes together
     pub fn schedule_group_sync(&mut self, group_id: u32, proper_delay_ns: u64) -> Vec<u64> {
         let mut event_ids = Vec::new();
-        let pids: Vec<u32> = self.groups.get(&group_id)
+        let pids: Vec<u32> = self
+            .groups
+            .get(&group_id)
             .map(|g| g.member_pids.clone())
             .unwrap_or_default();
 
         for pid in pids {
             let id = self.schedule_proper_timeout(
-                pid, proper_delay_ns, EventType::ProperSync,
-                EventPayload::ProperTimeSync { group_id, target_proper_ns: proper_delay_ns },
+                pid,
+                proper_delay_ns,
+                EventType::ProperSync,
+                EventPayload::ProperTimeSync {
+                    group_id,
+                    target_proper_ns: proper_delay_ns,
+                },
             );
             event_ids.push(id);
         }
@@ -445,7 +506,9 @@ impl Chronos {
 
     /// Find services with the most extreme time dilation (highest gamma)
     pub fn most_dilated_services(&self, n: usize) -> Vec<(u32, f64)> {
-        let mut dilated: Vec<(u32, f64)> = self.worldlines.iter()
+        let mut dilated: Vec<(u32, f64)> = self
+            .worldlines
+            .iter()
             .map(|(&pid, wl)| (pid, wl.gamma))
             .collect();
         dilated.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
@@ -456,7 +519,8 @@ impl Chronos {
     /// Compute the "age" of each service in proper time
     /// Fast-moving (high-CPU) services age slower than idle ones
     pub fn proper_ages(&self) -> Vec<(u32, u64)> {
-        self.worldlines.iter()
+        self.worldlines
+            .iter()
             .map(|(&pid, wl)| (pid, wl.proper_time_ns))
             .collect()
     }

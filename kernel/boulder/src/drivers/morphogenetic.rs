@@ -4,8 +4,8 @@ const BUS_NODES: usize = 64; // max devices on discovery bus
 
 /// Reaction-diffusion field on the hardware bus
 pub struct ReactionDiffusionBus {
-    activator: [f64; BUS_NODES],  // device signal strength
-    inhibitor: [f64; BUS_NODES],  // bus noise / interference
+    activator: [f64; BUS_NODES], // device signal strength
+    inhibitor: [f64; BUS_NODES], // bus noise / interference
     // Turing parameters (Du, Dv, f, k)
     da: f64, // activator diffusion rate
     di: f64, // inhibitor diffusion rate
@@ -19,7 +19,10 @@ impl ReactionDiffusionBus {
         Self {
             activator: [0.5; BUS_NODES],
             inhibitor: [0.25; BUS_NODES],
-            da: 0.16, di: 0.08, feed: 0.035, kill: 0.065,
+            da: 0.16,
+            di: 0.08,
+            feed: 0.035,
+            kill: 0.065,
         }
     }
 
@@ -27,7 +30,9 @@ impl ReactionDiffusionBus {
     pub fn probe(&mut self, addr: usize, strength: f64) {
         if addr < BUS_NODES {
             let mut val = self.activator[addr] + strength;
-            if val > 1.0 { val = 1.0; }
+            if val > 1.0 {
+                val = 1.0;
+            }
             self.activator[addr] = val;
         }
     }
@@ -38,14 +43,14 @@ impl ReactionDiffusionBus {
     pub fn step(&mut self, dt: f64) {
         let mut new_a = self.activator;
         let mut new_i = self.inhibitor;
-        
+
         for i in 0..BUS_NODES {
-            let left  = if i == 0 { BUS_NODES-1 } else { i-1 };
-            let right = if i == BUS_NODES-1 { 0 } else { i+1 };
+            let left = if i == 0 { BUS_NODES - 1 } else { i - 1 };
+            let right = if i == BUS_NODES - 1 { 0 } else { i + 1 };
 
             // Discrete Laplacian (1D)
-            let lap_a = self.activator[left] - 2.0*self.activator[i] + self.activator[right];
-            let lap_i = self.inhibitor[left] - 2.0*self.inhibitor[i] + self.inhibitor[right];
+            let lap_a = self.activator[left] - 2.0 * self.activator[i] + self.activator[right];
+            let lap_i = self.inhibitor[left] - 2.0 * self.inhibitor[i] + self.inhibitor[right];
 
             let u = self.activator[i];
             let v = self.inhibitor[i];
@@ -54,11 +59,17 @@ impl ReactionDiffusionBus {
             new_a[i] += dt * (self.da * lap_a - uv2 + self.feed * (1.0 - u));
             new_i[i] += dt * (self.di * lap_i + uv2 - (self.feed + self.kill) * v);
 
-            if new_a[i] < 0.0 { new_a[i] = 0.0; }
-            else if new_a[i] > 1.0 { new_a[i] = 1.0; }
-            
-            if new_i[i] < 0.0 { new_i[i] = 0.0; }
-            else if new_i[i] > 1.0 { new_i[i] = 1.0; }
+            if new_a[i] < 0.0 {
+                new_a[i] = 0.0;
+            } else if new_a[i] > 1.0 {
+                new_a[i] = 1.0;
+            }
+
+            if new_i[i] < 0.0 {
+                new_i[i] = 0.0;
+            } else if new_i[i] > 1.0 {
+                new_i[i] = 1.0;
+            }
         }
         self.activator = new_a;
         self.inhibitor = new_i;
@@ -69,8 +80,8 @@ impl ReactionDiffusionBus {
         let threshold = 0.7;
         let mut devices = Vec::new();
         for i in 0..BUS_NODES {
-            let left  = if i == 0 { BUS_NODES-1 } else { i-1 };
-            let right = if i == BUS_NODES-1 { 0 } else { i+1 };
+            let left = if i == 0 { BUS_NODES - 1 } else { i - 1 };
+            let right = if i == BUS_NODES - 1 { 0 } else { i + 1 };
             // Local maximum above threshold = device detected
             if self.activator[i] > threshold
                 && self.activator[i] > self.activator[left]
@@ -92,7 +103,9 @@ impl ReactionDiffusionBus {
                 crossings += 1;
             }
         }
-        if crossings == 0 { return 0.0; }
+        if crossings == 0 {
+            return 0.0;
+        }
         (2.0 * BUS_NODES as f64) / crossings as f64
     }
 }

@@ -3,9 +3,9 @@
 //
 // FRACTAL PAGE TABLES — Self-Similar Memory Addressing
 //
-// Instead of a rigid 4-level radix tree (PML4 -> PDPT -> PD -> PT), we use 
+// Instead of a rigid 4-level radix tree (PML4 -> PDPT -> PD -> PT), we use
 // a continuous fractal addressing space based on iterated function systems (IFS).
-// Virtual addresses are points on the complex plane. 
+// Virtual addresses are points on the complex plane.
 // The translation from Virtual to Physical is a Mandelbrot-like iteration:
 // Z_{n+1} = Z_n^2 + C, where C is the process's cryptographic identity hash.
 //
@@ -13,7 +13,7 @@
 // If it remains bounded, the cycle period encodes the physical memory frame.
 //
 // This renders ROP chains and traditional memory exploits mathematically impossible,
-// because the memory layout is chaotic and non-linear. Adjacent virtual pages 
+// because the memory layout is chaotic and non-linear. Adjacent virtual pages
 // map to wildly different physical locations based on chaotic dynamics.
 
 #![allow(dead_code)]
@@ -34,13 +34,13 @@ impl ComplexFp {
         let r2 = (self.r.saturating_mul(self.r)) >> 16;
         let i2 = (self.i.saturating_mul(self.i)) >> 16;
         let ri = (self.r.saturating_mul(self.i)) >> 15; // 2 * r * i
-        
+
         Self {
             r: r2.saturating_sub(i2).saturating_add(c.r),
             i: ri.saturating_add(c.i),
         }
     }
-    
+
     pub fn mag_sq(&self) -> i64 {
         let r2 = (self.r.saturating_mul(self.r)) >> 16;
         let i2 = (self.i.saturating_mul(self.i)) >> 16;
@@ -59,15 +59,18 @@ impl FractalMapping {
     pub fn new(seed_x: i64, seed_y: i64) -> Self {
         Self {
             physical_frames: BTreeMap::new(),
-            c_constant: ComplexFp { r: seed_x, i: seed_y },
+            c_constant: ComplexFp {
+                r: seed_x,
+                i: seed_y,
+            },
         }
     }
 
     /// Translates a virtual address (treated as a 2D coordinate) to physical
     pub fn translate(&self, vaddr: u64) -> Option<u64> {
         let v_high = (vaddr >> 32) as i32 as i64;
-        let v_low  = (vaddr & 0xFFFFFFFF) as i32 as i64;
-        
+        let v_low = (vaddr & 0xFFFFFFFF) as i32 as i64;
+
         let mut z = ComplexFp {
             r: v_high,
             i: v_low,
@@ -80,8 +83,8 @@ impl FractalMapping {
                 return self.physical_frames.get(&i).copied();
             }
         }
-        
-        // Never escaped (inside the set) -> Unmapped memory! 
+
+        // Never escaped (inside the set) -> Unmapped memory!
         // Generates an access violation.
         None
     }

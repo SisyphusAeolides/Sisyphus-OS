@@ -1,10 +1,10 @@
 use alloc::vec::Vec;
 
 use crate::prometheus::{
+    entanglement::{BellState, EntanglementRegistry},
     genome::BootGenome,
-    stigmergy::PheromoneField,
     oracle::OracleSupervisor,
-    entanglement::{EntanglementRegistry, BellState},
+    stigmergy::PheromoneField,
 };
 
 /// The Promethean tick — called in PID 1's eternal event loop
@@ -78,15 +78,25 @@ pub fn prometheus_tick(
 }
 
 /// Stub interfaces — implement against Boulder's syscall ABI
-fn spawn_replica(_pid: u32) -> u32 { 0 /* fork + exec standby */ }
-fn reap_children() -> Vec<(u32, i32)> { Vec::new() }
+fn spawn_replica(_pid: u32) -> u32 {
+    0 /* fork + exec standby */
+}
+fn reap_children() -> Vec<(u32, i32)> {
+    Vec::new()
+}
 fn send_signal(_pid: u32, _sig: Signal) {}
 fn promote_replica(_replica: u32, _original: u32) {}
 fn schedule_restart(_pid: u32, _delay_ms: u64) {}
-fn read_boot_elapsed_ns() -> u64 { 0 }
+fn read_boot_elapsed_ns() -> u64 {
+    0
+}
 fn persist_genome_to_nvram(_: &BootGenome) {}
 fn wait_for_event() {}
 
 #[derive(Copy, Clone)]
 #[allow(dead_code)]
-enum Signal { Terminate, Interrupt, Hangup }
+enum Signal {
+    Terminate,
+    Interrupt,
+    Hangup,
+}

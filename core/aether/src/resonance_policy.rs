@@ -31,15 +31,11 @@ impl ResonancePolicy {
     };
 
     pub fn validate(self) -> Result<Self, PolicyError> {
-        if !(1..=(1_u64 << 48))
-            .contains(&self.collapse_threshold)
-        {
+        if !(1..=(1_u64 << 48)).contains(&self.collapse_threshold) {
             return Err(PolicyError::CollapseThreshold);
         }
 
-        if self.heat_ceiling == 0
-            || self.heat_ceiling > 100_000_000
-        {
+        if self.heat_ceiling == 0 || self.heat_ceiling > 100_000_000 {
             return Err(PolicyError::HeatCeiling);
         }
 
@@ -51,18 +47,11 @@ impl ResonancePolicy {
             return Err(PolicyError::TargetPhase);
         }
 
-        if self.maximum_pairs == 0
-            || self.maximum_pairs > 4096
-        {
+        if self.maximum_pairs == 0 || self.maximum_pairs > 4096 {
             return Err(PolicyError::MaximumPairs);
         }
 
-        if self.flags
-            & !(POLICY_REPHASE
-                | POLICY_QUARANTINE
-                | POLICY_THERMAL_CLAMP)
-            != 0
-        {
+        if self.flags & !(POLICY_REPHASE | POLICY_QUARANTINE | POLICY_THERMAL_CLAMP) != 0 {
             return Err(PolicyError::Flags);
         }
 

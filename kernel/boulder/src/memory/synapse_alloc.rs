@@ -25,7 +25,7 @@ impl SynapseAlloc {
             size: 0,
             spike_potential: 0,
         }; NUM_BLOCKS];
-        
+
         blocks[0] = NeuronBlock {
             is_active: true,
             is_free: true,
@@ -66,7 +66,11 @@ impl SynapseAlloc {
     }
 
     pub fn free_by_address(&mut self, address: usize) {
-        if let Some(i) = self.blocks.iter().position(|b| b.is_active && b.address == address) {
+        if let Some(i) = self
+            .blocks
+            .iter()
+            .position(|b| b.is_active && b.address == address)
+        {
             self.free(i);
         }
     }
@@ -81,12 +85,16 @@ impl SynapseAlloc {
 
     fn get_left_neighbor(&self, index: usize) -> Option<usize> {
         let addr = self.blocks[index].address;
-        self.blocks.iter().position(|b| b.is_active && b.address + b.size == addr)
+        self.blocks
+            .iter()
+            .position(|b| b.is_active && b.address + b.size == addr)
     }
 
     fn get_right_neighbor(&self, index: usize) -> Option<usize> {
         let end_addr = self.blocks[index].address + self.blocks[index].size;
-        self.blocks.iter().position(|b| b.is_active && b.address == end_addr)
+        self.blocks
+            .iter()
+            .position(|b| b.is_active && b.address == end_addr)
     }
 
     fn fire_action_potential(&mut self, index: usize) {

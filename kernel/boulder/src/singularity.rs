@@ -29,18 +29,10 @@ pub struct StabilitySample {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ContainmentOrder {
     None,
-    Rephase {
-        target_phase_bin: u16,
-    },
-    Throttle {
-        priority_mass_ceiling: u16,
-    },
-    Quarantine {
-        duration_ticks: u64,
-    },
-    Rollback {
-        checkpoint: u32,
-    },
+    Rephase { target_phase_bin: u16 },
+    Throttle { priority_mass_ceiling: u16 },
+    Quarantine { duration_ticks: u64 },
+    Rollback { checkpoint: u32 },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -72,10 +64,7 @@ impl<const HISTORY: usize> SingularityGovernor<HISTORY> {
         }
     }
 
-    pub fn observe(
-        &mut self,
-        sample: StabilitySample,
-    ) -> StabilityDecision {
+    pub fn observe(&mut self, sample: StabilitySample) -> StabilityDecision {
         let energy = energy_q16(sample);
         let growth = signed_difference(energy, self.previous_energy);
         self.previous_energy = energy;
@@ -86,9 +75,7 @@ impl<const HISTORY: usize> SingularityGovernor<HISTORY> {
             self.length = (self.length + 1).min(HISTORY);
         }
 
-        let order = if energy >= CONTAINMENT_ENERGY
-            || growth >= RAPID_GROWTH
-        {
+        let order = if energy >= CONTAINMENT_ENERGY || growth >= RAPID_GROWTH {
             self.state = StabilityState::Containment;
             self.stable_runs = 0;
 
@@ -102,15 +89,12 @@ impl<const HISTORY: usize> SingularityGovernor<HISTORY> {
             ContainmentOrder::Quarantine {
                 duration_ticks: 4096,
             }
-        } else if u64::from(sample.phase_drift_q16)
-            >= (Q16_ONE * 3) / 4
-        {
+        } else if u64::from(sample.phase_drift_q16) >= (Q16_ONE * 3) / 4 {
             self.state = StabilityState::Excited;
             self.stable_runs = 0;
 
             ContainmentOrder::Rephase {
-                target_phase_bin:
-                    sample.phase_bin.wrapping_add(512) & 1023,
+                target_phase_bin: sample.phase_bin.wrapping_add(512) & 1023,
             }
         } else if energy >= EXCITED_ENERGY {
             self.state = StabilityState::Excited;
@@ -156,9 +140,7 @@ impl<const HISTORY: usize> SingularityGovernor<HISTORY> {
     }
 }
 
-impl<const HISTORY: usize> Default
-    for SingularityGovernor<HISTORY>
-{
+impl<const HISTORY: usize> Default for SingularityGovernor<HISTORY> {
     fn default() -> Self {
         Self::new()
     }
@@ -180,18 +162,13 @@ fn energy_q16(sample: StabilitySample) -> u64 {
 }
 
 fn square_q16(value: u32) -> u64 {
-    (((value as u128) * (value as u128)) >> 16)
-        .min(u64::MAX as u128) as u64
+    (((value as u128) * (value as u128)) >> 16).min(u64::MAX as u128) as u64
 }
 
 fn signed_difference(current: u64, previous: u64) -> i64 {
     if current >= previous {
-        current
-            .saturating_sub(previous)
-            .min(i64::MAX as u64) as i64
+        current.saturating_sub(previous).min(i64::MAX as u64) as i64
     } else {
-        -(previous
-            .saturating_sub(current)
-            .min(i64::MAX as u64) as i64)
+        -(previous.saturating_sub(current).min(i64::MAX as u64) as i64)
     }
 }

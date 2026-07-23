@@ -5,11 +5,8 @@ const QUADRANT_BINS: usize = PHASE_BINS / 4;
 
 // sin(0°..90°) in 5.625° steps, Q16.16.
 const SIN_Q16_QUARTER: [i32; QUADRANT_BINS + 1] = [
-         0,  6_424, 12_785, 19_024,
-    25_080, 30_893, 36_410, 41_576,
-    46_341, 50_660, 54_491, 57_798,
-    60_547, 62_714, 64_277, 65_220,
-    65_536,
+    0, 6_424, 12_785, 19_024, 25_080, 30_893, 36_410, 41_576, 46_341, 50_660, 54_491, 57_798,
+    60_547, 62_714, 64_277, 65_220, 65_536,
 ];
 
 #[inline(always)]
@@ -22,10 +19,10 @@ pub fn phasor(bin: u8) -> Amplitude {
     let cos = SIN_Q16_QUARTER[QUADRANT_BINS - offset];
 
     let (re, im) = match quadrant {
-        0 => ( cos,  sin),
-        1 => (-sin,  cos),
+        0 => (cos, sin),
+        1 => (-sin, cos),
         2 => (-cos, -sin),
-        _ => ( sin, -cos),
+        _ => (sin, -cos),
     };
 
     Amplitude::new(re, im)

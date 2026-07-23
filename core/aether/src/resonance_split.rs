@@ -1,24 +1,17 @@
 use core::mem::MaybeUninit;
-use core::sync::atomic::{
-    AtomicU64, Ordering,
-};
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::nexus_wire::{
-    NEXUS_WIRE_MAGIC, NEXUS_WIRE_VERSION,
-    NexusCommand, NexusReply, NexusTelemetry,
+    NEXUS_WIRE_MAGIC, NEXUS_WIRE_VERSION, NexusCommand, NexusReply, NexusTelemetry,
 };
 
 pub const RESONANCE_PAGE_BYTES: usize = 4096;
 
 const INGRESS_SIGNATURE: u64 =
-    NEXUS_WIRE_MAGIC as u64
-        | ((NEXUS_WIRE_VERSION as u64) << 32)
-        | (0x494e_u64 << 48);
+    NEXUS_WIRE_MAGIC as u64 | ((NEXUS_WIRE_VERSION as u64) << 32) | (0x494e_u64 << 48);
 
 const OBSERVATION_SIGNATURE: u64 =
-    NEXUS_WIRE_MAGIC as u64
-        | ((NEXUS_WIRE_VERSION as u64) << 32)
-        | (0x4f42_u64 << 48);
+    NEXUS_WIRE_MAGIC as u64 | ((NEXUS_WIRE_VERSION as u64) << 32) | (0x4f42_u64 << 48);
 
 mod sealed {
     pub trait Sealed {}
@@ -54,10 +47,7 @@ impl AtomicWire64 {
     fn publish<T: Wire64>(&self, value: &T) {
         let words = encode_wire(value);
 
-        let odd = self
-            .guard
-            .fetch_add(1, Ordering::AcqRel)
-            .wrapping_add(1);
+        let odd = self.guard.fetch_add(1, Ordering::AcqRel).wrapping_add(1);
 
         debug_assert!(odd & 1 == 1);
 
@@ -68,10 +58,7 @@ impl AtomicWire64 {
         self.guard.store(odd.wrapping_add(1), Ordering::Release);
     }
 
-    fn snapshot<T: Wire64>(
-        &self,
-        maximum_attempts: usize,
-    ) -> Option<T> {
+    fn snapshot<T: Wire64>(&self, maximum_attempts: usize) -> Option<T> {
         for _ in 0..maximum_attempts.max(1) {
             let before = self.guard.load(Ordering::Acquire);
 
@@ -82,9 +69,7 @@ impl AtomicWire64 {
 
             let mut words = [0_u64; 8];
 
-            for (target, source) in
-                words.iter_mut().zip(self.words.iter())
-            {
+            for (target, source) in words.iter_mut().zip(self.words.iter()) {
                 *target = source.load(Ordering::Relaxed);
             }
 
@@ -119,14 +104,10 @@ const _: () = assert!(core::mem::size_of::<IngressCore>() == 192);
 #[repr(C, align(4096))]
 pub struct ResonanceIngressPage {
     core: IngressCore,
-    padding: [
-        u8;
-        RESONANCE_PAGE_BYTES - core::mem::size_of::<IngressCore>()
-    ],
+    padding: [u8; RESONANCE_PAGE_BYTES - core::mem::size_of::<IngressCore>()],
 }
 
-const _: () =
-    assert!(core::mem::size_of::<ResonanceIngressPage>() == 4096);
+const _: () = assert!(core::mem::size_of::<ResonanceIngressPage>() == 4096);
 
 impl ResonanceIngressPage {
     pub const fn new() -> Self {
@@ -138,17 +119,10 @@ impl ResonanceIngressPage {
                 doorbell: AtomicU64::new(0),
                 malformed_frames: AtomicU64::new(0),
                 overwritten_frames: AtomicU64::new(0),
-                reserved: [
-                    AtomicU64::new(0),
-                    AtomicU64::new(0),
-                ],
+                reserved: [AtomicU64::new(0), AtomicU64::new(0)],
                 command: AtomicWire64::new(),
             },
-            padding: [
-                0;
-                RESONANCE_PAGE_BYTES
-                    - core::mem::size_of::<IngressCore>()
-            ],
+            padding: [0; RESONANCE_PAGE_BYTES - core::mem::size_of::<IngressCore>()],
         }
     }
 
@@ -160,21 +134,15 @@ impl ResonanceIngressPage {
     }
 
     pub fn compatible(&self) -> bool {
-        self.core.signature.load(Ordering::Acquire)
-            == INGRESS_SIGNATURE
+        self.core.signature.load(Ordering::Acquire) == INGRESS_SIGNATURE
     }
 
     /// Userland producer.
     pub fn submit(&self, command: &NexusCommand) {
-        let previous = self
-            .core
-            .published_sequence
-            .load(Ordering::Acquire);
+        let previous = self.core.published_sequence.load(Ordering::Acquire);
 
         if previous != 0 && previous != command.sequence {
-            self.core
-                .overwritten_frames
-                .fetch_add(1, Ordering::Relaxed);
+            self.core.overwritten_frames.fetch_add(1, Ordering::Relaxed);
         }
 
         self.core.command.publish(command);
@@ -190,32 +158,20 @@ impl ResonanceIngressPage {
     ///
     /// `private_cursor` must remain kernel-private. Never store it in this
     /// user-writable page.
-    pub fn take_new(
-        &self,
-        private_cursor: &mut u64,
-    ) -> Option<NexusCommand> {
-        let published = self
-            .core
-            .published_sequence
-            .load(Ordering::Acquire);
+    pub fn take_new(&self, private_cursor: &mut u64) -> Option<NexusCommand> {
+        let published = self.core.published_sequence.load(Ordering::Acquire);
 
         if published == 0 || published == *private_cursor {
             return None;
         }
 
-        let Some(command) =
-            self.core.command.snapshot::<NexusCommand>(8)
-        else {
-            self.core
-                .malformed_frames
-                .fetch_add(1, Ordering::Relaxed);
+        let Some(command) = self.core.command.snapshot::<NexusCommand>(8) else {
+            self.core.malformed_frames.fetch_add(1, Ordering::Relaxed);
             return None;
         };
 
         if command.sequence != published {
-            self.core
-                .malformed_frames
-                .fetch_add(1, Ordering::Relaxed);
+            self.core.malformed_frames.fetch_add(1, Ordering::Relaxed);
             return None;
         }
 
@@ -242,20 +198,15 @@ struct ObservationCore {
     reply: AtomicWire64,
 }
 
-const _: () =
-    assert!(core::mem::size_of::<ObservationCore>() == 320);
+const _: () = assert!(core::mem::size_of::<ObservationCore>() == 320);
 
 #[repr(C, align(4096))]
 pub struct ResonanceObservationPage {
     core: ObservationCore,
-    padding: [
-        u8;
-        RESONANCE_PAGE_BYTES - core::mem::size_of::<ObservationCore>()
-    ],
+    padding: [u8; RESONANCE_PAGE_BYTES - core::mem::size_of::<ObservationCore>()],
 }
 
-const _: () =
-    assert!(core::mem::size_of::<ResonanceObservationPage>() == 4096);
+const _: () = assert!(core::mem::size_of::<ResonanceObservationPage>() == 4096);
 
 impl ResonanceObservationPage {
     pub const fn new() -> Self {
@@ -267,18 +218,11 @@ impl ResonanceObservationPage {
                 last_reply_sequence: AtomicU64::new(0),
                 telemetry_publications: AtomicU64::new(0),
                 reply_publications: AtomicU64::new(0),
-                reserved: [
-                    AtomicU64::new(0),
-                    AtomicU64::new(0),
-                ],
+                reserved: [AtomicU64::new(0), AtomicU64::new(0)],
                 telemetry: AtomicWire64::new(),
                 reply: AtomicWire64::new(),
             },
-            padding: [
-                0;
-                RESONANCE_PAGE_BYTES
-                    - core::mem::size_of::<ObservationCore>()
-            ],
+            padding: [0; RESONANCE_PAGE_BYTES - core::mem::size_of::<ObservationCore>()],
         }
     }
 
@@ -290,8 +234,7 @@ impl ResonanceObservationPage {
     }
 
     pub fn compatible(&self) -> bool {
-        self.core.signature.load(Ordering::Acquire)
-            == OBSERVATION_SIGNATURE
+        self.core.signature.load(Ordering::Acquire) == OBSERVATION_SIGNATURE
     }
 
     /// Kernel writer.
@@ -311,9 +254,7 @@ impl ResonanceObservationPage {
             .last_reply_sequence
             .store(reply.sequence, Ordering::Release);
 
-        self.core
-            .reply_publications
-            .fetch_add(1, Ordering::Relaxed);
+        self.core.reply_publications.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Userland reader.
@@ -326,14 +267,8 @@ impl ResonanceObservationPage {
     }
 
     /// Userland reader.
-    pub fn reply(
-        &self,
-        expected_sequence: u64,
-    ) -> Option<NexusReply> {
-        let published = self
-            .core
-            .last_reply_sequence
-            .load(Ordering::Acquire);
+    pub fn reply(&self, expected_sequence: u64) -> Option<NexusReply> {
+        let published = self.core.last_reply_sequence.load(Ordering::Acquire);
 
         if published != expected_sequence {
             return None;

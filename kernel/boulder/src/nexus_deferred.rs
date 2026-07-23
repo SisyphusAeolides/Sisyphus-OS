@@ -1,6 +1,4 @@
-use core::sync::atomic::{
-    AtomicBool, AtomicU64, Ordering,
-};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 const MAXIMUM_COALESCED_TICKS: u64 = 1 << 20;
 
@@ -38,17 +36,9 @@ pub fn request_from_irq(wall_tick: u64) {
     LATEST_WALL_TICK.store(wall_tick, Ordering::Release);
 
     let previous = PENDING_TICKS
-        .fetch_update(
-            Ordering::AcqRel,
-            Ordering::Acquire,
-            |pending| {
-                Some(
-                    pending
-                        .saturating_add(1)
-                        .min(MAXIMUM_COALESCED_TICKS),
-                )
-            },
-        )
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |pending| {
+            Some(pending.saturating_add(1).min(MAXIMUM_COALESCED_TICKS))
+        })
         .unwrap_or(0);
 
     TOTAL_REQUESTS.fetch_add(1, Ordering::Relaxed);
@@ -73,12 +63,7 @@ pub fn run_deferred(maximum_passes: u32) -> DeferredReport {
     }
 
     if RUNNING
-        .compare_exchange(
-            false,
-            true,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        )
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .is_err()
     {
         return DeferredReport::ALREADY_RUNNING;

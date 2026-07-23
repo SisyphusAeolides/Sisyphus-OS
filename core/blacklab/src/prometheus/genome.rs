@@ -4,12 +4,12 @@ use alloc::{string::String, vec::Vec};
 #[derive(Clone)]
 pub struct Gene {
     pub name: String,
-    pub codon: [u8; 8],          // 8-byte identity codon (unique service fingerprint)
-    pub promoter_strength: f64,  // 0.0 = silenced, 1.0 = max expression
-    pub is_intron: bool,         // true = not expressed (disabled feature)
-    pub dependencies: Vec<u8>,   // codon prefixes of upstream genes
-    pub fitness_score: f64,      // accumulated from previous boot cycles
-    pub expression_delay_ms: u64,// epigenetic delay — methylation-modeled
+    pub codon: [u8; 8], // 8-byte identity codon (unique service fingerprint)
+    pub promoter_strength: f64, // 0.0 = silenced, 1.0 = max expression
+    pub is_intron: bool, // true = not expressed (disabled feature)
+    pub dependencies: Vec<u8>, // codon prefixes of upstream genes
+    pub fitness_score: f64, // accumulated from previous boot cycles
+    pub expression_delay_ms: u64, // epigenetic delay — methylation-modeled
 }
 
 impl Gene {
@@ -44,26 +44,35 @@ impl Gene {
     pub fn mutate(&mut self, rng_seed: u64) {
         let mut seed = rng_seed ^ u64::from_le_bytes(self.codon);
         // xorshift64
-        seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17;
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
 
         let mutation_type = seed % 4;
         match mutation_type {
-            0 => { // promoter shift
+            0 => {
+                // promoter shift
                 let delta = ((seed >> 8) & 0xFF) as f64 / 512.0 - 0.25;
                 let mut new_ps = self.promoter_strength + delta;
-                if new_ps < 0.0 { new_ps = 0.0; }
-                else if new_ps > 1.0 { new_ps = 1.0; }
+                if new_ps < 0.0 {
+                    new_ps = 0.0;
+                } else if new_ps > 1.0 {
+                    new_ps = 1.0;
+                }
                 self.promoter_strength = new_ps;
             }
-            1 => { // epigenetic methylation — increase delay
+            1 => {
+                // epigenetic methylation — increase delay
                 self.expression_delay_ms = (seed >> 16) % 5000;
             }
-            2 => { // intron/exon flip — risky but powerful
+            2 => {
+                // intron/exon flip — risky but powerful
                 if self.fitness_score < 0.3 {
                     self.is_intron = !self.is_intron;
                 }
             }
-            _ => { // silent mutation — codon wobble, no effect
+            _ => {
+                // silent mutation — codon wobble, no effect
                 self.codon[7] = (seed & 0xFF) as u8;
             }
         }
@@ -86,7 +95,11 @@ pub struct BootGenome {
 
 impl BootGenome {
     pub fn new() -> Self {
-        Self { chromosome: Vec::new(), generation: 0, last_boot_fitness: 0.5 }
+        Self {
+            chromosome: Vec::new(),
+            generation: 0,
+            last_boot_fitness: 0.5,
+        }
     }
 
     pub fn insert_gene(&mut self, gene: Gene) {
@@ -95,7 +108,8 @@ impl BootGenome {
 
     /// Transcription: produce expressed proteins in dependency-topological order
     pub fn transcribe_all(&self) -> Vec<ServiceProtein> {
-        self.chromosome.iter()
+        self.chromosome
+            .iter()
             .filter_map(|g| g.transcribe())
             .collect()
     }
@@ -108,14 +122,22 @@ impl BootGenome {
         } else {
             golden.chromosome.len()
         };
-        
+
         // Find crossover point: where fitness delta is largest
-        let crossover_pt = self.chromosome.iter()
+        let crossover_pt = self
+            .chromosome
+            .iter()
             .zip(golden.chromosome.iter())
             .enumerate()
             .max_by(|(_, (a, ga)), (_, (b, gb))| {
-                let da = { let v = a.fitness_score - ga.fitness_score; if v < 0.0 { -v } else { v } };
-                let db = { let v = b.fitness_score - gb.fitness_score; if v < 0.0 { -v } else { v } };
+                let da = {
+                    let v = a.fitness_score - ga.fitness_score;
+                    if v < 0.0 { -v } else { v }
+                };
+                let db = {
+                    let v = b.fitness_score - gb.fitness_score;
+                    if v < 0.0 { -v } else { v }
+                };
                 da.partial_cmp(&db).unwrap()
             })
             .map(|(i, _)| i)

@@ -23,16 +23,16 @@ use core::sync::atomic::{AtomicU64, Ordering};
 // CONSTANTS
 // ─────────────────────────────────────────────
 
-pub const JITTER_RING_LEN:       usize = 1024;  // jitter samples ring buffer
-pub const CA_WIDTH_BITS:         usize = 256;   // Rule 30 CA width in bits
-pub const CA_WIDTH_U64:          usize = CA_WIDTH_BITS / 64; // = 4 u64 words
-pub const CA_STEPS_PER_OUTPUT:   usize = 64;    // CA steps before outputting entropy
-pub const CRYSTAL_TAU_MIN:       usize = 8;     // min period to search (samples)
-pub const CRYSTAL_TAU_MAX:       usize = 256;   // max period
-pub const CRYSTAL_THRESHOLD_FP:  u64   = 0x0001_0000 * 3 / 4; // 0.75 correlation in 16.16
-pub const PREDICT_LOOKAHEAD:     usize = 4;     // predict N windows ahead
-pub const ENTROPY_POOL_WORDS:    usize = 64;    // 512-byte entropy pool
-pub const RESEED_THRESHOLD:      u64   = 256;   // reseed CSPRNG every N jitter samples
+pub const JITTER_RING_LEN: usize = 1024; // jitter samples ring buffer
+pub const CA_WIDTH_BITS: usize = 256; // Rule 30 CA width in bits
+pub const CA_WIDTH_U64: usize = CA_WIDTH_BITS / 64; // = 4 u64 words
+pub const CA_STEPS_PER_OUTPUT: usize = 64; // CA steps before outputting entropy
+pub const CRYSTAL_TAU_MIN: usize = 8; // min period to search (samples)
+pub const CRYSTAL_TAU_MAX: usize = 256; // max period
+pub const CRYSTAL_THRESHOLD_FP: u64 = 0x0001_0000 * 3 / 4; // 0.75 correlation in 16.16
+pub const PREDICT_LOOKAHEAD: usize = 4; // predict N windows ahead
+pub const ENTROPY_POOL_WORDS: usize = 64; // 512-byte entropy pool
+pub const RESEED_THRESHOLD: u64 = 256; // reseed CSPRNG every N jitter samples
 
 // ─────────────────────────────────────────────
 // RULE 30 CELLULAR AUTOMATON
@@ -47,7 +47,15 @@ pub struct Rule30 {
 
 impl Rule30 {
     pub const fn new() -> Self {
-        Self { state: [0x9e3779b97f4a7c15, 0x6c62272e07bb0142, 0x62b821756295c58d, 0x0u64], steps: 0 }
+        Self {
+            state: [
+                0x9e3779b97f4a7c15,
+                0x6c62272e07bb0142,
+                0x62b821756295c58d,
+                0x0u64,
+            ],
+            steps: 0,
+        }
     }
 
     pub fn seed(&mut self, entropy: &[u64]) {
@@ -60,15 +68,15 @@ impl Rule30 {
     pub fn step(&mut self) {
         let mut next = [0u64; CA_WIDTH_U64];
         for w in 0..CA_WIDTH_U64 {
-            let left  = if w == 0 {
-                (self.state[CA_WIDTH_U64-1] << 63) | (self.state[w] >> 1)
+            let left = if w == 0 {
+                (self.state[CA_WIDTH_U64 - 1] << 63) | (self.state[w] >> 1)
             } else {
-                (self.state[w-1] << 63) | (self.state[w] >> 1)
+                (self.state[w - 1] << 63) | (self.state[w] >> 1)
             };
-            let right = if w == CA_WIDTH_U64-1 {
+            let right = if w == CA_WIDTH_U64 - 1 {
                 (self.state[w] << 1) | (self.state[0] >> 63)
             } else {
-                (self.state[w] << 1) | (self.state[w+1] >> 63)
+                (self.state[w] << 1) | (self.state[w + 1] >> 63)
             };
             let center = self.state[w];
             // Rule 30: new[i] = left[i] XOR (center[i] OR right[i])
@@ -80,7 +88,9 @@ impl Rule30 {
 
     /// Run CA_STEPS_PER_OUTPUT steps and return center 64 bits as entropy
     pub fn generate(&mut self) -> u64 {
-        for _ in 0..CA_STEPS_PER_OUTPUT { self.step(); }
+        for _ in 0..CA_STEPS_PER_OUTPUT {
+            self.step();
+        }
         self.state[CA_WIDTH_U64 / 2] // center column = highest entropy
     }
 }
@@ -90,22 +100,26 @@ impl Rule30 {
 // ─────────────────────────────────────────────
 
 pub struct JitterHarvester {
-    pub ring:         [u64; JITTER_RING_LEN],   // raw Δt samples (ns)
-    pub ring_idx:     usize,
-    pub count:        u64,
-    pub last_tsc:     u64,
-    pub min_jitter:   u64,
-    pub max_jitter:   u64,
-    pub sum_jitter:   u64,
-    pub entropy_bits: u64,   // estimated bits harvested
+    pub ring: [u64; JITTER_RING_LEN], // raw Δt samples (ns)
+    pub ring_idx: usize,
+    pub count: u64,
+    pub last_tsc: u64,
+    pub min_jitter: u64,
+    pub max_jitter: u64,
+    pub sum_jitter: u64,
+    pub entropy_bits: u64, // estimated bits harvested
 }
 
 impl JitterHarvester {
     pub const fn new() -> Self {
         Self {
             ring: [0u64; JITTER_RING_LEN],
-            ring_idx: 0, count: 0, last_tsc: 0,
-            min_jitter: u64::MAX, max_jitter: 0, sum_jitter: 0,
+            ring_idx: 0,
+            count: 0,
+            last_tsc: 0,
+            min_jitter: u64::MAX,
+            max_jitter: 0,
+            sum_jitter: 0,
             entropy_bits: 0,
         }
     }
@@ -114,14 +128,20 @@ impl JitterHarvester {
     pub fn ingest(&mut self, tsc: u64) -> u64 {
         let delta = tsc.saturating_sub(self.last_tsc);
         self.last_tsc = tsc;
-        if delta == 0 { return 0; }
+        if delta == 0 {
+            return 0;
+        }
         let idx = self.ring_idx % JITTER_RING_LEN;
         self.ring[idx] = delta;
         self.ring_idx = self.ring_idx.wrapping_add(1);
         self.count += 1;
         // Stats
-        if delta < self.min_jitter { self.min_jitter = delta; }
-        if delta > self.max_jitter { self.max_jitter = delta; }
+        if delta < self.min_jitter {
+            self.min_jitter = delta;
+        }
+        if delta > self.max_jitter {
+            self.max_jitter = delta;
+        }
         self.sum_jitter += delta;
         // Entropy estimate: 1 bit per sample from LSBs (conservative)
         self.entropy_bits += 1;
@@ -136,7 +156,7 @@ impl JitterHarvester {
         let start = self.ring_idx.wrapping_sub(128) % JITTER_RING_LEN;
         let mut i = 0usize;
         while bit_count < 64 && i + 1 < 128 {
-            let a = self.ring[(start + i)     % JITTER_RING_LEN];
+            let a = self.ring[(start + i) % JITTER_RING_LEN];
             let b = self.ring[(start + i + 1) % JITTER_RING_LEN];
             // Von Neumann: if bits differ, output the first
             let bit_a = a & 1;
@@ -151,7 +171,9 @@ impl JitterHarvester {
     }
 
     pub fn mean_jitter(&self) -> u64 {
-        if self.count == 0 { return 0; }
+        if self.count == 0 {
+            return 0;
+        }
         self.sum_jitter / self.count
     }
 }
@@ -164,24 +186,29 @@ impl JitterHarvester {
 // Crystal period:  first τ where r(τ) > CRYSTAL_THRESHOLD
 
 pub struct TimeCrystal {
-    pub detected:      bool,
-    pub period:        usize,        // dominant period in samples
-    pub strength_fp:   u64,          // normalized correlation (16.16 fp)
-    pub phase:         usize,        // current phase within period
-    pub predict_next:  [u64; PREDICT_LOOKAHEAD], // predicted quiet-window TSC values
+    pub detected: bool,
+    pub period: usize,                          // dominant period in samples
+    pub strength_fp: u64,                       // normalized correlation (16.16 fp)
+    pub phase: usize,                           // current phase within period
+    pub predict_next: [u64; PREDICT_LOOKAHEAD], // predicted quiet-window TSC values
 }
 
 impl TimeCrystal {
     pub const fn new() -> Self {
         Self {
-            detected: false, period: 0, strength_fp: 0,
-            phase: 0, predict_next: [0u64; PREDICT_LOOKAHEAD],
+            detected: false,
+            period: 0,
+            strength_fp: 0,
+            phase: 0,
+            predict_next: [0u64; PREDICT_LOOKAHEAD],
         }
     }
 
     /// Scan jitter ring for autocorrelation peaks — integer only
     pub fn scan(&mut self, ring: &[u64; JITTER_RING_LEN], ring_idx: usize, count: u64) {
-        if count < CRYSTAL_TAU_MAX as u64 * 2 { return; }
+        if count < CRYSTAL_TAU_MAX as u64 * 2 {
+            return;
+        }
 
         // AC(0): sum of squares (normalization factor)
         let mut ac0: u64 = 0;
@@ -189,10 +216,12 @@ impl TimeCrystal {
             let v = ring[(ring_idx.wrapping_sub(i).wrapping_sub(1)) % JITTER_RING_LEN];
             ac0 = ac0.saturating_add(v.saturating_mul(v) >> 16);
         }
-        if ac0 == 0 { return; }
+        if ac0 == 0 {
+            return;
+        }
 
         let mut best_tau = 0usize;
-        let mut best_ac  = 0u64;
+        let mut best_ac = 0u64;
 
         for tau in CRYSTAL_TAU_MIN..CRYSTAL_TAU_MAX {
             let mut ac: u64 = 0;
@@ -206,7 +235,7 @@ impl TimeCrystal {
             // Normalized correlation in 16.16 fp
             let r_fp = (ac << 16) / ac0.max(1);
             if r_fp > CRYSTAL_THRESHOLD_FP && ac > best_ac {
-                best_ac  = ac;
+                best_ac = ac;
                 best_tau = tau;
                 self.strength_fp = r_fp;
             }
@@ -221,7 +250,9 @@ impl TimeCrystal {
     /// Predict the next N quiet scheduling windows based on crystal period
     /// quiet_tsc = last_min_jitter_tsc + k * period_tsc
     pub fn predict_windows(&mut self, last_tsc: u64, tsc_per_sample: u64) {
-        if !self.detected || self.period == 0 { return; }
+        if !self.detected || self.period == 0 {
+            return;
+        }
         let period_tsc = self.period as u64 * tsc_per_sample;
         for k in 0..PREDICT_LOOKAHEAD {
             self.predict_next[k] = last_tsc + (k as u64 + 1) * period_tsc;
@@ -234,17 +265,18 @@ impl TimeCrystal {
 // ─────────────────────────────────────────────
 
 pub struct EntropyPool {
-    pub pool:       [u64; ENTROPY_POOL_WORDS],
-    pub write_idx:  usize,
-    pub read_idx:   usize,
-    pub available:  AtomicU64,
+    pub pool: [u64; ENTROPY_POOL_WORDS],
+    pub write_idx: usize,
+    pub read_idx: usize,
+    pub available: AtomicU64,
 }
 
 impl EntropyPool {
     pub const fn new() -> Self {
         Self {
-            pool:      [0u64; ENTROPY_POOL_WORDS],
-            write_idx: 0, read_idx: 0,
+            pool: [0u64; ENTROPY_POOL_WORDS],
+            write_idx: 0,
+            read_idx: 0,
             available: AtomicU64::new(0),
         }
     }
@@ -256,7 +288,9 @@ impl EntropyPool {
     }
 
     pub fn take(&mut self) -> Option<u64> {
-        if self.available.load(Ordering::Relaxed) < 64 { return None; }
+        if self.available.load(Ordering::Relaxed) < 64 {
+            return None;
+        }
         let word = self.pool[self.read_idx % ENTROPY_POOL_WORDS];
         self.read_idx = self.read_idx.wrapping_add(1);
         self.available.fetch_sub(64, Ordering::Relaxed);
@@ -269,11 +303,11 @@ impl EntropyPool {
 // ─────────────────────────────────────────────
 
 pub struct Chronovore {
-    pub harvester:   JitterHarvester,
-    pub ca:          Rule30,
-    pub crystal:     TimeCrystal,
-    pub pool:        EntropyPool,
-    pub tsc_per_ns:  u64,   // calibrated TSC frequency (ticks per nanosecond)
+    pub harvester: JitterHarvester,
+    pub ca: Rule30,
+    pub crystal: TimeCrystal,
+    pub pool: EntropyPool,
+    pub tsc_per_ns: u64, // calibrated TSC frequency (ticks per nanosecond)
     pub total_ingested: AtomicU64,
     pub total_generated: AtomicU64,
     pub reseed_count: AtomicU64,
@@ -287,7 +321,7 @@ impl Chronovore {
             ca: Rule30::new(),
             crystal: TimeCrystal::new(),
             pool: EntropyPool::new(),
-            tsc_per_ns: 3,  // default: 3 GHz
+            tsc_per_ns: 3, // default: 3 GHz
             total_ingested: AtomicU64::new(0),
             total_generated: AtomicU64::new(0),
             reseed_count: AtomicU64::new(0),
@@ -308,7 +342,8 @@ impl Chronovore {
         // Reseed CA with new entropy periodically
         if self.harvester.count % RESEED_THRESHOLD == 0 {
             let raw_entropy = self.harvester.extract_entropy();
-            self.ca.seed(&[raw_entropy, tsc ^ jitter, self.harvester.count]);
+            self.ca
+                .seed(&[raw_entropy, tsc ^ jitter, self.harvester.count]);
             self.reseed_count.fetch_add(1, Ordering::Relaxed);
         }
 
@@ -344,40 +379,44 @@ impl Chronovore {
     }
 
     /// Is a time crystal currently detected?
-    pub fn crystal_active(&self) -> bool { self.crystal.detected }
+    pub fn crystal_active(&self) -> bool {
+        self.crystal.detected
+    }
 
     /// Next predicted quiet scheduling window (TSC value)
     pub fn next_quiet_window(&self) -> Option<u64> {
-        if !self.crystal.detected { return None; }
+        if !self.crystal.detected {
+            return None;
+        }
         Some(self.crystal.predict_next[0])
     }
 
     pub fn stats(&self) -> ChronovoreStats {
         ChronovoreStats {
-            ingested:      self.total_ingested.load(Ordering::Relaxed),
-            generated:     self.total_generated.load(Ordering::Relaxed),
-            reseeds:       self.reseed_count.load(Ordering::Relaxed),
+            ingested: self.total_ingested.load(Ordering::Relaxed),
+            generated: self.total_generated.load(Ordering::Relaxed),
+            reseeds: self.reseed_count.load(Ordering::Relaxed),
             pool_available: self.pool.available.load(Ordering::Relaxed),
             crystal_detected: self.crystal.detected,
             crystal_period: self.crystal.period as u64,
             crystal_strength_fp: self.crystal.strength_fp,
             mean_jitter_tsc: self.harvester.mean_jitter(),
-            ca_steps:      self.ca.steps,
+            ca_steps: self.ca.steps,
         }
     }
 }
 
 #[derive(Clone, Copy, Debug)]
 pub struct ChronovoreStats {
-    pub ingested:            u64,
-    pub generated:           u64,
-    pub reseeds:             u64,
-    pub pool_available:      u64,
-    pub crystal_detected:    bool,
-    pub crystal_period:      u64,
+    pub ingested: u64,
+    pub generated: u64,
+    pub reseeds: u64,
+    pub pool_available: u64,
+    pub crystal_detected: bool,
+    pub crystal_period: u64,
     pub crystal_strength_fp: u64,
-    pub mean_jitter_tsc:     u64,
-    pub ca_steps:            u64,
+    pub mean_jitter_tsc: u64,
+    pub ca_steps: u64,
 }
 
 // ─── PRIORITY-MASS TICK DILATION ────────────────────────────────────────────
@@ -387,10 +426,8 @@ const Q16_ONE: u64 = 1 << 16;
 // Lorentz-style γ values in Q16.16.
 // Mass is mapped into sixteen monotonic bands.
 const GAMMA_Q16: [u64; 16] = [
-    65_536,  66_560,  67_584,  69_632,
-    71_680,  73_728,  77_824,  81_920,
-    86_016,  90_112,  98_304, 106_496,
-   114_688, 122_880, 131_072, 147_456,
+    65_536, 66_560, 67_584, 69_632, 71_680, 73_728, 77_824, 81_920, 86_016, 90_112, 98_304,
+    106_496, 114_688, 122_880, 131_072, 147_456,
 ];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -442,14 +479,8 @@ impl TickDevourer {
         ChronoTick(self.logical_origin.0.saturating_add(logical_delta))
     }
 
-    pub fn dilate(
-        &self,
-        wall_duration: DilatedDuration,
-    ) -> DilatedDuration {
-        DilatedDuration(dilate_ticks(
-            wall_duration.0,
-            self.priority_mass,
-        ))
+    pub fn dilate(&self, wall_duration: DilatedDuration) -> DilatedDuration {
+        DilatedDuration(dilate_ticks(wall_duration.0, self.priority_mass))
     }
 }
 

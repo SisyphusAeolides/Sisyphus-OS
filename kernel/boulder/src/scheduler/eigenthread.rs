@@ -35,17 +35,17 @@ use core::sync::atomic::{AtomicU64, Ordering};
 // CONSTANTS
 // ─────────────────────────────────────────────
 
-pub const MAX_EIGENSTATES:    usize = 64;   // max processes in Hamiltonian
-pub const HAMILTONIAN_DIM:    usize = MAX_EIGENSTATES;
-pub const POWER_ITER_STEPS:   usize = 32;
-pub const FP_SCALE:           i64   = 0x0001_0000; // 16.16 fixed point scale
-pub const FP_ONE:             i64   = FP_SCALE;
-pub const ATTRACTIVE_CACHE:   i64   = -0x0000_4000; // -0.25 in 16.16
-pub const REPULSIVE_IO:       i64   = 0x0000_8000;  // +0.5 in 16.16
-pub const SELF_ENERGY_BASE:   i64   = 0x0001_0000;  // 1.0
-pub const COUPLING_DECAY:     i64   = 63;            // decay coupling by 1/64 per tick
-pub const MAX_COUPLING:       i64   = 0x0004_0000;  // 4.0 max coupling magnitude
-pub const GROUND_STATE_TOPN:  usize = 8;             // top N processes in ground state
+pub const MAX_EIGENSTATES: usize = 64; // max processes in Hamiltonian
+pub const HAMILTONIAN_DIM: usize = MAX_EIGENSTATES;
+pub const POWER_ITER_STEPS: usize = 32;
+pub const FP_SCALE: i64 = 0x0001_0000; // 16.16 fixed point scale
+pub const FP_ONE: i64 = FP_SCALE;
+pub const ATTRACTIVE_CACHE: i64 = -0x0000_4000; // -0.25 in 16.16
+pub const REPULSIVE_IO: i64 = 0x0000_8000; // +0.5 in 16.16
+pub const SELF_ENERGY_BASE: i64 = 0x0001_0000; // 1.0
+pub const COUPLING_DECAY: i64 = 63; // decay coupling by 1/64 per tick
+pub const MAX_COUPLING: i64 = 0x0004_0000; // 4.0 max coupling magnitude
+pub const GROUND_STATE_TOPN: usize = 8; // top N processes in ground state
 
 // ─────────────────────────────────────────────
 // PROCESS QUANTUM STATE
@@ -53,17 +53,17 @@ pub const GROUND_STATE_TOPN:  usize = 8;             // top N processes in groun
 
 #[derive(Clone, Copy)]
 pub struct EigenProcess {
-    pub pid:            u32,
-    pub self_energy_fp: i64,       // H[i][i] diagonal (priority + deadline)
-    pub ipc_rate_fp:    i64,       // instructions per cycle (16.16)
-    pub llc_miss_fp:    i64,       // LLC miss rate (16.16)
-    pub io_irq_vector:  u8,        // primary IRQ vector used (0 = none)
-    pub numa_node:      u8,
-    pub core_mask:      u64,       // affinity bitmask
-    pub eigenamplitude: i64,       // |ψ_i| squared (16.16) — current eigenvector component
-    pub energy_level:   i64,       // E_i from most recent diagonalization
-    pub is_ground:      bool,      // in the current ground state set
-    pub last_ipc_tick:  u64,
+    pub pid: u32,
+    pub self_energy_fp: i64, // H[i][i] diagonal (priority + deadline)
+    pub ipc_rate_fp: i64,    // instructions per cycle (16.16)
+    pub llc_miss_fp: i64,    // LLC miss rate (16.16)
+    pub io_irq_vector: u8,   // primary IRQ vector used (0 = none)
+    pub numa_node: u8,
+    pub core_mask: u64,      // affinity bitmask
+    pub eigenamplitude: i64, // |ψ_i| squared (16.16) — current eigenvector component
+    pub energy_level: i64,   // E_i from most recent diagonalization
+    pub is_ground: bool,     // in the current ground state set
+    pub last_ipc_tick: u64,
 }
 
 impl EigenProcess {
@@ -100,9 +100,9 @@ pub struct Hamiltonian {
     // Stored as i64 16.16 fixed-point
     // Upper triangular only (symmetric H[i][j] = H[j][i])
     pub h: [[i64; MAX_EIGENSTATES]; MAX_EIGENSTATES],
-    pub dim: usize,   // actual number of active processes
-    pub eigenvalues:  [i64; MAX_EIGENSTATES],
-    pub lambda_max:   i64,   // dominant eigenvalue estimate (for shift)
+    pub dim: usize, // actual number of active processes
+    pub eigenvalues: [i64; MAX_EIGENSTATES],
+    pub lambda_max: i64, // dominant eigenvalue estimate (for shift)
 }
 
 impl Hamiltonian {
@@ -117,12 +117,16 @@ impl Hamiltonian {
 
     pub fn reset(&mut self, dim: usize) {
         self.dim = dim.min(MAX_EIGENSTATES);
-        for row in &mut self.h { row.fill(0); }
+        for row in &mut self.h {
+            row.fill(0);
+        }
     }
 
     /// Set diagonal self-energy for process at index i
     pub fn set_self_energy(&mut self, i: usize, energy_fp: i64) {
-        if i < self.dim { self.h[i][i] = energy_fp; }
+        if i < self.dim {
+            self.h[i][i] = energy_fp;
+        }
     }
 
     /// Set coupling between processes i and j (symmetric)
@@ -160,9 +164,7 @@ impl Hamiltonian {
             let mut sum: i64 = 0;
             for j in 0..self.dim {
                 // (H[i][j] * vec[j]) in 16.16 fp → shift right 16
-                sum = sum.saturating_add(
-                    (self.h[i][j].saturating_mul(vec[j])) >> 16
-                );
+                sum = sum.saturating_add((self.h[i][j].saturating_mul(vec[j])) >> 16);
             }
             result[i] = sum;
         }
@@ -170,7 +172,8 @@ impl Hamiltonian {
 
     /// L2 norm of vector (fixed-point, returns 16.16 fp)
     pub fn norm_fp(vec: &[i64; MAX_EIGENSTATES], dim: usize) -> i64 {
-        let sum_sq: i64 = vec[..dim].iter()
+        let sum_sq: i64 = vec[..dim]
+            .iter()
             .map(|&v| (v.saturating_mul(v)) >> 16)
             .fold(0i64, |a, b| a.saturating_add(b));
         // Integer sqrt of 16.16 fixed-point sum → result in 16.16
@@ -185,14 +188,19 @@ impl Hamiltonian {
         let mut shifted = [[0i64; MAX_EIGENSTATES]; MAX_EIGENSTATES];
         for i in 0..self.dim {
             for j in 0..self.dim {
-                shifted[i][j] = if i == j { self.lambda_max - self.h[i][j] }
-                                else       { -self.h[i][j] };
+                shifted[i][j] = if i == j {
+                    self.lambda_max - self.h[i][j]
+                } else {
+                    -self.h[i][j]
+                };
             }
         }
 
         // Initialize eigenvec to uniform (warm start)
         let init_fp = FP_ONE / self.dim.max(1) as i64;
-        for i in 0..self.dim { eigenvec[i] = init_fp; }
+        for i in 0..self.dim {
+            eigenvec[i] = init_fp;
+        }
 
         let mut temp = [0i64; MAX_EIGENSTATES];
         let dim = self.dim;
@@ -208,7 +216,9 @@ impl Hamiltonian {
             }
             // Normalize
             let norm = Self::norm_fp(&temp, dim);
-            if norm < 64 { break; } // converged / degenerate
+            if norm < 64 {
+                break;
+            } // converged / degenerate
             for i in 0..dim {
                 eigenvec[i] = (temp[i].saturating_mul(FP_SCALE)) / norm.max(1);
             }
@@ -221,9 +231,7 @@ impl Hamiltonian {
             for j in 0..dim {
                 hv = hv.saturating_add((shifted[i][j].saturating_mul(eigenvec[j])) >> 16);
             }
-            lambda_shifted = lambda_shifted.saturating_add(
-                (eigenvec[i].saturating_mul(hv)) >> 16
-            );
+            lambda_shifted = lambda_shifted.saturating_add((eigenvec[i].saturating_mul(hv)) >> 16);
         }
         // Ground eigenvalue of H = λ_max - λ_shifted
         self.eigenvalues[0] = self.lambda_max - lambda_shifted;
@@ -236,13 +244,17 @@ impl Hamiltonian {
 
 /// Integer square root returning 16.16 fixed-point result
 fn isqrt_fp(x_fp: i64) -> i64 {
-    if x_fp <= 0 { return 0; }
+    if x_fp <= 0 {
+        return 0;
+    }
     // Convert from 16.16 to plain integer for sqrt, then back
     let x_plain = x_fp as u64;
     let mut s = 0u64;
     let mut bit = 1u64 << 32;
     let mut rem = x_plain;
-    while bit > rem { bit >>= 2; }
+    while bit > rem {
+        bit >>= 2;
+    }
     while bit != 0 {
         if rem >= s + bit {
             rem -= s + bit;
@@ -261,16 +273,16 @@ fn isqrt_fp(x_fp: i64) -> i64 {
 // ─────────────────────────────────────────────
 
 pub struct Eigenthread {
-    pub processes:      Vec<EigenProcess>,
-    pub hamiltonian:    Hamiltonian,
-    pub eigenvec:       [i64; MAX_EIGENSTATES],    // current ground state eigenvector
-    pub ground_set:     [u32; GROUND_STATE_TOPN],  // PIDs in ground state
-    pub ground_size:    usize,
-    pub tick:           u64,
-    pub rediag_interval: u64,   // re-solve Hamiltonian every N ticks
-    pub total_rediag:   AtomicU64,
+    pub processes: Vec<EigenProcess>,
+    pub hamiltonian: Hamiltonian,
+    pub eigenvec: [i64; MAX_EIGENSTATES], // current ground state eigenvector
+    pub ground_set: [u32; GROUND_STATE_TOPN], // PIDs in ground state
+    pub ground_size: usize,
+    pub tick: u64,
+    pub rediag_interval: u64, // re-solve Hamiltonian every N ticks
+    pub total_rediag: AtomicU64,
     pub cache_coupling_updates: AtomicU64,
-    pub io_coupling_updates:    AtomicU64,
+    pub io_coupling_updates: AtomicU64,
 }
 
 impl Eigenthread {
@@ -306,7 +318,10 @@ impl Eigenthread {
         let (ia, ib) = match (
             self.processes.iter().position(|p| p.pid == pid_a),
             self.processes.iter().position(|p| p.pid == pid_b),
-        ) { (Some(a), Some(b)) => (a, b), _ => return };
+        ) {
+            (Some(a), Some(b)) => (a, b),
+            _ => return,
+        };
 
         let coupling = (ATTRACTIVE_CACHE.saturating_mul(strength_fp)) >> 16;
         self.hamiltonian.add_coupling(ia, ib, coupling);
@@ -318,7 +333,10 @@ impl Eigenthread {
         let (ia, ib) = match (
             self.processes.iter().position(|p| p.pid == pid_a),
             self.processes.iter().position(|p| p.pid == pid_b),
-        ) { (Some(a), Some(b)) => (a, b), _ => return };
+        ) {
+            (Some(a), Some(b)) => (a, b),
+            _ => return,
+        };
 
         let coupling = (REPULSIVE_IO.saturating_mul(strength_fp)) >> 16;
         self.hamiltonian.add_coupling(ia, ib, coupling);
@@ -329,12 +347,16 @@ impl Eigenthread {
     pub fn tick(&mut self, _now_ns: u64) {
         self.tick += 1;
         let dim = self.processes.len().min(MAX_EIGENSTATES);
-        if dim == 0 { return; }
+        if dim == 0 {
+            return;
+        }
 
         // Rebuild diagonal self-energies
         self.hamiltonian.reset(dim);
         for (i, proc) in self.processes.iter().enumerate() {
-            if i >= dim { break; }
+            if i >= dim {
+                break;
+            }
             self.hamiltonian.set_self_energy(i, proc.self_energy_fp);
         }
 
@@ -378,7 +400,8 @@ impl Eigenthread {
 
     /// Get the eigenamplitude of a process (scheduling weight analog)
     pub fn amplitude_of(&self, pid: u32) -> i64 {
-        self.processes.iter()
+        self.processes
+            .iter()
             .find(|p| p.pid == pid)
             .map(|p| p.eigenamplitude)
             .unwrap_or(0)
@@ -401,11 +424,11 @@ impl Eigenthread {
 #[derive(Clone, Copy, Debug)]
 pub struct EigenStats {
     pub active_processes: u32,
-    pub ground_set_size:  u32,
-    pub hamiltonian_dim:  u32,
+    pub ground_set_size: u32,
+    pub hamiltonian_dim: u32,
     pub ground_eigenvalue: i64,
-    pub total_rediag:     u64,
-    pub cache_updates:    u64,
-    pub io_updates:       u64,
-    pub tick:             u64,
+    pub total_rediag: u64,
+    pub cache_updates: u64,
+    pub io_updates: u64,
+    pub tick: u64,
 }

@@ -3,8 +3,8 @@ mod exceptions;
 mod idt;
 mod ioapic;
 mod irq;
-mod pic;
 pub mod neuromorphic;
+mod pic;
 pub mod synaptic;
 
 use core::fmt::Write;
@@ -205,9 +205,7 @@ extern "C" fn boulder_interrupt_dispatch(frame: *mut InterruptFrame) -> usize {
         49 => {
             APIC_TIMER_HITS.fetch_add(1, Ordering::Relaxed);
 
-            let wall_tick =
-                <crate::arch::Active as crate::arch::Architecture>
-                    ::counter_sample();
+            let wall_tick = <crate::arch::Active as crate::arch::Architecture>::counter_sample();
 
             crate::nexus_deferred::request_from_irq(wall_tick);
 

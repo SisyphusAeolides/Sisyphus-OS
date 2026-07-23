@@ -23,14 +23,14 @@
 
 extern crate alloc;
 
-use core::sync::atomic::{AtomicU64, AtomicU32, Ordering};
-use core::cell::UnsafeCell;
-use crate::syscalls::SYS_CHANNEL;
 use crate::syscall;
+use crate::syscalls::SYS_CHANNEL;
+use core::cell::UnsafeCell;
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
-pub const CHANNEL_DEPTH:   usize = 128;
-pub const MESSAGE_BYTES:   usize = 64;
-pub const PAYLOAD_BYTES:   usize = 48;
+pub const CHANNEL_DEPTH: usize = 128;
+pub const MESSAGE_BYTES: usize = 64;
+pub const PAYLOAD_BYTES: usize = 48;
 
 // ─── MESSAGE ───────────────────────────────────────────────────────────────
 
@@ -38,20 +38,30 @@ pub const PAYLOAD_BYTES:   usize = 48;
 #[derive(Clone, Copy)]
 pub struct ChannelMessage {
     pub capability: u64,
-    pub tag:        u32,
-    pub sequence:   u32,
-    pub payload:    [u8; PAYLOAD_BYTES],
+    pub tag: u32,
+    pub sequence: u32,
+    pub payload: [u8; PAYLOAD_BYTES],
 }
 
 const _: () = assert!(core::mem::size_of::<ChannelMessage>() == MESSAGE_BYTES);
 
 impl ChannelMessage {
     pub const fn empty() -> Self {
-        Self { capability: 0, tag: 0, sequence: 0, payload: [0; PAYLOAD_BYTES] }
+        Self {
+            capability: 0,
+            tag: 0,
+            sequence: 0,
+            payload: [0; PAYLOAD_BYTES],
+        }
     }
 
     pub const fn with_tag(tag: u32) -> Self {
-        Self { capability: 0, tag, sequence: 0, payload: [0; PAYLOAD_BYTES] }
+        Self {
+            capability: 0,
+            tag,
+            sequence: 0,
+            payload: [0; PAYLOAD_BYTES],
+        }
     }
 
     pub fn with_payload(tag: u32, data: &[u8]) -> Self {
@@ -64,21 +74,21 @@ impl ChannelMessage {
 
 // ─── RING SLOT ─────────────────────────────────────────────────────────────
 
-const SLOT_EMPTY:    u64 = 0;
-const SLOT_WRITING:  u64 = 1;
-const SLOT_READY:    u64 = 2;
-const SLOT_READING:  u64 = 3;
+const SLOT_EMPTY: u64 = 0;
+const SLOT_WRITING: u64 = 1;
+const SLOT_READY: u64 = 2;
+const SLOT_READING: u64 = 3;
 
 #[repr(C, align(64))]
 struct RingSlot {
-    state:   AtomicU64,
+    state: AtomicU64,
     message: UnsafeCell<ChannelMessage>,
 }
 
 impl RingSlot {
     const fn new() -> Self {
         Self {
-            state:   AtomicU64::new(SLOT_EMPTY),
+            state: AtomicU64::new(SLOT_EMPTY),
             message: UnsafeCell::new(ChannelMessage::empty()),
         }
     }
@@ -92,8 +102,8 @@ unsafe impl Sync for RingSlot {}
 pub struct SpscRing {
     producer: AtomicU32,
     consumer: AtomicU32,
-    _pad:     [u8; 56],
-    slots:    [RingSlot; CHANNEL_DEPTH],
+    _pad: [u8; 56],
+    slots: [RingSlot; CHANNEL_DEPTH],
 }
 
 impl SpscRing {
@@ -101,8 +111,8 @@ impl SpscRing {
         Self {
             producer: AtomicU32::new(0),
             consumer: AtomicU32::new(0),
-            _pad:     [0; 56],
-            slots:    [const { RingSlot::new() }; CHANNEL_DEPTH],
+            _pad: [0; 56],
+            slots: [const { RingSlot::new() }; CHANNEL_DEPTH],
         }
     }
 
@@ -110,12 +120,20 @@ impl SpscRing {
         let head = self.producer.load(Ordering::Relaxed) as usize;
         let slot = &self.slots[head % CHANNEL_DEPTH];
         slot.state
-            .compare_exchange(SLOT_EMPTY, SLOT_WRITING, Ordering::Acquire, Ordering::Relaxed)
+            .compare_exchange(
+                SLOT_EMPTY,
+                SLOT_WRITING,
+                Ordering::Acquire,
+                Ordering::Relaxed,
+            )
             .map_err(|_| ChannelError::Full)?;
         // SAFETY: We hold WRITING — exclusive producer access.
-        unsafe { *slot.message.get() = msg; }
+        unsafe {
+            *slot.message.get() = msg;
+        }
         slot.state.store(SLOT_READY, Ordering::Release);
-        self.producer.store(((head + 1) % CHANNEL_DEPTH) as u32, Ordering::Release);
+        self.producer
+            .store(((head + 1) % CHANNEL_DEPTH) as u32, Ordering::Release);
         Ok(())
     }
 
@@ -123,12 +141,18 @@ impl SpscRing {
         let tail = self.consumer.load(Ordering::Relaxed) as usize;
         let slot = &self.slots[tail % CHANNEL_DEPTH];
         slot.state
-            .compare_exchange(SLOT_READY, SLOT_READING, Ordering::Acquire, Ordering::Relaxed)
+            .compare_exchange(
+                SLOT_READY,
+                SLOT_READING,
+                Ordering::Acquire,
+                Ordering::Relaxed,
+            )
             .ok()?;
         // SAFETY: We hold READING — exclusive consumer access.
         let msg = unsafe { *slot.message.get() };
         slot.state.store(SLOT_EMPTY, Ordering::Release);
-        self.consumer.store(((tail + 1) % CHANNEL_DEPTH) as u32, Ordering::Release);
+        self.consumer
+            .store(((tail + 1) % CHANNEL_DEPTH) as u32, Ordering::Release);
         Some(msg)
     }
 
@@ -153,8 +177,8 @@ impl ChannelPair {
     /// Allocate a new channel pair via the Boulder capability broker.
     pub fn create() -> Result<Self, ChannelError> {
         let args = [0usize; 6];
-        let handle = unsafe { syscall(SYS_CHANNEL, args) }
-            .map_err(|_| ChannelError::KernelRefused)?;
+        let handle =
+            unsafe { syscall(SYS_CHANNEL, args) }.map_err(|_| ChannelError::KernelRefused)?;
         Ok(Self {
             a_to_b: SpscRing::new(),
             b_to_a: SpscRing::new(),
@@ -169,7 +193,8 @@ impl ChannelPair {
         // Leak the pair into a static allocation — both endpoints borrow it.
         // In a real kernel the rings live in the shared mapping.
         // Here we box-leak for now; replace with SYS_SHMAP in production.
-        let leaked: &'static mut ChannelPair = alloc::boxed::Box::leak(alloc::boxed::Box::new(self));
+        let leaked: &'static mut ChannelPair =
+            alloc::boxed::Box::leak(alloc::boxed::Box::new(self));
         (
             ChannelEndpointA { pair: leaked },
             ChannelEndpointB { pair: leaked },
@@ -192,7 +217,9 @@ impl ChannelEndpointA<'_> {
     pub fn recv(&self) -> Option<ChannelMessage> {
         self.pair.b_to_a.recv()
     }
-    pub fn is_inbox_empty(&self) -> bool { self.pair.b_to_a.is_empty() }
+    pub fn is_inbox_empty(&self) -> bool {
+        self.pair.b_to_a.is_empty()
+    }
 }
 
 impl ChannelEndpointB<'_> {
@@ -202,7 +229,9 @@ impl ChannelEndpointB<'_> {
     pub fn recv(&self) -> Option<ChannelMessage> {
         self.pair.a_to_b.recv()
     }
-    pub fn is_inbox_empty(&self) -> bool { self.pair.a_to_b.is_empty() }
+    pub fn is_inbox_empty(&self) -> bool {
+        self.pair.a_to_b.is_empty()
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -225,10 +254,7 @@ pub const ENDPOINT_PAYLOAD_BYTES: usize = PAYLOAD_BYTES - 2;
 pub trait WireMessage: Sized {
     const TAG: u32;
 
-    fn encode(
-        &self,
-        destination: &mut [u8; ENDPOINT_PAYLOAD_BYTES],
-    ) -> Result<usize, CodecError>;
+    fn encode(&self, destination: &mut [u8; ENDPOINT_PAYLOAD_BYTES]) -> Result<usize, CodecError>;
 
     fn decode(bytes: &[u8]) -> Result<Self, CodecError>;
 }
@@ -284,10 +310,7 @@ where
     Transport: EndpointTransport,
     Message: WireMessage,
 {
-    pub const fn new(
-        transport: Transport,
-        capability: CapHandle<FabricRight>,
-    ) -> Self {
+    pub const fn new(transport: Transport, capability: CapHandle<FabricRight>) -> Self {
         Self {
             transport,
             capability,
@@ -338,10 +361,7 @@ where
             return Err(EndpointError::CapabilityMismatch);
         }
 
-        let length = usize::from(u16::from_le_bytes([
-            message.payload[0],
-            message.payload[1],
-        ]));
+        let length = usize::from(u16::from_le_bytes([message.payload[0], message.payload[1]]));
 
         if length > ENDPOINT_PAYLOAD_BYTES {
             return Err(EndpointError::Codec(CodecError::InvalidFrame));
@@ -364,7 +384,7 @@ mod tests {
     #[test]
     fn spsc_ring_send_recv_roundtrip() {
         let ring = SpscRing::new();
-        let msg  = ChannelMessage::with_tag(42);
+        let msg = ChannelMessage::with_tag(42);
         ring.send(msg).unwrap();
         let got = ring.recv().unwrap();
         assert_eq!(got.tag, 42);
@@ -376,7 +396,10 @@ mod tests {
         for i in 0..CHANNEL_DEPTH {
             ring.send(ChannelMessage::with_tag(i as u32)).unwrap();
         }
-        assert_eq!(ring.send(ChannelMessage::with_tag(999)), Err(ChannelError::Full));
+        assert_eq!(
+            ring.send(ChannelMessage::with_tag(999)),
+            Err(ChannelError::Full)
+        );
     }
 
     #[test]

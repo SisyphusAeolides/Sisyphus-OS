@@ -290,9 +290,7 @@ pub fn initialize(
 
 // ─── CRITICAL-MOMENT SCHEDULER ──────────────────────────────────────────────
 
-use crate::ouroboros::{
-    ExecutorHook, PhaseHint, ScheduleError, TaskId,
-};
+use crate::ouroboros::{ExecutorHook, PhaseHint, ScheduleError, TaskId};
 
 pub const FLAG_KAIROS: u32 = 1 << 0;
 
@@ -405,9 +403,7 @@ impl<const N: usize> KairosScheduler<N> {
             return Err(KairosError::FlagMissing);
         }
 
-        if moment.window.closes_at < moment.window.opens_at
-            || moment.window.closes_at < now_tick
-        {
+        if moment.window.closes_at < moment.window.opens_at || moment.window.closes_at < now_tick {
             return Err(KairosError::InvalidWindow);
         }
 
@@ -428,10 +424,7 @@ impl<const N: usize> KairosScheduler<N> {
             .min(i16::MAX as u32);
 
         let entanglement_boost = ((correlation as u64 * 0x3000) / i16::MAX as u64) as u16;
-        let priority_mass = moment
-            .priority
-            .mass()
-            .saturating_add(entanglement_boost);
+        let priority_mass = moment.priority.mass().saturating_add(entanglement_boost);
 
         executor
             .offer(
@@ -453,11 +446,7 @@ impl<const N: usize> KairosScheduler<N> {
         })
     }
 
-    pub fn retire_expired<H: ExecutorHook>(
-        &mut self,
-        now_tick: u64,
-        executor: &mut H,
-    ) {
+    pub fn retire_expired<H: ExecutorHook>(&mut self, now_tick: u64, executor: &mut H) {
         for slot in &mut self.slots {
             if slot.active && slot.moment.window.closes_at < now_tick {
                 executor.complete(slot.moment.task);

@@ -1,15 +1,15 @@
-use core::sync::atomic::{AtomicU64, Ordering};
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 /// Bell state encoding for a service pair
 /// |Φ+⟩ = (|00⟩ + |11⟩)/√2 → both alive or both dead together
 /// |Ψ+⟩ = (|01⟩ + |10⟩)/√2 → one alive means other is backup
 #[derive(Clone, Copy, PartialEq)]
 pub enum BellState {
-    PhiPlus,   // correlated — live/die together (HA pair)
-    PhiMinus,  // anti-correlated — one lives while other is standby
-    PsiPlus,   // entangled backup — state inversions propagate
-    PsiMinus,  // isolated — entanglement broken
+    PhiPlus,  // correlated — live/die together (HA pair)
+    PhiMinus, // anti-correlated — one lives while other is standby
+    PsiPlus,  // entangled backup — state inversions propagate
+    PsiMinus, // isolated — entanglement broken
 }
 
 /// Encoded service state as a 2-qubit word in a single AtomicU64
@@ -38,22 +38,20 @@ impl EntangledPair {
     pub fn collapse_a(&self, a_alive: bool) -> bool {
         let word = self.state_word.load(Ordering::Acquire);
         let b_alive = (word & 0b10) != 0;
-        
+
         let new_b_alive = match self.bell_class {
-            BellState::PhiPlus  => a_alive,         // correlated — B mirrors A
-            BellState::PhiMinus => !a_alive,         // anti-correlated — B inverts
-            BellState::PsiPlus  => !b_alive,         // always flip B
-            BellState::PsiMinus => b_alive,          // isolated — B unchanged
+            BellState::PhiPlus => a_alive,   // correlated — B mirrors A
+            BellState::PhiMinus => !a_alive, // anti-correlated — B inverts
+            BellState::PsiPlus => !b_alive,  // always flip B
+            BellState::PsiMinus => b_alive,  // isolated — B unchanged
         };
 
-        let new_word = (word & !0b11u64)
-            | (a_alive as u64)
-            | ((new_b_alive as u64) << 1);
+        let new_word = (word & !0b11u64) | (a_alive as u64) | ((new_b_alive as u64) << 1);
 
         // CAS — atomic single-word state collapse, like measuring a qubit
-        let _ = self.state_word.compare_exchange(
-            word, new_word, Ordering::AcqRel, Ordering::Relaxed
-        );
+        let _ =
+            self.state_word
+                .compare_exchange(word, new_word, Ordering::AcqRel, Ordering::Relaxed);
         new_b_alive
     }
 
@@ -71,7 +69,9 @@ pub struct EntanglementRegistry {
 }
 
 impl EntanglementRegistry {
-    pub fn new() -> Self { Self { pairs: Vec::new() } }
+    pub fn new() -> Self {
+        Self { pairs: Vec::new() }
+    }
 
     pub fn entangle(&mut self, pid_a: u32, pid_b: u32, bell: BellState) {
         self.pairs.push(EntangledPair::new(pid_a, pid_b, bell));
@@ -89,9 +89,9 @@ impl EntanglementRegistry {
                 let current = pair.state_word.load(Ordering::Acquire);
                 let a_alive = (current & 0b01) != 0;
                 let new_a = match pair.bell_class {
-                    BellState::PhiPlus  => alive,
+                    BellState::PhiPlus => alive,
                     BellState::PhiMinus => !alive,
-                    BellState::PsiPlus  => !a_alive,
+                    BellState::PsiPlus => !a_alive,
                     BellState::PsiMinus => a_alive,
                 };
                 cascades.push((pair.pid_a, new_a));

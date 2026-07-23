@@ -1,20 +1,10 @@
-use aether::nexus_wire::{
-    NexusCommand, NexusOpcode, NexusReply, NexusStatus, WireError,
-};
+use aether::nexus_wire::{NexusCommand, NexusOpcode, NexusReply, NexusStatus, WireError};
 
-use crate::capability::{
-    Capability, ResonanceRight,
-};
-use crate::lease_lattice::{
-    LeaseError, LeaseLattice, LeaseRights, LeaseToken,
-};
-use crate::causal_lattice::{
-    CausalClock, CausalEnvelope, CausalStamp, ReplayError, ReplayShield,
-};
+use crate::capability::{Capability, ResonanceRight};
+use crate::causal_lattice::{CausalClock, CausalEnvelope, CausalStamp, ReplayError, ReplayShield};
 use crate::ghost_chronicle::GhostChronicle;
-use crate::singularity::{
-    SingularityGovernor, StabilityDecision, StabilitySample,
-};
+use crate::lease_lattice::{LeaseError, LeaseLattice, LeaseRights, LeaseToken};
+use crate::singularity::{SingularityGovernor, StabilityDecision, StabilitySample};
 use crate::sync::SpinLock;
 
 const GHOST_COMMAND: u16 = 0x100;
@@ -28,7 +18,7 @@ impl BootLeases {
     pub const fn new() -> Self {
         Self(core::cell::UnsafeCell::new(None))
     }
-    
+
     pub fn init(&self, secret: u64) {
         unsafe {
             *self.0.get() = Some(LeaseLattice::new(secret));
@@ -38,7 +28,7 @@ impl BootLeases {
 
 impl core::ops::Deref for BootLeases {
     type Target = LeaseLattice<256>;
-    
+
     fn deref(&self) -> &Self::Target {
         unsafe { (*self.0.get()).as_ref().unwrap() }
     }
@@ -57,12 +47,8 @@ struct GatewayState<
     governor: SingularityGovernor<HISTORY>,
 }
 
-impl<
-        const GRANTS: usize,
-        const REPLAY: usize,
-        const LOG: usize,
-        const HISTORY: usize,
-    > GatewayState<GRANTS, REPLAY, LOG, HISTORY>
+impl<const GRANTS: usize, const REPLAY: usize, const LOG: usize, const HISTORY: usize>
+    GatewayState<GRANTS, REPLAY, LOG, HISTORY>
 {
     const fn new(seed: u64) -> Self {
         Self {
@@ -100,12 +86,8 @@ pub enum GatewayError {
     Lease(LeaseError),
 }
 
-impl<
-        const GRANTS: usize,
-        const REPLAY: usize,
-        const LOG: usize,
-        const HISTORY: usize,
-    > NexusGateway<GRANTS, REPLAY, LOG, HISTORY>
+impl<const GRANTS: usize, const REPLAY: usize, const LOG: usize, const HISTORY: usize>
+    NexusGateway<GRANTS, REPLAY, LOG, HISTORY>
 {
     pub const fn new(node: u16, chronicle_seed: u64) -> Self {
         Self {
@@ -125,38 +107,22 @@ impl<
         Ok(())
     }
 
-    pub fn revoke_grant(
-        &self,
-        handle: u64,
-        _authority: &Capability<'_, ResonanceRight>,
-    ) -> bool {
+    pub fn revoke_grant(&self, handle: u64, _authority: &Capability<'_, ResonanceRight>) -> bool {
         // Obsolete
         true
     }
 
-    pub fn admit(
-        &self,
-        command: &NexusCommand,
-        now_tick: u64,
-    ) -> Result<Admission, GatewayError> {
+    pub fn admit(&self, command: &NexusCommand, now_tick: u64) -> Result<Admission, GatewayError> {
         let opcode = command.validate().map_err(GatewayError::Wire)?;
-        
+
         let token = LeaseToken::from_raw(command.capability);
 
-        LEASES.admit(
-            token,
-            rights_for_opcode(opcode),
-            now_tick,
-        ).map_err(GatewayError::Lease)?;
+        LEASES
+            .admit(token, rights_for_opcode(opcode), now_tick)
+            .map_err(GatewayError::Lease)?;
 
         let stamp = self.clock.stamp(now_tick);
-        let envelope = CausalEnvelope::new(
-            stamp,
-            command.sequence,
-            command.opcode as u32,
-            0,
-            &[],
-        );
+        let envelope = CausalEnvelope::new(stamp, command.sequence, command.opcode as u32, 0, &[]);
 
         let mut state = self.state.lock();
 
@@ -211,10 +177,7 @@ impl<
         reply
     }
 
-    pub fn observe_stability(
-        &self,
-        sample: StabilitySample,
-    ) -> StabilityDecision {
+    pub fn observe_stability(&self, sample: StabilitySample) -> StabilityDecision {
         self.state.lock().governor.observe(sample)
     }
 
@@ -225,17 +188,11 @@ impl<
 
 fn rights_for_opcode(opcode: NexusOpcode) -> LeaseRights {
     match opcode {
-        NexusOpcode::QueryStats | NexusOpcode::QueryTelemetry => {
-            LeaseRights::OBSERVE
-        }
+        NexusOpcode::QueryStats | NexusOpcode::QueryTelemetry => LeaseRights::OBSERVE,
 
-        NexusOpcode::AttachTask | NexusOpcode::SetPriorityMass => {
-            LeaseRights::SCHEDULE
-        }
+        NexusOpcode::AttachTask | NexusOpcode::SetPriorityMass => LeaseRights::SCHEDULE,
 
-        NexusOpcode::Entangle | NexusOpcode::OfferKairos => {
-            LeaseRights::RESONANCE
-        }
+        NexusOpcode::Entangle | NexusOpcode::OfferKairos => LeaseRights::RESONANCE,
 
         NexusOpcode::SetCollapseThreshold => LeaseRights::CONTROL,
     }

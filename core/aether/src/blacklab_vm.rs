@@ -144,10 +144,7 @@ pub struct LabProgram {
 }
 
 impl LabProgram {
-    pub const fn new(
-        instructions: [LabInstruction; MAX_INSTRUCTIONS],
-        length: u8,
-    ) -> Self {
+    pub const fn new(instructions: [LabInstruction; MAX_INSTRUCTIONS], length: u8) -> Self {
         Self {
             instructions,
             length,
@@ -268,9 +265,7 @@ pub fn verify(program: &LabProgram) -> Result<(), VerifyError> {
     for pc in 0..length {
         let instruction = program.instructions[pc];
 
-        let opcode = instruction
-            .opcode()
-            .ok_or(VerifyError::BadOpcode(pc))?;
+        let opcode = instruction.opcode().ok_or(VerifyError::BadOpcode(pc))?;
 
         match opcode {
             Opcode::LoadMetric => {
@@ -304,10 +299,7 @@ pub fn verify(program: &LabProgram) -> Result<(), VerifyError> {
     Ok(())
 }
 
-pub fn execute(
-    program: &LabProgram,
-    metrics: LabMetrics,
-) -> Result<ControlVector, ExecutionError> {
+pub fn execute(program: &LabProgram, metrics: LabMetrics) -> Result<ControlVector, ExecutionError> {
     verify(program).map_err(ExecutionError::Verification)?;
 
     let length = usize::from(program.length);
@@ -325,9 +317,7 @@ pub fn execute(
         fuel -= 1;
 
         let instruction = program.instructions[pc];
-        let opcode = instruction
-            .opcode()
-            .ok_or(ExecutionError::FellOffProgram)?;
+        let opcode = instruction.opcode().ok_or(ExecutionError::FellOffProgram)?;
 
         let destination = instruction.destination();
         let source = instruction.source();
@@ -336,43 +326,33 @@ pub fn execute(
             Opcode::Nop => {}
 
             Opcode::LoadMetric => {
-                let metric = MetricId::from_raw(
-                    instruction.immediate() as u8,
-                )
-                .ok_or(ExecutionError::FellOffProgram)?;
+                let metric = MetricId::from_raw(instruction.immediate() as u8)
+                    .ok_or(ExecutionError::FellOffProgram)?;
 
                 registers[destination] = metrics.read(metric);
             }
 
             Opcode::LoadImmediate => {
-                registers[destination] =
-                    i64::from(instruction.immediate());
+                registers[destination] = i64::from(instruction.immediate());
             }
 
             Opcode::AddSaturating => {
-                registers[destination] = registers[destination]
-                    .saturating_add(registers[source]);
+                registers[destination] = registers[destination].saturating_add(registers[source]);
             }
 
             Opcode::SubtractSaturating => {
-                registers[destination] = registers[destination]
-                    .saturating_sub(registers[source]);
+                registers[destination] = registers[destination].saturating_sub(registers[source]);
             }
 
             Opcode::MultiplyQ16 => {
-                let product = i128::from(registers[destination])
-                    * i128::from(registers[source]);
+                let product = i128::from(registers[destination]) * i128::from(registers[source]);
 
-                registers[destination] = (product >> 16)
-                    .clamp(i64::MIN as i128, i64::MAX as i128)
-                    as i64;
+                registers[destination] =
+                    (product >> 16).clamp(i64::MIN as i128, i64::MAX as i128) as i64;
             }
 
             Opcode::CompareGreater => {
-                registers[destination] =
-                    i64::from(
-                        registers[destination] > registers[source],
-                    );
+                registers[destination] = i64::from(registers[destination] > registers[source]);
             }
 
             Opcode::JumpIfZero => {
@@ -383,9 +363,8 @@ pub fn execute(
             }
 
             Opcode::SetControl => {
-                let field =
-                    ControlField::from_raw(instruction.auxiliary())
-                        .ok_or(ExecutionError::FellOffProgram)?;
+                let field = ControlField::from_raw(instruction.auxiliary())
+                    .ok_or(ExecutionError::FellOffProgram)?;
 
                 control.set(field, registers[destination]);
             }

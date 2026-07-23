@@ -1,9 +1,8 @@
 // libraries/driver-abi/src/membrane.rs
 
 use super::{
-    KernelApi, Status, Handle, DeviceInfo,
-    CAP_LOG, CAP_ALLOC, CAP_CLOCK, CAP_SLEEP, CAP_MMIO, CAP_DMA, CAP_IRQ, CAP_DEVICE_PUBLISH,
-    STATUS_UNSUPPORTED
+    CAP_ALLOC, CAP_CLOCK, CAP_DEVICE_PUBLISH, CAP_DMA, CAP_IRQ, CAP_LOG, CAP_MMIO, CAP_SLEEP,
+    DeviceInfo, Handle, KernelApi, STATUS_UNSUPPORTED, Status,
 };
 use core::ffi::c_void;
 
@@ -24,7 +23,7 @@ impl DriverMembrane {
         let mut api = unsafe { *self.inner_api };
         api.capabilities = self.allowed_capabilities;
         api.kernel_context = self as *const _ as *mut c_void;
-        
+
         api.log = Some(membrane_log);
         api.alloc = Some(membrane_alloc);
         api.dealloc = Some(membrane_dealloc);
@@ -46,7 +45,10 @@ impl DriverMembrane {
 
 #[inline(never)]
 fn apoptosis(missing_cap: u64) -> ! {
-    panic!("Apoptosis event: Driver attempted capability 0x{:x} without permission", missing_cap);
+    panic!(
+        "Apoptosis event: Driver attempted capability 0x{:x} without permission",
+        missing_cap
+    );
 }
 
 unsafe extern "C" fn membrane_log(
@@ -144,7 +146,16 @@ unsafe extern "C" fn membrane_mmio_map(
     }
     let inner = unsafe { &*membrane.inner_api };
     if let Some(f) = inner.mmio_map {
-        unsafe { f(inner.kernel_context, physical_address, length, flags, out_handle, out_pointer) }
+        unsafe {
+            f(
+                inner.kernel_context,
+                physical_address,
+                length,
+                flags,
+                out_handle,
+                out_pointer,
+            )
+        }
     } else {
         STATUS_UNSUPPORTED
     }
@@ -178,7 +189,17 @@ unsafe extern "C" fn membrane_dma_alloc(
     }
     let inner = unsafe { &*membrane.inner_api };
     if let Some(f) = inner.dma_alloc {
-        unsafe { f(inner.kernel_context, size, alignment, flags, out_handle, out_cpu_pointer, out_device_address) }
+        unsafe {
+            f(
+                inner.kernel_context,
+                size,
+                alignment,
+                flags,
+                out_handle,
+                out_cpu_pointer,
+                out_device_address,
+            )
+        }
     } else {
         STATUS_UNSUPPORTED
     }
@@ -211,7 +232,16 @@ unsafe extern "C" fn membrane_irq_register(
     }
     let inner = unsafe { &*membrane.inner_api };
     if let Some(f) = inner.irq_register {
-        unsafe { f(inner.kernel_context, irq, flags, handler, driver_context, out_handle) }
+        unsafe {
+            f(
+                inner.kernel_context,
+                irq,
+                flags,
+                handler,
+                driver_context,
+                out_handle,
+            )
+        }
     } else {
         STATUS_UNSUPPORTED
     }
@@ -234,7 +264,10 @@ unsafe extern "C" fn membrane_irq_set_enabled(
     }
 }
 
-unsafe extern "C" fn membrane_irq_unregister(kernel_context: *mut c_void, registration: Handle) -> Status {
+unsafe extern "C" fn membrane_irq_unregister(
+    kernel_context: *mut c_void,
+    registration: Handle,
+) -> Status {
     let membrane = unsafe { &*(kernel_context as *const DriverMembrane) };
     if (membrane.allowed_capabilities & CAP_IRQ) == 0 {
         apoptosis(CAP_IRQ);

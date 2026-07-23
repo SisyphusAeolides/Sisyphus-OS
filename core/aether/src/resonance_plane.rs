@@ -1,13 +1,8 @@
-use core::sync::atomic::{
-    AtomicU64, Ordering,
-};
+use core::sync::atomic::{AtomicU64, Ordering};
 
-use crate::lockfree::{
-    BoundedMpmc, QueueError, QueueInitError,
-};
+use crate::lockfree::{BoundedMpmc, QueueError, QueueInitError};
 use crate::nexus_wire::{
-    NEXUS_WIRE_MAGIC, NEXUS_WIRE_VERSION,
-    NexusCommand, NexusReply, NexusTelemetry,
+    NEXUS_WIRE_MAGIC, NEXUS_WIRE_VERSION, NexusCommand, NexusReply, NexusTelemetry,
 };
 
 pub const RESONANCE_QUEUE_DEPTH: usize = 8;
@@ -15,9 +10,7 @@ pub const RESONANCE_QUEUE_DEPTH: usize = 8;
 const INITIALIZING_SIGNATURE: u64 = 1;
 
 const RESONANCE_SIGNATURE: u64 =
-    NEXUS_WIRE_MAGIC as u64
-        | ((NEXUS_WIRE_VERSION as u64) << 32)
-        | (0x5250_u64 << 48);
+    NEXUS_WIRE_MAGIC as u64 | ((NEXUS_WIRE_VERSION as u64) << 32) | (0x5250_u64 << 48);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PlaneInitError {
@@ -53,10 +46,7 @@ impl AtomicTelemetry {
 
     fn publish(&self, telemetry: &NexusTelemetry) {
         // Single kernel writer.
-        let odd = self
-            .guard
-            .fetch_add(1, Ordering::AcqRel)
-            .wrapping_add(1);
+        let odd = self.guard.fetch_add(1, Ordering::AcqRel).wrapping_add(1);
 
         debug_assert!(odd & 1 == 1);
 
@@ -70,15 +60,13 @@ impl AtomicTelemetry {
             .store(telemetry.global_phase, Ordering::Relaxed);
 
         self.pair_generation.store(
-            u64::from(telemetry.pairs_live)
-                | (u64::from(telemetry.generation) << 32),
+            u64::from(telemetry.pairs_live) | (u64::from(telemetry.generation) << 32),
             Ordering::Relaxed,
         );
 
         self.heat.store(telemetry.heat, Ordering::Relaxed);
 
-        self.collapses
-            .store(telemetry.collapses, Ordering::Relaxed);
+        self.collapses.store(telemetry.collapses, Ordering::Relaxed);
 
         self.guard.store(odd.wrapping_add(1), Ordering::Release);
     }
@@ -92,17 +80,12 @@ impl AtomicTelemetry {
                 continue;
             }
 
-            let sequence =
-                self.frame_sequence.load(Ordering::Relaxed);
-            let logical_tick =
-                self.logical_tick.load(Ordering::Relaxed);
-            let global_phase =
-                self.global_phase.load(Ordering::Relaxed);
-            let pair_generation =
-                self.pair_generation.load(Ordering::Relaxed);
+            let sequence = self.frame_sequence.load(Ordering::Relaxed);
+            let logical_tick = self.logical_tick.load(Ordering::Relaxed);
+            let global_phase = self.global_phase.load(Ordering::Relaxed);
+            let pair_generation = self.pair_generation.load(Ordering::Relaxed);
             let heat = self.heat.load(Ordering::Relaxed);
-            let collapses =
-                self.collapses.load(Ordering::Relaxed);
+            let collapses = self.collapses.load(Ordering::Relaxed);
 
             let after = self.guard.load(Ordering::Acquire);
 
@@ -136,15 +119,12 @@ pub struct ResonancePlane {
 
     telemetry: AtomicTelemetry,
 
-    commands:
-        BoundedMpmc<NexusCommand, RESONANCE_QUEUE_DEPTH>,
+    commands: BoundedMpmc<NexusCommand, RESONANCE_QUEUE_DEPTH>,
 
-    replies:
-        BoundedMpmc<NexusReply, RESONANCE_QUEUE_DEPTH>,
+    replies: BoundedMpmc<NexusReply, RESONANCE_QUEUE_DEPTH>,
 }
 
-const _: () =
-    assert!(core::mem::size_of::<ResonancePlane>() == 4096);
+const _: () = assert!(core::mem::size_of::<ResonancePlane>() == 4096);
 
 impl ResonancePlane {
     pub const fn new() -> Self {
@@ -154,11 +134,7 @@ impl ResonancePlane {
             doorbell: AtomicU64::new(0),
             command_drops: AtomicU64::new(0),
             reply_drops: AtomicU64::new(0),
-            reserved_header: [
-                AtomicU64::new(0),
-                AtomicU64::new(0),
-                AtomicU64::new(0),
-            ],
+            reserved_header: [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)],
             telemetry: AtomicTelemetry::new(),
             commands: BoundedMpmc::new(),
             replies: BoundedMpmc::new(),
@@ -186,30 +162,22 @@ impl ResonancePlane {
         }
 
         self.kernel_epoch.store(1, Ordering::Relaxed);
-        self.signature
-            .store(RESONANCE_SIGNATURE, Ordering::Release);
+        self.signature.store(RESONANCE_SIGNATURE, Ordering::Release);
 
         Ok(())
     }
 
     #[inline(always)]
     pub fn is_compatible(&self) -> bool {
-        self.signature.load(Ordering::Acquire)
-            == RESONANCE_SIGNATURE
+        self.signature.load(Ordering::Acquire) == RESONANCE_SIGNATURE
     }
 
-    pub fn publish_telemetry(
-        &self,
-        telemetry: &NexusTelemetry,
-    ) {
+    pub fn publish_telemetry(&self, telemetry: &NexusTelemetry) {
         self.telemetry.publish(telemetry);
         self.kernel_epoch.fetch_add(1, Ordering::Release);
     }
 
-    pub fn telemetry(
-        &self,
-        maximum_attempts: usize,
-    ) -> Option<NexusTelemetry> {
+    pub fn telemetry(&self, maximum_attempts: usize) -> Option<NexusTelemetry> {
         if !self.is_compatible() {
             return None;
         }
@@ -217,10 +185,7 @@ impl ResonancePlane {
         self.telemetry.snapshot(maximum_attempts)
     }
 
-    pub fn submit_command(
-        &self,
-        command: NexusCommand,
-    ) -> Result<(), QueueError> {
+    pub fn submit_command(&self, command: NexusCommand) -> Result<(), QueueError> {
         match self.commands.push(command) {
             Ok(()) => {
                 self.doorbell.fetch_add(1, Ordering::Release);
@@ -229,8 +194,7 @@ impl ResonancePlane {
 
             Err(error) => {
                 if error == QueueError::Full {
-                    self.command_drops
-                        .fetch_add(1, Ordering::Relaxed);
+                    self.command_drops.fetch_add(1, Ordering::Relaxed);
                 }
 
                 Err(error)
@@ -242,17 +206,13 @@ impl ResonancePlane {
         self.commands.pop()
     }
 
-    pub fn publish_reply(
-        &self,
-        reply: NexusReply,
-    ) -> Result<(), QueueError> {
+    pub fn publish_reply(&self, reply: NexusReply) -> Result<(), QueueError> {
         match self.replies.push(reply) {
             Ok(()) => Ok(()),
 
             Err(error) => {
                 if error == QueueError::Full {
-                    self.reply_drops
-                        .fetch_add(1, Ordering::Relaxed);
+                    self.reply_drops.fetch_add(1, Ordering::Relaxed);
                 }
 
                 Err(error)

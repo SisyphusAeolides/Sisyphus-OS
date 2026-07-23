@@ -25,40 +25,136 @@
 #![allow(dead_code)]
 #![allow(clippy::too_many_arguments)]
 
-use core::sync::atomic::{AtomicU64, AtomicU32, AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 // ─── STUBS FOR EXPERIMENTAL SUBSYSTEMS ───────────────────────────────────────
-#[derive(Clone, Copy, PartialEq, Eq)] pub struct TaskId(u64);
-impl TaskId { pub const INVALID: Self = Self(0); pub fn from_raw(raw: u64) -> Self { Self(raw) } }
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct TaskId(u64);
+impl TaskId {
+    pub const INVALID: Self = Self(0);
+    pub fn from_raw(raw: u64) -> Self {
+        Self(raw)
+    }
+}
 pub struct WakerToken;
-pub struct PhaseHint { pub tag: u32 }
-impl PhaseHint { pub const IDLE: Self = Self { tag: 0 }; pub fn constructive(_a: TaskId, _b: TaskId, _c: u8, _d: u32) -> Self { Self { tag: 1 } } pub fn from_global(_p: u64) -> Self { Self { tag: 2 } } }
-pub trait ExecutorHook { fn priority_of(&self, _task: TaskId) -> Option<u8> { None } fn request_ephemeral_pair(&self, _a: u8, _b: u16) -> Result<(), ()> { Ok(()) } fn boost_critical_slice(&self, _a: u8) {} }
-pub struct ChronoTick; pub struct DilatedDuration; pub struct TickDevourer;
-impl TickDevourer { pub fn now_tick(&self) -> u64 { 0 } pub fn request_dilation(&self, _a: u8, _b: u16) {} }
+pub struct PhaseHint {
+    pub tag: u32,
+}
+impl PhaseHint {
+    pub const IDLE: Self = Self { tag: 0 };
+    pub fn constructive(_a: TaskId, _b: TaskId, _c: u8, _d: u32) -> Self {
+        Self { tag: 1 }
+    }
+    pub fn from_global(_p: u64) -> Self {
+        Self { tag: 2 }
+    }
+}
+pub trait ExecutorHook {
+    fn priority_of(&self, _task: TaskId) -> Option<u8> {
+        None
+    }
+    fn request_ephemeral_pair(&self, _a: u8, _b: u16) -> Result<(), ()> {
+        Ok(())
+    }
+    fn boost_critical_slice(&self, _a: u8) {}
+}
+pub struct ChronoTick;
+pub struct DilatedDuration;
+pub struct TickDevourer;
+impl TickDevourer {
+    pub fn now_tick(&self) -> u64 {
+        0
+    }
+    pub fn request_dilation(&self, _a: u8, _b: u16) {}
+}
 pub struct ThermalBudget;
-impl ThermalBudget { pub fn current_heat(&self) -> u32 { 0 } pub fn entropy_sample(&self) -> EntropySample { EntropySample { noise_floor: 0 } } pub fn charge(&self, _amount: u32) -> Result<(), ()> { Ok(()) } pub fn credit_collapse_rebate(&self, _a: u32) {} pub fn inject_spike(&self, _a: u32) {} }
-pub struct EntropySample { pub noise_floor: u32 }
+impl ThermalBudget {
+    pub fn current_heat(&self) -> u32 {
+        0
+    }
+    pub fn entropy_sample(&self) -> EntropySample {
+        EntropySample { noise_floor: 0 }
+    }
+    pub fn charge(&self, _amount: u32) -> Result<(), ()> {
+        Ok(())
+    }
+    pub fn credit_collapse_rebate(&self, _a: u32) {}
+    pub fn inject_spike(&self, _a: u32) {}
+}
+pub struct EntropySample {
+    pub noise_floor: u32,
+}
 pub struct HeatSink;
 pub struct TartarusCage;
-impl TartarusCage { pub fn quarantine(&self, _ev: DecoherenceEvent, _level: QuarantineLevel) {} pub fn inject_canary(&self, _gen: u32, _level: QuarantineLevel) {} }
-pub struct DecoherenceEvent { pub task_a: TaskId, pub task_b: TaskId, pub generation: u32 }
-pub enum QuarantineLevel { Soft, Probe }
+impl TartarusCage {
+    pub fn quarantine(&self, _ev: DecoherenceEvent, _level: QuarantineLevel) {}
+    pub fn inject_canary(&self, _gen: u32, _level: QuarantineLevel) {}
+}
+pub struct DecoherenceEvent {
+    pub task_a: TaskId,
+    pub task_b: TaskId,
+    pub generation: u32,
+}
+pub enum QuarantineLevel {
+    Soft,
+    Probe,
+}
 pub struct KairosWindow;
-impl KairosWindow { pub fn offer(&self, _moment: CriticalMoment) {} }
-pub struct CriticalMoment { pub task: TaskId, pub priority: MomentPriority, pub deadline_tick: u64 }
-pub enum MomentPriority { Entangled }
-pub struct AetherChannel; pub struct AmbientPulse;
+impl KairosWindow {
+    pub fn offer(&self, _moment: CriticalMoment) {}
+}
+pub struct CriticalMoment {
+    pub task: TaskId,
+    pub priority: MomentPriority,
+    pub deadline_tick: u64,
+}
+pub enum MomentPriority {
+    Entangled,
+}
+pub struct AetherChannel;
+pub struct AmbientPulse;
 pub struct ResonanceField;
-impl ResonanceField { pub fn diagonal_cells(&self) -> core::slice::Iter<LatticeCell> { [].iter() } pub fn accumulate(&self, _tag: usize, _re: i32, _im: i32) {} pub fn eigenphase_bin(&self, _hint: usize) -> u8 { 0 } pub fn nudge_phase(&self, _a: usize, _b: u8) {} pub fn mark_stress(&self, _a: usize) {} pub fn broadcast_ambient(&self, _a: u8, _b: usize) {} pub fn bind_instrument_channels(&self, _id: WindowId, _c: usize) {} }
+impl ResonanceField {
+    pub fn diagonal_cells(&self) -> core::slice::Iter<LatticeCell> {
+        [].iter()
+    }
+    pub fn accumulate(&self, _tag: usize, _re: i32, _im: i32) {}
+    pub fn eigenphase_bin(&self, _hint: usize) -> u8 {
+        0
+    }
+    pub fn nudge_phase(&self, _a: usize, _b: u8) {}
+    pub fn mark_stress(&self, _a: usize) {}
+    pub fn broadcast_ambient(&self, _a: u8, _b: usize) {}
+    pub fn bind_instrument_channels(&self, _id: WindowId, _c: usize) {}
+}
 pub struct LatticeCell;
-impl LatticeCell { pub fn weight_q16(&self) -> i32 { 0 } pub fn phase_q16(&self) -> i32 { 0 } pub fn tag(&self) -> u32 { 0 } }
+impl LatticeCell {
+    pub fn weight_q16(&self) -> i32 {
+        0
+    }
+    pub fn phase_q16(&self) -> i32 {
+        0
+    }
+    pub fn tag(&self) -> u32 {
+        0
+    }
+}
 pub struct LearningGradient;
 pub struct MmioWindow;
-impl MmioWindow { pub unsafe fn read_u32(&self, _offset: usize) -> u32 { 0 } pub fn id(&self) -> WindowId { WindowId(0) } }
+impl MmioWindow {
+    pub unsafe fn read_u32(&self, _offset: usize) -> u32 {
+        0
+    }
+    pub fn id(&self) -> WindowId {
+        WindowId(0)
+    }
+}
 pub struct WindowId(u32);
+use crate::capability::{
+    Authority, Capability, DeviceMemoryRight, DmaRight, LearningRight, ResonanceRight,
+    SchedulerRight,
+};
 use crate::sync::SpinLock;
-use crate::capability::{Authority, Capability, ResonanceRight, SchedulerRight, LearningRight, DmaRight, DeviceMemoryRight};
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ─── CONSTANTS ───────────────────────────────────────────────────────────────
@@ -99,9 +195,9 @@ pub struct Amplitude {
 impl Amplitude {
     pub const ZERO: Self = Self { re: 0, im: 0 };
     /// |1⟩  (unit real)
-    pub const ONE:  Self = Self { re: 1 << 16, im: 0 };
+    pub const ONE: Self = Self { re: 1 << 16, im: 0 };
     /// i|1⟩ (unit imag)
-    pub const I:    Self = Self { re: 0, im: 1 << 16 };
+    pub const I: Self = Self { re: 0, im: 1 << 16 };
 
     #[inline(always)]
     pub const fn new(re: i32, im: i32) -> Self {
@@ -193,20 +289,20 @@ pub fn gamma_for_priority(prio: u8) -> u16 {
 #[derive(Clone, Copy)]
 #[repr(C)]
 pub struct EntangledPair {
-    pub task_a:     TaskId,
-    pub task_b:     TaskId,
-    pub amplitude:  Amplitude,
-    pub phase_bin:  u8,
+    pub task_a: TaskId,
+    pub task_b: TaskId,
+    pub amplitude: Amplitude,
+    pub phase_bin: u8,
     pub generation: u32,
-    pub heat_cost:  u32,
-    pub flags:      u16,
+    pub heat_cost: u32,
+    pub flags: u16,
 }
 
 impl EntangledPair {
-    pub const FLAG_LIVE:       u16 = 1 << 0;
+    pub const FLAG_LIVE: u16 = 1 << 0;
     pub const FLAG_COLLAPSING: u16 = 1 << 1;
     pub const FLAG_QUARANTINE: u16 = 1 << 2;
-    pub const FLAG_KAIROS:     u16 = 1 << 3;
+    pub const FLAG_KAIROS: u16 = 1 << 3;
 
     pub const EMPTY: Self = Self {
         task_a: TaskId::INVALID,
@@ -240,22 +336,25 @@ impl EntangledPair {
 #[derive(Clone, Copy)]
 #[repr(C)]
 struct AmplitudeSlot {
-    amp:   Amplitude,
-    tick:  u64,
-    tag:   u32,
-    _pad:  u32,
+    amp: Amplitude,
+    tick: u64,
+    tag: u32,
+    _pad: u32,
 }
 
 pub struct AmplitudeRing {
-    slots:  [AmplitudeSlot; AMPLITUDE_RING_DEPTH],
-    head:   AtomicU64,
-    tail:   AtomicU64,
+    slots: [AmplitudeSlot; AMPLITUDE_RING_DEPTH],
+    head: AtomicU64,
+    tail: AtomicU64,
 }
 
 impl AmplitudeRing {
     pub const fn new() -> Self {
         const EMPTY: AmplitudeSlot = AmplitudeSlot {
-            amp: Amplitude::ZERO, tick: 0, tag: 0, _pad: 0,
+            amp: Amplitude::ZERO,
+            tick: 0,
+            tag: 0,
+            _pad: 0,
         };
         Self {
             slots: [EMPTY; AMPLITUDE_RING_DEPTH],
@@ -271,7 +370,12 @@ impl AmplitudeRing {
             return false; // full
         }
         let idx = (head as usize) & AMPLITUDE_MASK;
-        self.slots[idx] = AmplitudeSlot { amp, tick, tag, _pad: 0 };
+        self.slots[idx] = AmplitudeSlot {
+            amp,
+            tick,
+            tag,
+            _pad: 0,
+        };
         self.head.store(head.wrapping_add(1), Ordering::Release);
         true
     }
@@ -297,32 +401,32 @@ impl AmplitudeRing {
 #[derive(Clone, Copy)]
 #[repr(u8)]
 pub enum ExperimentKind {
-    PhaseDrift       = 0,
-    EntangleBurst    = 1,
-    ThermalSpike     = 2,
-    FabricFlood      = 3,
-    ChronoDilate     = 4,
-    TartarusInject   = 5,
-    KairosFocus      = 6,
-    AetherBroadcast  = 7,
-    Superposition    = 8,
-    CollapseStress   = 9,
+    PhaseDrift = 0,
+    EntangleBurst = 1,
+    ThermalSpike = 2,
+    FabricFlood = 3,
+    ChronoDilate = 4,
+    TartarusInject = 5,
+    KairosFocus = 6,
+    AetherBroadcast = 7,
+    Superposition = 8,
+    CollapseStress = 9,
 }
 
 #[derive(Clone, Copy)]
 #[repr(C)]
 pub struct Experiment {
-    pub kind:        ExperimentKind,
-    pub active:      bool,
-    pub priority:    u8,
-    pub phase_seed:  u8,
+    pub kind: ExperimentKind,
+    pub active: bool,
+    pub priority: u8,
+    pub phase_seed: u8,
     pub budget_heat: u32,
     pub budget_ticks: u64,
-    pub spent_heat:  u32,
+    pub spent_heat: u32,
     pub spent_ticks: u64,
     pub result_code: i32,
     pub lattice_idx: u16,
-    pub generation:  u32,
+    pub generation: u32,
     pub baseline_threshold: u64,
 }
 
@@ -347,11 +451,11 @@ impl Experiment {
 
 pub struct QuantumNexus {
     /// Entanglement table
-    pairs:       [EntangledPair; MAX_ENTANGLED_PAIRS],
-    pair_count:  AtomicU32,
+    pairs: [EntangledPair; MAX_ENTANGLED_PAIRS],
+    pair_count: AtomicU32,
 
     /// Amplitude history ring
-    ring:        AmplitudeRing,
+    ring: AmplitudeRing,
 
     /// Active black-lab experiments
     experiments: [Experiment; EXPERIMENT_SLOTS],
@@ -372,11 +476,11 @@ pub struct QuantumNexus {
     last_heat: AtomicU32,
 
     /// Stats
-    stats_collapses:   AtomicU64,
-    stats_entangles:   AtomicU64,
+    stats_collapses: AtomicU64,
+    stats_entangles: AtomicU64,
     stats_experiments: AtomicU64,
-    stats_interf_pos:  AtomicU64,
-    stats_interf_neg:  AtomicU64,
+    stats_interf_pos: AtomicU64,
+    stats_interf_neg: AtomicU64,
 }
 
 impl QuantumNexus {
@@ -405,9 +509,9 @@ impl QuantumNexus {
     pub fn ignite(
         &mut self,
         _auth: &Authority,
-        _res:  &Capability<'_, ResonanceRight>,
-        _sch:  &Capability<'_, SchedulerRight>,
-        _lrn:  &Capability<'_, LearningRight>,
+        _res: &Capability<'_, ResonanceRight>,
+        _sch: &Capability<'_, SchedulerRight>,
+        _lrn: &Capability<'_, LearningRight>,
         field: &mut ResonanceField,
         chrono: &mut TickDevourer,
         thermal: &mut ThermalBudget,
@@ -427,7 +531,8 @@ impl QuantumNexus {
         }
 
         // Snapshot thermal floor.
-        self.last_heat.store(thermal.current_heat(), Ordering::Release);
+        self.last_heat
+            .store(thermal.current_heat(), Ordering::Release);
 
         // Baseline collapse threshold from entropy sample.
         let entropy = thermal.entropy_sample();
@@ -458,10 +563,14 @@ impl QuantumNexus {
         self.require_armed()?;
 
         let heat = estimate_entangle_heat(initial);
-        thermal.charge(heat).map_err(|_| NexusError::ThermalThrottle)?;
+        thermal
+            .charge(heat)
+            .map_err(|_| NexusError::ThermalThrottle)?;
 
         let count = self.pair_count.load(Ordering::Acquire) as usize;
-        let slot = self.pairs.iter_mut()
+        let slot = self
+            .pairs
+            .iter_mut()
             .position(|p| !p.is_live())
             .ok_or(NexusError::TableFull)?;
 
@@ -480,7 +589,8 @@ impl QuantumNexus {
             self.pair_count.store((slot + 1) as u32, Ordering::Release);
         }
         self.stats_entangles.fetch_add(1, Ordering::Relaxed);
-        self.last_heat.store(thermal.current_heat(), Ordering::Release);
+        self.last_heat
+            .store(thermal.current_heat(), Ordering::Release);
         Ok(slot)
     }
 
@@ -490,12 +600,12 @@ impl QuantumNexus {
     /// Returns a PhaseHint for ouroboros (constructive interference schedule).
     pub fn tick(
         &mut self,
-        chrono:  &mut TickDevourer,
+        chrono: &mut TickDevourer,
         thermal: &mut ThermalBudget,
-        field:   &mut ResonanceField,
+        field: &mut ResonanceField,
         tartarus: &mut TartarusCage,
-        kairos:  &mut KairosWindow,
-        ouro:    &mut dyn ExecutorHook,
+        kairos: &mut KairosWindow,
+        ouro: &mut dyn ExecutorHook,
     ) -> PhaseHint {
         if !self.armed.load(Ordering::Acquire) {
             return PhaseHint::IDLE;
@@ -524,12 +634,13 @@ impl QuantumNexus {
             let prio = ouro.priority_of(self.pairs[i].task_a).unwrap_or(0);
             let gamma = gamma_for_priority(prio);
             let drift = ((phase.wrapping_mul(gamma as u64)) >> 8) as u8;
-            self.pairs[i].phase_bin = self.pairs[i].phase_bin.wrapping_add(drift)
-                & (PHASE_BINS as u8 - 1);
+            self.pairs[i].phase_bin =
+                self.pairs[i].phase_bin.wrapping_add(drift) & (PHASE_BINS as u8 - 1);
 
             // Rotate amplitude slightly toward lattice eigenphase.
             let eigen = field.eigenphase_bin(self.pairs[i].lattice_hint());
-            self.pairs[i].amplitude = self.pairs[i].amplitude
+            self.pairs[i].amplitude = self.pairs[i]
+                .amplitude
                 .rotate_bin(eigen)
                 .collapse_if_weak(thr);
 
@@ -601,9 +712,13 @@ impl QuantumNexus {
         thermal: &mut ThermalBudget,
     ) -> Result<usize, NexusError> {
         self.require_armed()?;
-        thermal.charge(budget_heat / 8).map_err(|_| NexusError::ThermalThrottle)?;
+        thermal
+            .charge(budget_heat / 8)
+            .map_err(|_| NexusError::ThermalThrottle)?;
 
-        let slot = self.experiments.iter_mut()
+        let slot = self
+            .experiments
+            .iter_mut()
             .position(|e| !e.active)
             .ok_or(NexusError::TableFull)?;
 
@@ -628,11 +743,11 @@ impl QuantumNexus {
 
     fn step_experiments(
         &mut self,
-        chrono:   &mut TickDevourer,
+        chrono: &mut TickDevourer,
         thermal: &mut ThermalBudget,
-        field:   &mut ResonanceField,
+        field: &mut ResonanceField,
         tartarus: &mut TartarusCage,
-        ouro:    &mut dyn ExecutorHook,
+        ouro: &mut dyn ExecutorHook,
     ) {
         let tick_now = chrono.now_tick();
         for exp in self.experiments.iter_mut() {
@@ -642,16 +757,16 @@ impl QuantumNexus {
             exp.spent_ticks = exp.spent_ticks.wrapping_add(1);
 
             let heat_step = match exp.kind {
-                ExperimentKind::PhaseDrift      => 1,
-                ExperimentKind::EntangleBurst   => 8,
-                ExperimentKind::ThermalSpike    => 32,
-                ExperimentKind::FabricFlood     => 16,
-                ExperimentKind::ChronoDilate    => 4,
-                ExperimentKind::TartarusInject  => 24,
-                ExperimentKind::KairosFocus     => 6,
+                ExperimentKind::PhaseDrift => 1,
+                ExperimentKind::EntangleBurst => 8,
+                ExperimentKind::ThermalSpike => 32,
+                ExperimentKind::FabricFlood => 16,
+                ExperimentKind::ChronoDilate => 4,
+                ExperimentKind::TartarusInject => 24,
+                ExperimentKind::KairosFocus => 6,
                 ExperimentKind::AetherBroadcast => 12,
-                ExperimentKind::Superposition   => 20,
-                ExperimentKind::CollapseStress  => 28,
+                ExperimentKind::Superposition => 20,
+                ExperimentKind::CollapseStress => 28,
             };
 
             if thermal.charge(heat_step).is_err() {
@@ -669,7 +784,8 @@ impl QuantumNexus {
                 }
                 ExperimentKind::EntangleBurst => {
                     // Request ouroboros to spawn a transient entangled helper.
-                    let _ = ouro.request_ephemeral_pair(exp.phase_seed, gamma_for_priority(exp.priority));
+                    let _ = ouro
+                        .request_ephemeral_pair(exp.phase_seed, gamma_for_priority(exp.priority));
                 }
                 ExperimentKind::ThermalSpike => {
                     thermal.inject_spike(heat_step.saturating_mul(4));
@@ -695,7 +811,8 @@ impl QuantumNexus {
                 ExperimentKind::Superposition => {
                     // Push a balanced superposition into the ring.
                     let a = Amplitude::ONE.rotate_bin(exp.phase_seed);
-                    let b = Amplitude::ONE.rotate_bin(exp.phase_seed.wrapping_add(PHASE_BINS as u8 / 4));
+                    let b = Amplitude::ONE
+                        .rotate_bin(exp.phase_seed.wrapping_add(PHASE_BINS as u8 / 4));
                     let superpos = a.add(b);
                     let _ = self.ring.push(superpos, tick_now, exp.lattice_idx as u32);
                 }
@@ -712,10 +829,8 @@ impl QuantumNexus {
                 exp.active = false;
                 // Restore collapse threshold if we stressed it.
                 if matches!(exp.kind, ExperimentKind::CollapseStress) {
-                    self.collapse_threshold.store(
-                        exp.baseline_threshold,
-                        Ordering::Release,
-                    );
+                    self.collapse_threshold
+                        .store(exp.baseline_threshold, Ordering::Release);
                 }
             }
         }
@@ -726,34 +841,25 @@ impl QuantumNexus {
     /// Encode nexus telemetry into a fabric message for crest/cerebral.
     pub fn telemetry_frame(&self) -> [u8; 64] {
         let mut payload = [0u8; 64];
-        payload[0..8].copy_from_slice(
-            &self.global_phase.load(Ordering::Acquire).to_le_bytes()
-        );
-        payload[8..12].copy_from_slice(
-            &self.pair_count.load(Ordering::Acquire).to_le_bytes()
-        );
-        payload[12..16].copy_from_slice(
-            &self.last_heat.load(Ordering::Acquire).to_le_bytes()
-        );
-        payload[16..24].copy_from_slice(
-            &self.stats_collapses.load(Ordering::Relaxed).to_le_bytes()
-        );
-        payload[24..32].copy_from_slice(
-            &self.stats_entangles.load(Ordering::Relaxed).to_le_bytes()
-        );
-        payload[32..40].copy_from_slice(
-            &self.stats_experiments.load(Ordering::Relaxed).to_le_bytes()
-        );
-        payload[40..48].copy_from_slice(
-            &self.stats_interf_pos.load(Ordering::Relaxed).to_le_bytes()
-        );
-        payload[48..56].copy_from_slice(
-            &self.stats_interf_neg.load(Ordering::Relaxed).to_le_bytes()
-        );
-        payload[56..60].copy_from_slice(
-            &self.generation.load(Ordering::Acquire).to_le_bytes()
-        );
-        payload[60] = if self.armed.load(Ordering::Acquire) { 1 } else { 0 };
+        payload[0..8].copy_from_slice(&self.global_phase.load(Ordering::Acquire).to_le_bytes());
+        payload[8..12].copy_from_slice(&self.pair_count.load(Ordering::Acquire).to_le_bytes());
+        payload[12..16].copy_from_slice(&self.last_heat.load(Ordering::Acquire).to_le_bytes());
+        payload[16..24]
+            .copy_from_slice(&self.stats_collapses.load(Ordering::Relaxed).to_le_bytes());
+        payload[24..32]
+            .copy_from_slice(&self.stats_entangles.load(Ordering::Relaxed).to_le_bytes());
+        payload[32..40]
+            .copy_from_slice(&self.stats_experiments.load(Ordering::Relaxed).to_le_bytes());
+        payload[40..48]
+            .copy_from_slice(&self.stats_interf_pos.load(Ordering::Relaxed).to_le_bytes());
+        payload[48..56]
+            .copy_from_slice(&self.stats_interf_neg.load(Ordering::Relaxed).to_le_bytes());
+        payload[56..60].copy_from_slice(&self.generation.load(Ordering::Acquire).to_le_bytes());
+        payload[60] = if self.armed.load(Ordering::Acquire) {
+            1
+        } else {
+            0
+        };
         payload[61] = (self.collapse_threshold.load(Ordering::Acquire) & 0xFF) as u8;
 
         payload
@@ -779,13 +885,21 @@ impl QuantumNexus {
             9 => ExperimentKind::CollapseStress,
             _ => return Err(NexusError::BadMessage),
         };
-        let priority    = payload[1];
-        let phase_seed  = payload[2];
+        let priority = payload[1];
+        let phase_seed = payload[2];
         let budget_heat = u32::from_le_bytes(payload[4..8].try_into().unwrap());
         let budget_ticks = u64::from_le_bytes(payload[8..16].try_into().unwrap());
         let lattice_idx = u16::from_le_bytes(payload[16..18].try_into().unwrap());
 
-        self.start_experiment(kind, priority, phase_seed, budget_heat, budget_ticks, lattice_idx, thermal)?;
+        self.start_experiment(
+            kind,
+            priority,
+            phase_seed,
+            budget_heat,
+            budget_ticks,
+            lattice_idx,
+            thermal,
+        )?;
         Ok(())
     }
 
@@ -892,12 +1006,12 @@ pub fn with_nexus<R>(f: impl FnOnce(&mut QuantumNexus) -> R) -> R {
 
 /// Called from the scheduler / chronovore heartbeat path.
 pub fn nexus_heartbeat(
-    chrono:   &mut TickDevourer,
-    thermal:  &mut ThermalBudget,
-    field:    &mut ResonanceField,
+    chrono: &mut TickDevourer,
+    thermal: &mut ThermalBudget,
+    field: &mut ResonanceField,
     tartarus: &mut TartarusCage,
-    kairos:   &mut KairosWindow,
-    ouro:     &mut dyn ExecutorHook,
+    kairos: &mut KairosWindow,
+    ouro: &mut dyn ExecutorHook,
 ) -> PhaseHint {
     let deferred = crate::nexus_deferred::run_deferred(2);
 
@@ -919,24 +1033,29 @@ pub fn nexus_heartbeat(
 pub mod sys {
     use super::*;
 
-    pub const SYS_NEXUS_ENTANGLE:   usize = 90;
-    pub const SYS_NEXUS_STATS:      usize = 91;
+    pub const SYS_NEXUS_ENTANGLE: usize = 90;
+    pub const SYS_NEXUS_STATS: usize = 91;
     pub const SYS_NEXUS_EXPERIMENT: usize = 92;
-    pub const SYS_NEXUS_TELEMETRY:  usize = 93;
-    pub const SYS_NEXUS_CONTROL:    usize = 94;
+    pub const SYS_NEXUS_TELEMETRY: usize = 93;
+    pub const SYS_NEXUS_CONTROL: usize = 94;
 
     /// Dispatch helper — call from syscalls.rs match arm.
     pub fn dispatch(
         id: usize,
-        a0: usize, a1: usize, a2: usize, a3: usize, a4: usize, _a5: usize,
+        a0: usize,
+        a1: usize,
+        a2: usize,
+        a3: usize,
+        a4: usize,
+        _a5: usize,
         thermal: &mut ThermalBudget,
     ) -> Result<usize, NexusError> {
         match id {
             SYS_NEXUS_ENTANGLE => {
                 let task_a = TaskId::from_raw(a0 as u64);
                 let task_b = TaskId::from_raw(a1 as u64);
-                let phase  = a2 as u8;
-                let amp    = Amplitude::new(a3 as i32, a4 as i32);
+                let phase = a2 as u8;
+                let amp = Amplitude::new(a3 as i32, a4 as i32);
                 with_nexus(|nx| nx.entangle(task_a, task_b, phase, amp, thermal)).map(|i| i)
             }
             SYS_NEXUS_STATS => {
@@ -962,16 +1081,9 @@ pub mod sys {
                     _ => return Err(NexusError::BadMessage),
                 };
                 with_nexus(|nx| {
-                    nx.start_experiment(
-                        kind,
-                        a1 as u8,
-                        a2 as u8,
-                        a3 as u32,
-                        a4 as u64,
-                        0,
-                        thermal,
-                    )
-                }).map(|i| i)
+                    nx.start_experiment(kind, a1 as u8, a2 as u8, a3 as u32, a4 as u64, 0, thermal)
+                })
+                .map(|i| i)
             }
             SYS_NEXUS_TELEMETRY => {
                 // Userland passes a pointer to a 64-byte buffer in a0.
@@ -981,11 +1093,7 @@ pub mod sys {
                     return Err(NexusError::BadMessage);
                 }
                 unsafe {
-                    core::ptr::copy_nonoverlapping(
-                        frame.as_ptr(),
-                        dst,
-                        64,
-                    );
+                    core::ptr::copy_nonoverlapping(frame.as_ptr(), dst, 64);
                 }
                 Ok(64)
             }
@@ -1010,12 +1118,8 @@ pub mod sys {
 
 pub mod direct_calls {
     use crate::fabric::{ControlWeave, FabricEndpoint, FabricMessage, WeaveError};
-    use crate::ouroboros::{
-        ExecutorHook, PhaseHint, ScheduleError, TaskId,
-    };
-    use crate::tartarus_deep::{
-        DecoherenceEvent, QuarantineDecision, TartarusCage,
-    };
+    use crate::ouroboros::{ExecutorHook, PhaseHint, ScheduleError, TaskId};
+    use crate::tartarus_deep::{DecoherenceEvent, QuarantineDecision, TartarusCage};
 
     pub fn ingest_scheduler_hint<H: ExecutorHook>(
         executor: &mut H,
@@ -1038,10 +1142,7 @@ pub mod direct_calls {
         source: FabricEndpoint,
         destination: FabricEndpoint,
         frame: FabricMessage,
-        authority: &crate::capability::Capability<
-            '_,
-            crate::capability::FabricRight,
-        >,
+        authority: &crate::capability::Capability<'_, crate::capability::FabricRight>,
     ) -> Result<(), WeaveError> {
         weave
             .route(source, destination, frame, authority)

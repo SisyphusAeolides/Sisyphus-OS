@@ -19,11 +19,11 @@
 //   0 = Pending, 1 = Ready
 //   Called with the task's data pointer and a RawContext wrapping our Waker.
 
+use crate::process::tachyon;
 use core::future::Future;
 use core::pin::Pin;
-use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 use core::sync::atomic::{AtomicU64, Ordering};
-use crate::process::tachyon;
+use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ExecutorError {
@@ -40,7 +40,7 @@ pub const MAX_TASKS: usize = 64;
 #[repr(C)]
 struct WakerData {
     ready_mask: *const AtomicU64,
-    slot:       usize,
+    slot: usize,
 }
 
 unsafe fn waker_clone(data: *const ()) -> RawWaker {
@@ -56,41 +56,39 @@ unsafe fn waker_wake(data: *const ()) {
 }
 
 unsafe fn waker_wake_by_ref(data: *const ()) {
-    unsafe { waker_wake(data); }
+    unsafe {
+        waker_wake(data);
+    }
 }
 
 unsafe fn waker_drop(_data: *const ()) {}
 
-static WAKER_VTABLE: RawWakerVTable = RawWakerVTable::new(
-    waker_clone,
-    waker_wake,
-    waker_wake_by_ref,
-    waker_drop,
-);
+static WAKER_VTABLE: RawWakerVTable =
+    RawWakerVTable::new(waker_clone, waker_wake, waker_wake_by_ref, waker_drop);
 
 // ─── TASK SLOT ─────────────────────────────────────────────────────────────
 
-const SLOT_FREE:    u8 = 0;
-const SLOT_PARKED:  u8 = 1; // waiting for wake
-const SLOT_READY:   u8 = 2; // scheduled to poll
+const SLOT_FREE: u8 = 0;
+const SLOT_PARKED: u8 = 1; // waiting for wake
+const SLOT_READY: u8 = 2; // scheduled to poll
 const SLOT_RUNNING: u8 = 3; // currently polling
-const SLOT_DONE:    u8 = 4; // future returned Ready — recyclable
+const SLOT_DONE: u8 = 4; // future returned Ready — recyclable
 
 // Type-erased poll function: (data_ptr, waker_data_ptr) -> is_ready: bool
 type PollFn = unsafe fn(*mut u8, *const WakerData) -> bool;
 
 struct TaskSlot {
-    data:    *mut u8,
+    data: *mut u8,
     poll_fn: PollFn,
-    state:   u8,
+    state: u8,
 }
 
 impl TaskSlot {
     const fn empty() -> Self {
         Self {
-            data:    core::ptr::null_mut(),
+            data: core::ptr::null_mut(),
             poll_fn: |_, _| true,
-            state:   SLOT_FREE,
+            state: SLOT_FREE,
         }
     }
 }
@@ -98,17 +96,17 @@ impl TaskSlot {
 // ─── EXECUTOR ──────────────────────────────────────────────────────────────
 
 pub struct OuroborosExecutor {
-    slots:      [TaskSlot; MAX_TASKS],
-    ready_mask: AtomicU64,  // bit i = slot i is READY
-    count:      usize,
+    slots: [TaskSlot; MAX_TASKS],
+    ready_mask: AtomicU64, // bit i = slot i is READY
+    count: usize,
 }
 
 impl OuroborosExecutor {
     pub const fn new() -> Self {
         Self {
-            slots:      [const { TaskSlot::empty() }; MAX_TASKS],
+            slots: [const { TaskSlot::empty() }; MAX_TASKS],
             ready_mask: AtomicU64::new(0),
-            count:      0,
+            count: 0,
         }
     }
 
@@ -125,10 +123,7 @@ impl OuroborosExecutor {
     {
         let slot = self.find_free_slot().ok_or(ExecutorError::ArenaFull)?;
 
-        unsafe fn poll_erased<F: Future<Output = ()>>(
-            data: *mut u8,
-            wd: *const WakerData,
-        ) -> bool {
+        unsafe fn poll_erased<F: Future<Output = ()>>(data: *mut u8, wd: *const WakerData) -> bool {
             let future: Pin<&mut F> = unsafe { Pin::new_unchecked(&mut *(data as *mut F)) };
             let raw_waker = RawWaker::new(wd as *const (), &WAKER_VTABLE);
             let waker = unsafe { Waker::from_raw(raw_waker) };
@@ -136,26 +131,30 @@ impl OuroborosExecutor {
             matches!(future.poll(&mut ctx), Poll::Ready(()))
         }
 
-        self.slots[slot].data    = storage as *mut u8;
+        self.slots[slot].data = storage as *mut u8;
         self.slots[slot].poll_fn = poll_erased::<F>;
-        self.slots[slot].state   = SLOT_READY;
+        self.slots[slot].state = SLOT_READY;
         self.ready_mask.fetch_or(1u64 << slot, Ordering::Release);
         self.count += 1;
         Ok(slot)
     }
 
     fn find_free_slot(&self) -> Option<usize> {
-        self.slots.iter().position(|s| s.state == SLOT_FREE || s.state == SLOT_DONE)
+        self.slots
+            .iter()
+            .position(|s| s.state == SLOT_FREE || s.state == SLOT_DONE)
     }
 
     /// Poll all READY tasks once. Returns number of tasks still alive.
     pub fn run_until_stall(&mut self) -> usize {
         let mut mask = self.ready_mask.swap(0, Ordering::Acquire);
         while mask != 0 {
-            let bit  = mask.trailing_zeros() as usize;
-            mask    &= !(1u64 << bit);
+            let bit = mask.trailing_zeros() as usize;
+            mask &= !(1u64 << bit);
             let slot = &mut self.slots[bit];
-            if slot.state != SLOT_READY && slot.state != SLOT_PARKED { continue; }
+            if slot.state != SLOT_READY && slot.state != SLOT_PARKED {
+                continue;
+            }
             slot.state = SLOT_RUNNING;
             let wd = WakerData {
                 ready_mask: &self.ready_mask,
@@ -163,7 +162,9 @@ impl OuroborosExecutor {
             };
             let done = unsafe { (slot.poll_fn)(slot.data, &wd) };
             slot.state = if done { SLOT_DONE } else { SLOT_PARKED };
-            if done { self.count = self.count.saturating_sub(1); }
+            if done {
+                self.count = self.count.saturating_sub(1);
+            }
         }
         self.count
     }
@@ -172,12 +173,16 @@ impl OuroborosExecutor {
     pub fn run_forever(&mut self) {
         loop {
             let alive = self.run_until_stall();
-            if alive == 0 { break; }
+            if alive == 0 {
+                break;
+            }
             let _ = tachyon::yield_retrocausally(alive as u64);
         }
     }
 
-    pub const fn task_count(&self) -> usize { self.count }
+    pub const fn task_count(&self) -> usize {
+        self.count
+    }
 }
 
 // ─── CEREBRAL SPAWNER ABI ───────────────────────────────────────────────────
@@ -196,19 +201,13 @@ pub trait Spawner {
     /// # Safety
     ///
     /// `storage` must remain valid and pinned until the task completes.
-    unsafe fn spawn<T: Task>(
-        &mut self,
-        storage: *mut T,
-    ) -> Result<TaskId, Self::Error>;
+    unsafe fn spawn<T: Task>(&mut self, storage: *mut T) -> Result<TaskId, Self::Error>;
 }
 
 impl Spawner for OuroborosExecutor {
     type Error = ExecutorError;
 
-    unsafe fn spawn<T: Task>(
-        &mut self,
-        storage: *mut T,
-    ) -> Result<TaskId, Self::Error> {
+    unsafe fn spawn<T: Task>(&mut self, storage: *mut T) -> Result<TaskId, Self::Error> {
         // SAFETY: Forwarded from the Spawner contract.
         let slot = unsafe { self.spawn_raw(storage) }?;
         Ok(TaskId(slot as u16))
@@ -222,7 +221,10 @@ mod tests {
 
     static COUNTER: AtomicU32 = AtomicU32::new(0);
 
-    struct CountFuture { steps: u32, done: u32 }
+    struct CountFuture {
+        steps: u32,
+        done: u32,
+    }
     impl Future for CountFuture {
         type Output = ();
         fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
@@ -242,7 +244,9 @@ mod tests {
         let mut exec = OuroborosExecutor::new();
         let mut task = CountFuture { steps: 3, done: 0 };
         COUNTER.store(0, Ordering::Relaxed);
-        unsafe { exec.spawn_raw(&mut task).unwrap(); }
+        unsafe {
+            exec.spawn_raw(&mut task).unwrap();
+        }
         exec.run_forever();
         assert_eq!(COUNTER.load(Ordering::Relaxed), 3);
         assert_eq!(exec.task_count(), 0);

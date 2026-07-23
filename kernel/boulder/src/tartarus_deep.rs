@@ -1,18 +1,18 @@
 #![allow(dead_code)]
 use alloc::{collections::BTreeMap, vec::Vec};
-use core::sync::atomic::{AtomicU64, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 // ─────────────────────────────────────────────
 // CONSTANTS
 // ─────────────────────────────────────────────
 
-pub const MAX_SUPERPOSITION_STATES: usize = 16;  // max simultaneous mappings per frame
+pub const MAX_SUPERPOSITION_STATES: usize = 16; // max simultaneous mappings per frame
 pub const MAX_ENTANGLED_PAIRS: usize = 1024;
-pub const MAX_FRAMES: usize = 1_048_576;          // 4GB / 4KB pages
-pub const AMPLITUDE_DECAY: f64 = 0.99;            // amplitude decays each epoch
-pub const COLLAPSE_THRESHOLD: f64 = 0.85;         // if P(state) > 85%, preemptive collapse
-pub const COHERENCE_LENGTH: u64 = 256;            // ticks before decoherence forces collapse
-pub const INTERFERENCE_RADIUS: usize = 8;         // pages around an observed page that interfere
+pub const MAX_FRAMES: usize = 1_048_576; // 4GB / 4KB pages
+pub const AMPLITUDE_DECAY: f64 = 0.99; // amplitude decays each epoch
+pub const COLLAPSE_THRESHOLD: f64 = 0.85; // if P(state) > 85%, preemptive collapse
+pub const COHERENCE_LENGTH: u64 = 256; // ticks before decoherence forces collapse
+pub const INTERFERENCE_RADIUS: usize = 8; // pages around an observed page that interfere
 
 // ─────────────────────────────────────────────
 // COMPLEX AMPLITUDE (simplified: real + imaginary)
@@ -25,21 +25,35 @@ pub struct Amplitude {
 }
 
 impl Amplitude {
-    pub fn zero() -> Self { Self { re: 0.0, im: 0.0 } }
-    pub fn one()  -> Self { Self { re: 1.0, im: 0.0 } }
-    pub fn new(re: f64, im: f64) -> Self { Self { re, im } }
+    pub fn zero() -> Self {
+        Self { re: 0.0, im: 0.0 }
+    }
+    pub fn one() -> Self {
+        Self { re: 1.0, im: 0.0 }
+    }
+    pub fn new(re: f64, im: f64) -> Self {
+        Self { re, im }
+    }
 
     /// |α|² — probability of this state
-    pub fn probability(&self) -> f64 { self.re * self.re + self.im * self.im }
+    pub fn probability(&self) -> f64 {
+        self.re * self.re + self.im * self.im
+    }
 
     /// Normalize: scale so |α| = magnitude
     pub fn scale(&self, factor: f64) -> Self {
-        Self { re: self.re * factor, im: self.im * factor }
+        Self {
+            re: self.re * factor,
+            im: self.im * factor,
+        }
     }
 
     /// Interference: add two amplitudes (constructive/destructive)
     pub fn interfere(&self, other: &Amplitude) -> Amplitude {
-        Amplitude { re: self.re + other.re, im: self.im + other.im }
+        Amplitude {
+            re: self.re + other.re,
+            im: self.im + other.im,
+        }
     }
 
     /// Phase rotation by θ radians: α → α * e^(iθ)
@@ -52,9 +66,16 @@ impl Amplitude {
     }
 
     /// Conjugate
-    pub fn conj(&self) -> Amplitude { Amplitude { re: self.re, im: -self.im } }
+    pub fn conj(&self) -> Amplitude {
+        Amplitude {
+            re: self.re,
+            im: -self.im,
+        }
+    }
 
-    pub fn magnitude(&self) -> f64 { libm::sqrt(self.probability()) }
+    pub fn magnitude(&self) -> f64 {
+        libm::sqrt(self.probability())
+    }
 }
 
 /// Normalize a set of amplitudes so Σ |α_i|² = 1
@@ -64,12 +85,15 @@ pub fn normalize_amplitudes(amps: &mut [Amplitude]) {
         // All amplitudes near zero — reset to equal superposition
         let n = amps.len();
         let eq = libm::sqrt(1.0 / n as f64);
-        for a in amps.iter_mut() { *a = Amplitude::new(eq, 0.0); }
+        for a in amps.iter_mut() {
+            *a = Amplitude::new(eq, 0.0);
+        }
         return;
     }
     let norm = 1.0 / libm::sqrt(total_prob);
     for a in amps.iter_mut() {
-        a.re *= norm; a.im *= norm;
+        a.re *= norm;
+        a.im *= norm;
     }
 }
 
@@ -79,13 +103,13 @@ pub fn normalize_amplitudes(amps: &mut [Amplitude]) {
 
 #[derive(Clone, Debug)]
 pub struct MappingState {
-    pub address_space_id: u64,   // which process/AS owns this mapping
-    pub virtual_page:     u64,   // virtual page number
-    pub permissions:      u8,    // RWX bits
-    pub epoch_created:    u64,
-    pub access_count:     u32,
-    pub phase_tag:        f64,   // semantic phase — from SemanticGraph node class
-    pub is_collapsed:     bool,  // has this state been confirmed by a fault observation?
+    pub address_space_id: u64, // which process/AS owns this mapping
+    pub virtual_page: u64,     // virtual page number
+    pub permissions: u8,       // RWX bits
+    pub epoch_created: u64,
+    pub access_count: u32,
+    pub phase_tag: f64,     // semantic phase — from SemanticGraph node class
+    pub is_collapsed: bool, // has this state been confirmed by a fault observation?
 }
 
 // ─────────────────────────────────────────────
@@ -93,15 +117,15 @@ pub struct MappingState {
 // ─────────────────────────────────────────────
 
 pub struct QuantumFrame {
-    pub phys_frame:     u64,
-    pub states:         Vec<MappingState>,
-    pub amplitudes:     Vec<Amplitude>,       // |α_i|² = P(state_i)
-    pub epoch:          u64,
-    pub coherence_tick: u64,                  // tick when superposition began
-    pub entangled_with: Option<u64>,          // frame number of entangled partner
-    pub collapsed:      bool,                 // true after Born rule collapse
-    pub collapsed_idx:  Option<usize>,        // which state it collapsed to
-    pub decoherence_rate: f64,                // environmental noise (thermal pressure)
+    pub phys_frame: u64,
+    pub states: Vec<MappingState>,
+    pub amplitudes: Vec<Amplitude>, // |α_i|² = P(state_i)
+    pub epoch: u64,
+    pub coherence_tick: u64,          // tick when superposition began
+    pub entangled_with: Option<u64>,  // frame number of entangled partner
+    pub collapsed: bool,              // true after Born rule collapse
+    pub collapsed_idx: Option<usize>, // which state it collapsed to
+    pub decoherence_rate: f64,        // environmental noise (thermal pressure)
     pub observation_count: AtomicU32,
 }
 
@@ -140,7 +164,9 @@ impl QuantumFrame {
 
     /// Add a possible mapping state with initial amplitude
     pub fn add_state(&mut self, state: MappingState, amplitude: Amplitude) -> usize {
-        if self.states.len() >= MAX_SUPERPOSITION_STATES { return self.states.len(); }
+        if self.states.len() >= MAX_SUPERPOSITION_STATES {
+            return self.states.len();
+        }
         self.states.push(state);
         self.amplitudes.push(amplitude);
         normalize_amplitudes(&mut self.amplitudes);
@@ -150,13 +176,19 @@ impl QuantumFrame {
     /// Born rule collapse: sample from probability distribution
     /// Returns the collapsed state index
     pub fn collapse(&mut self, rng: u64) -> Option<usize> {
-        if self.states.is_empty() { return None; }
-        if self.collapsed { return self.collapsed_idx; }
+        if self.states.is_empty() {
+            return None;
+        }
+        if self.collapsed {
+            return self.collapsed_idx;
+        }
 
         // Compute cumulative probabilities
         let probs: Vec<f64> = self.amplitudes.iter().map(|a| a.probability()).collect();
         let total: f64 = probs.iter().sum();
-        if total < 1e-15 { return None; }
+        if total < 1e-15 {
+            return None;
+        }
 
         // PRNG-based Born rule sampling
         let u = (rng & 0x000FFFFFFFFFFFFFu64) as f64 / (0x000FFFFFFFFFFFFFu64 as f64);
@@ -164,7 +196,10 @@ impl QuantumFrame {
         let mut chosen = 0;
         for (i, &p) in probs.iter().enumerate() {
             cum += p / total;
-            if u <= cum { chosen = i; break; }
+            if u <= cum {
+                chosen = i;
+                break;
+            }
         }
 
         self.collapsed = true;
@@ -177,7 +212,9 @@ impl QuantumFrame {
     /// Decoherence: amplitude decay toward classical mixed state over time
     /// Models environmental noise (thermal, electrical, cosmic ray events)
     pub fn decohere(&mut self, elapsed_ticks: u64) {
-        if self.collapsed { return; }
+        if self.collapsed {
+            return;
+        }
         let decay = libm::pow(1.0 - self.decoherence_rate, elapsed_ticks as f64);
         for amp in &mut self.amplitudes {
             amp.re *= decay;
@@ -185,7 +222,9 @@ impl QuantumFrame {
         }
         // After COHERENCE_LENGTH ticks, force collapse to highest-prob state
         if elapsed_ticks >= COHERENCE_LENGTH {
-            let best_idx = self.amplitudes.iter()
+            let best_idx = self
+                .amplitudes
+                .iter()
                 .enumerate()
                 .max_by(|(_, a), (_, b)| a.probability().partial_cmp(&b.probability()).unwrap())
                 .map(|(i, _)| i)
@@ -200,7 +239,9 @@ impl QuantumFrame {
     /// Apply interference from an adjacent frame's observation
     /// Constructive if same address space (correlated), destructive if competing
     pub fn apply_interference(&mut self, observer_as: u64, observed_vpage: u64, phase: f64) {
-        if self.collapsed { return; }
+        if self.collapsed {
+            return;
+        }
         for (i, state) in self.states.iter().enumerate() {
             let correlation = if state.address_space_id == observer_as {
                 // Same AS — constructive interference (page walk locality)
@@ -219,17 +260,25 @@ impl QuantumFrame {
 
     /// Check if any state has probability > COLLAPSE_THRESHOLD (preemptive collapse)
     pub fn should_preemptive_collapse(&self) -> bool {
-        if self.collapsed { return false; }
-        self.amplitudes.iter().any(|a| a.probability() > COLLAPSE_THRESHOLD)
+        if self.collapsed {
+            return false;
+        }
+        self.amplitudes
+            .iter()
+            .any(|a| a.probability() > COLLAPSE_THRESHOLD)
     }
 
     pub fn dominant_probability(&self) -> f64 {
-        self.amplitudes.iter().map(|a| a.probability()).fold(0.0f64, f64::max)
+        self.amplitudes
+            .iter()
+            .map(|a| a.probability())
+            .fold(0.0f64, f64::max)
     }
 
     pub fn entropy(&self) -> f64 {
         // Von Neumann entropy: S = -Σ p_i * log(p_i)
-        self.amplitudes.iter()
+        self.amplitudes
+            .iter()
             .map(|a| a.probability())
             .filter(|&p| p > 1e-15)
             .map(|p| -p * libm::log(p))
@@ -246,10 +295,10 @@ impl QuantumFrame {
 ///         huge-page + base-page entanglement during TLB walk
 #[derive(Clone, Copy)]
 pub struct EntangledPair {
-    pub frame_a:     u64,
-    pub frame_b:     u64,
-    pub correlation: f64,  // +1 = same state, -1 = opposite, 0 = independent
-    pub epoch:       u64,
+    pub frame_a: u64,
+    pub frame_b: u64,
+    pub correlation: f64, // +1 = same state, -1 = opposite, 0 = independent
+    pub epoch: u64,
 }
 
 pub struct EntanglementRegistry {
@@ -257,19 +306,32 @@ pub struct EntanglementRegistry {
 }
 
 impl EntanglementRegistry {
-    pub fn new() -> Self { Self { pairs: Vec::new() } }
+    pub fn new() -> Self {
+        Self { pairs: Vec::new() }
+    }
 
     pub fn entangle(&mut self, a: u64, b: u64, correlation: f64, epoch: u64) {
         if self.pairs.len() < MAX_ENTANGLED_PAIRS {
-            self.pairs.push(EntangledPair { frame_a: a, frame_b: b, correlation, epoch });
+            self.pairs.push(EntangledPair {
+                frame_a: a,
+                frame_b: b,
+                correlation,
+                epoch,
+            });
         }
     }
 
     pub fn find_partner(&self, frame: u64) -> Option<(u64, f64)> {
-        self.pairs.iter()
+        self.pairs
+            .iter()
             .find(|p| p.frame_a == frame || p.frame_b == frame)
-            .map(|p| if p.frame_a == frame { (p.frame_b, p.correlation) }
-                     else { (p.frame_a, p.correlation) })
+            .map(|p| {
+                if p.frame_a == frame {
+                    (p.frame_b, p.correlation)
+                } else {
+                    (p.frame_a, p.correlation)
+                }
+            })
     }
 }
 
@@ -278,12 +340,12 @@ impl EntanglementRegistry {
 // ─────────────────────────────────────────────
 
 pub struct TartarusDeep {
-    pub frames:       BTreeMap<u64, QuantumFrame>,
+    pub frames: BTreeMap<u64, QuantumFrame>,
     pub entanglement: EntanglementRegistry,
-    pub tick:         u64,
-    pub rng_state:    u64,
+    pub tick: u64,
+    pub rng_state: u64,
     pub total_observations: AtomicU64,
-    pub total_collapses:    AtomicU64,
+    pub total_collapses: AtomicU64,
     pub total_entangled_collapses: AtomicU64,
     pub total_interference_events: AtomicU64,
     pub decoherence_enabled: bool,
@@ -320,10 +382,14 @@ impl TartarusDeep {
         mappings: Vec<(u64, u64, u8, f64)>, // (as_id, vpage, perms, phase_tag)
         epoch: u64,
     ) {
-        let frame = self.frames.entry(phys_frame)
+        let frame = self
+            .frames
+            .entry(phys_frame)
             .or_insert_with(|| QuantumFrame::new(phys_frame, epoch));
         let n = mappings.len();
-        if n == 0 { return; }
+        if n == 0 {
+            return;
+        }
 
         // Initial amplitudes: equal superposition √(1/n) each
         let amp0 = libm::sqrt(1.0 / n as f64);
@@ -378,7 +444,8 @@ impl TartarusDeep {
         // Entanglement: collapse partner frame too
         if let Some((partner_frame, correlation)) = self.entanglement.find_partner(phys_frame) {
             self.collapse_entangled(partner_frame, collapsed_idx, correlation, rng);
-            self.total_entangled_collapses.fetch_add(1, Ordering::Relaxed);
+            self.total_entangled_collapses
+                .fetch_add(1, Ordering::Relaxed);
         }
 
         let frame = self.frames.get(&phys_frame)?;
@@ -390,9 +457,12 @@ impl TartarusDeep {
     /// Collapse an entangled frame based on the correlated observation
     fn collapse_entangled(&mut self, frame_id: u64, source_idx: usize, correlation: f64, rng: u64) {
         let frame = match self.frames.get_mut(&frame_id) {
-            Some(f) => f, None => return,
+            Some(f) => f,
+            None => return,
         };
-        if frame.collapsed { return; }
+        if frame.collapsed {
+            return;
+        }
 
         if correlation > 0.5 {
             // Strong positive correlation: force same state index if available
@@ -418,7 +488,9 @@ impl TartarusDeep {
         let hi = center + INTERFERENCE_RADIUS as u64;
         let phase = libm::sin(vpage as f64 * core::f64::consts::TAU / 65536.0);
 
-        let neighbor_frames: Vec<u64> = self.frames.range(lo..=hi)
+        let neighbor_frames: Vec<u64> = self
+            .frames
+            .range(lo..=hi)
             .map(|(&f, _)| f)
             .filter(|&f| f != center)
             .collect();
@@ -426,19 +498,24 @@ impl TartarusDeep {
         for neighbor in neighbor_frames {
             if let Some(frame) = self.frames.get_mut(&neighbor) {
                 frame.apply_interference(as_id, vpage, phase);
-                self.total_interference_events.fetch_add(1, Ordering::Relaxed);
+                self.total_interference_events
+                    .fetch_add(1, Ordering::Relaxed);
             }
         }
     }
 
     /// Decoherence tick: decay all uncollapsed frames
     pub fn decoherence_tick(&mut self) {
-        if !self.decoherence_enabled { return; }
+        if !self.decoherence_enabled {
+            return;
+        }
         self.tick += 1;
         let tick = self.tick;
         let rng = self.next_rng();
 
-        let frames_to_collapse: Vec<u64> = self.frames.iter()
+        let frames_to_collapse: Vec<u64> = self
+            .frames
+            .iter()
             .filter(|(_, f)| !f.collapsed)
             .filter(|(_, f)| {
                 let age = tick.saturating_sub(f.coherence_tick);
@@ -466,16 +543,23 @@ impl TartarusDeep {
     /// Speculative prefetch hint: which pages are most likely to be observed next?
     /// Returns list of (phys_frame, dominant_prob, dominant_as_id) sorted by prob
     pub fn prefetch_candidates(&self, top_n: usize) -> Vec<(u64, f64, u64)> {
-        let mut candidates: Vec<(u64, f64, u64)> = self.frames.iter()
+        let mut candidates: Vec<(u64, f64, u64)> = self
+            .frames
+            .iter()
             .filter(|(_, f)| !f.collapsed && !f.states.is_empty())
             .map(|(&fid, frame)| {
-                let (best_idx, best_prob) = frame.amplitudes.iter()
+                let (best_idx, best_prob) = frame
+                    .amplitudes
+                    .iter()
                     .enumerate()
                     .map(|(i, a)| (i, a.probability()))
                     .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
                     .unwrap_or((0, 0.0));
-                let as_id = frame.states.get(best_idx)
-                    .map(|s| s.address_space_id).unwrap_or(0);
+                let as_id = frame
+                    .states
+                    .get(best_idx)
+                    .map(|s| s.address_space_id)
+                    .unwrap_or(0);
                 (fid, best_prob, as_id)
             })
             .collect();
@@ -486,8 +570,7 @@ impl TartarusDeep {
 
     /// Von Neumann entropy of entire page table (system-wide quantum coherence measure)
     pub fn system_entropy(&self) -> f64 {
-        self.frames.values().map(|f| f.entropy()).sum::<f64>()
-            / self.frames.len().max(1) as f64
+        self.frames.values().map(|f| f.entropy()).sum::<f64>() / self.frames.len().max(1) as f64
     }
 
     pub fn stats(&self) -> QuantumPageStats {
@@ -601,9 +684,7 @@ impl<const N: usize> TartarusCage<N> {
             .records
             .iter()
             .position(|record| {
-                record.active
-                    && record.pair_id == event.pair_id
-                    && record.task == event.task
+                record.active && record.pair_id == event.pair_id && record.task == event.task
             })
             .or_else(|| self.records.iter().position(|record| !record.active))
             .unwrap_or_else(|| {
@@ -617,9 +698,7 @@ impl<const N: usize> TartarusCage<N> {
 
         let record = &mut self.records[index];
 
-        if !record.active
-            || event.tick.saturating_sub(record.last_tick) > QUARANTINE_DECAY_TICKS
-        {
+        if !record.active || event.tick.saturating_sub(record.last_tick) > QUARANTINE_DECAY_TICKS {
             *record = CageRecord {
                 active: true,
                 pair_id: event.pair_id,
@@ -663,9 +742,11 @@ impl<const N: usize> TartarusCage<N> {
         coherent: bool,
         tick: u64,
     ) -> QuarantineDecision {
-        let Some(record) = self.records.iter_mut().find(|record| {
-            record.active && record.pair_id == pair_id && record.task == task
-        }) else {
+        let Some(record) = self
+            .records
+            .iter_mut()
+            .find(|record| record.active && record.pair_id == pair_id && record.task == task)
+        else {
             return QuarantineDecision::CLEAR;
         };
 
@@ -698,16 +779,10 @@ impl<const N: usize> TartarusCage<N> {
         }
     }
 
-    pub fn decision(
-        &self,
-        pair_id: u64,
-        task: TaskId,
-    ) -> QuarantineDecision {
+    pub fn decision(&self, pair_id: u64, task: TaskId) -> QuarantineDecision {
         self.records
             .iter()
-            .find(|record| {
-                record.active && record.pair_id == pair_id && record.task == task
-            })
+            .find(|record| record.active && record.pair_id == pair_id && record.task == task)
             .map(|record| QuarantineDecision {
                 level: record.level,
                 resume_tick: record.resume_tick,
@@ -717,9 +792,11 @@ impl<const N: usize> TartarusCage<N> {
     }
 
     fn clear(&mut self, pair_id: u64, task: TaskId) {
-        if let Some(record) = self.records.iter_mut().find(|record| {
-            record.active && record.pair_id == pair_id && record.task == task
-        }) {
+        if let Some(record) = self
+            .records
+            .iter_mut()
+            .find(|record| record.active && record.pair_id == pair_id && record.task == task)
+        {
             *record = CageRecord::EMPTY;
         }
     }

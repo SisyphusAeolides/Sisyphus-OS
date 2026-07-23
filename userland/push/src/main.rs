@@ -1,14 +1,14 @@
 #![no_std]
 #![no_main]
 
-use core::panic::PanicInfo;
 use core::future::Future;
+use core::panic::PanicInfo;
 use core::pin::Pin;
 use core::task::{Context, Poll};
 use push::aegis::{BrokerError, HardwareCapabilityBroker, evaluate_knot};
 use push::gordian::{CapabilityHandle, CapabilityKind, service_knot};
 use push::service::{FailureReason, ServiceId, Supervisor, SupervisorAction};
-use slope::kairos::{features, WorkloadClass};
+use slope::kairos::{WorkloadClass, features};
 use slope::runtime::ProcessRuntime;
 use slope::thermogenesis::{ThermalGuard, ThermalPage, ThermalPolicy, throttled_batch_size};
 
@@ -26,9 +26,14 @@ core::arch::global_asm!(
 struct UnavailableBroker;
 
 pub const THERMAL_PAGE_ADDRESS: usize = 0x0080_0000;
-fn thermal_page() -> &'static ThermalPage { unsafe { &*(THERMAL_PAGE_ADDRESS as *const ThermalPage) } }
+fn thermal_page() -> &'static ThermalPage {
+    unsafe { &*(THERMAL_PAGE_ADDRESS as *const ThermalPage) }
+}
 
-struct DispatchProbe { remaining: u8, units: usize }
+struct DispatchProbe {
+    remaining: u8,
+    units: usize,
+}
 
 impl Future for DispatchProbe {
     type Output = ();
@@ -75,7 +80,9 @@ pub extern "C" fn push_start_with_stack(stack_ptr: *const u8) -> ! {
         Err(error) => {
             push::push_log!("[PID 1] runtime initialization failed: {:?}", error);
             let _ = slope::process::request_exit(127);
-            loop { core::hint::spin_loop(); }
+            loop {
+                core::hint::spin_loop();
+            }
         }
     };
     push::push_log!(
@@ -90,8 +97,15 @@ pub extern "C" fn push_start_with_stack(stack_ptr: *const u8) -> ! {
     );
 
     let mut executor = slope::executor::OuroborosExecutor::new();
-    let mut dispatch = DispatchProbe { remaining: 4, units: 1024 };
-    unsafe { executor.spawn_raw(&mut dispatch).expect("executor arena exhausted"); }
+    let mut dispatch = DispatchProbe {
+        remaining: 4,
+        units: 1024,
+    };
+    unsafe {
+        executor
+            .spawn_raw(&mut dispatch)
+            .expect("executor arena exhausted");
+    }
     let mut thermal = ThermalPolicy::new(thermal_page());
     while executor.run_until_stall() != 0 {
         let _guard = ThermalGuard::enter(thermal_page());
@@ -101,7 +115,15 @@ pub extern "C" fn push_start_with_stack(stack_ptr: *const u8) -> ! {
             executor.task_count(),
             thermal.current_zone(),
             thermal_page().hint(),
-            throttled_batch_size(thermal_page(), runtime.partition.iter().next().map(|s| s.len()).unwrap_or(0)),
+            throttled_batch_size(
+                thermal_page(),
+                runtime
+                    .partition
+                    .iter()
+                    .next()
+                    .map(|s| s.len())
+                    .unwrap_or(0)
+            ),
         );
     }
     push::push_log!("[PID 1] Kairos-dispatched workload complete");
@@ -126,7 +148,8 @@ pub extern "C" fn push_start_with_stack(stack_ptr: *const u8) -> ! {
                         push::push_log!("[PID 1] spawned service {:?} as PID {}", service.id, pid);
                     }
                     Err(_) => {
-                        let _ = supervisor.record_failure(service.id, FailureReason::LaunchUnavailable);
+                        let _ =
+                            supervisor.record_failure(service.id, FailureReason::LaunchUnavailable);
                     }
                 }
             }

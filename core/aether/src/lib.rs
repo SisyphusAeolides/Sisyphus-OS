@@ -1,17 +1,17 @@
 #![no_std]
 
-pub mod effect;
-pub mod flight;
-pub mod policy;
-mod sync;
-pub mod grimoire;
-pub mod nexus_wire;
-pub mod lockfree;
-pub mod resonance_plane;
-pub mod constellation;
-pub mod resonance_policy;
 pub mod blacklab_vm;
-pub mod event_horizon;
-pub mod resonance_split;
-pub mod epoch_crystal;
 pub mod causal_policy;
+pub mod constellation;
+pub mod effect;
+pub mod epoch_crystal;
+pub mod event_horizon;
+pub mod flight;
+pub mod grimoire;
+pub mod lockfree;
+pub mod nexus_wire;
+pub mod policy;
+pub mod resonance_plane;
+pub mod resonance_policy;
+pub mod resonance_split;
+mod sync;

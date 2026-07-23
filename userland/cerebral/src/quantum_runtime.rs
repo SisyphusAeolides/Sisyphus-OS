@@ -5,14 +5,14 @@ use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::task::{Context, Poll};
 
+use crate::nexus_reactor::NexusReactor;
 use slope::capability::{
-    CapHandle, CapabilityEnvelope, CapabilityError, FabricRight,
-    LearningRight, ResonanceRight, SchedulerRight,
+    CapHandle, CapabilityEnvelope, CapabilityError, FabricRight, LearningRight, ResonanceRight,
+    SchedulerRight,
 };
 use slope::env::EnvSnapshot;
 use slope::executor::Spawner;
 use slope::scheduler::{self, PhaseHint, Priority};
-use crate::nexus_reactor::NexusReactor;
 
 static INSTALLED: AtomicBool = AtomicBool::new(false);
 
@@ -123,11 +123,8 @@ pub fn install<S: Spawner>(
     }
 
     // SAFETY: INSTALLED serializes initialization and the storage is static.
-    let reactor = unsafe {
-        NEXUS_REACTOR.initialize(
-            NexusReactor::new(capabilities.resonance.as_raw()),
-        )
-    };
+    let reactor =
+        unsafe { NEXUS_REACTOR.initialize(NexusReactor::new(capabilities.resonance.as_raw())) };
 
     // SAFETY: NEXUS_REACTOR has static storage and remains pinned.
     if let Err(error) = unsafe { spawner.spawn(reactor) } {

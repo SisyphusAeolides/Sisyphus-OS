@@ -28,8 +28,7 @@ pub const INITIAL_USER_STACK_PAGES: usize = if cfg!(test) { 112 } else { 192 };
 // Leave one mapped page below the ABI block so the entry trampoline and the
 // first Rust prologue can push return state without faulting at the boundary.
 const INITIAL_USER_STACK_MAPPING_BASE: u64 =
-    INITIAL_USER_STACK_BASE
-        - ((INITIAL_USER_STACK_PAGES as u64 - 1) * PAGE_SIZE as u64);
+    INITIAL_USER_STACK_BASE - ((INITIAL_USER_STACK_PAGES as u64 - 1) * PAGE_SIZE as u64);
 pub const INITIAL_USER_STACK_POINTER: u64 =
     INITIAL_USER_STACK_BASE + (INITIAL_USER_STACK_PAGES as u64 * PAGE_SIZE as u64);
 
@@ -366,8 +365,8 @@ impl<Memory: ProcessFrameMemory> FrameBackedAddressSpace<Memory> {
         let owned_before = self.owned_frame_count;
         let pages_before = self.page_count;
         for page in 0..INITIAL_USER_STACK_PAGES {
-            let virtual_address = INITIAL_USER_STACK_MAPPING_BASE
-                + (page as u64 * PAGE_SIZE as u64);
+            let virtual_address =
+                INITIAL_USER_STACK_MAPPING_BASE + (page as u64 * PAGE_SIZE as u64);
             let (table, index) = match self.ensure_leaf_slot(virtual_address) {
                 Ok(slot) => slot,
                 Err(error) => {
@@ -416,7 +415,9 @@ impl<Memory: ProcessFrameMemory> FrameBackedAddressSpace<Memory> {
             unsafe { core::ptr::write_bytes(ptr as *mut u8, 0, 4096) };
         }
         let entry = frame.as_u64() | ENTRY_PRESENT | ENTRY_USER | ENTRY_NO_EXECUTE; // Read-only for user
-        self.memory.write_entry(table, index, entry).map_err(FrameBackedError::Memory)?;
+        self.memory
+            .write_entry(table, index, entry)
+            .map_err(FrameBackedError::Memory)?;
         self.pages[self.page_count] = PageRecord {
             frame,
             virtual_address,
@@ -443,14 +444,13 @@ impl<Memory: ProcessFrameMemory> FrameBackedAddressSpace<Memory> {
         let ingress_addr = Self::CEREBRAL_INGRESS_ADDRESS;
         let (table_i, index_i) = self.ensure_leaf_slot(ingress_addr)?;
         let ingress_ptr = crate::nexus_plane::ingress() as *const _ as u64;
-        let ingress_frame = PhysicalAddress::new(ingress_ptr - crate::mmio::KERNEL_VIRTUAL_BASE as u64 + 0x10_0000);
+        let ingress_frame =
+            PhysicalAddress::new(ingress_ptr - crate::mmio::KERNEL_VIRTUAL_BASE as u64 + 0x10_0000);
         let ingress_entry =
-            ingress_frame.as_u64()
-                | ENTRY_PRESENT
-                | ENTRY_USER
-                | ENTRY_WRITABLE
-                | ENTRY_NO_EXECUTE;
-        self.memory.write_entry(table_i, index_i, ingress_entry).map_err(FrameBackedError::Memory)?;
+            ingress_frame.as_u64() | ENTRY_PRESENT | ENTRY_USER | ENTRY_WRITABLE | ENTRY_NO_EXECUTE;
+        self.memory
+            .write_entry(table_i, index_i, ingress_entry)
+            .map_err(FrameBackedError::Memory)?;
         self.pages[self.page_count] = PageRecord {
             frame: ingress_frame,
             virtual_address: ingress_addr,
@@ -461,13 +461,13 @@ impl<Memory: ProcessFrameMemory> FrameBackedAddressSpace<Memory> {
         let obs_addr = Self::CEREBRAL_OBSERVATION_ADDRESS;
         let (table_o, index_o) = self.ensure_leaf_slot(obs_addr)?;
         let obs_ptr = crate::nexus_plane::observation() as *const _ as u64;
-        let observation_frame = PhysicalAddress::new(obs_ptr - crate::mmio::KERNEL_VIRTUAL_BASE as u64 + 0x10_0000);
+        let observation_frame =
+            PhysicalAddress::new(obs_ptr - crate::mmio::KERNEL_VIRTUAL_BASE as u64 + 0x10_0000);
         let observation_entry =
-            observation_frame.as_u64()
-                | ENTRY_PRESENT
-                | ENTRY_USER
-                | ENTRY_NO_EXECUTE;
-        self.memory.write_entry(table_o, index_o, observation_entry).map_err(FrameBackedError::Memory)?;
+            observation_frame.as_u64() | ENTRY_PRESENT | ENTRY_USER | ENTRY_NO_EXECUTE;
+        self.memory
+            .write_entry(table_o, index_o, observation_entry)
+            .map_err(FrameBackedError::Memory)?;
         self.pages[self.page_count] = PageRecord {
             frame: observation_frame,
             virtual_address: obs_addr,
@@ -509,7 +509,10 @@ impl<Memory: ProcessFrameMemory> FrameBackedAddressSpace<Memory> {
             })
             .ok_or(FrameBackedError::InvalidRange)?;
         let stack_bytes = INITIAL_USER_STACK_PAGES * PAGE_SIZE;
-        if pointer_bytes.checked_add(string_bytes).is_none_or(|size| size > stack_bytes) {
+        if pointer_bytes
+            .checked_add(string_bytes)
+            .is_none_or(|size| size > stack_bytes)
+        {
             return Err(FrameBackedError::InvalidRange);
         }
 
@@ -1254,13 +1257,47 @@ mod tests {
     impl<const FRAMES: usize> ProcessFrameMemory for Box<TestMemory<FRAMES>> {
         type Error = TestMemoryError;
 
-        fn allocate_zeroed(&mut self) -> Result<PhysicalAddress, Self::Error> { (**self).allocate_zeroed() }
-        fn release(&mut self, frame: PhysicalAddress) -> Result<(), Self::Error> { (**self).release(frame) }
-        fn read_entry(&self, table: PhysicalAddress, index: usize) -> Result<u64, Self::Error> { (**self).read_entry(table, index) }
-        fn write_entry(&mut self, table: PhysicalAddress, index: usize, value: u64) -> Result<(), Self::Error> { (**self).write_entry(table, index, value) }
-        fn write_bytes(&mut self, frame: PhysicalAddress, offset: usize, bytes: &[u8]) -> Result<(), Self::Error> { (**self).write_bytes(frame, offset, bytes) }
-        fn bytes_equal(&self, frame: PhysicalAddress, offset: usize, bytes: &[u8]) -> Result<bool, Self::Error> { (**self).bytes_equal(frame, offset, bytes) }
-        fn bytes_zero(&self, frame: PhysicalAddress, offset: usize, length: usize) -> Result<bool, Self::Error> { (**self).bytes_zero(frame, offset, length) }
+        fn allocate_zeroed(&mut self) -> Result<PhysicalAddress, Self::Error> {
+            (**self).allocate_zeroed()
+        }
+        fn release(&mut self, frame: PhysicalAddress) -> Result<(), Self::Error> {
+            (**self).release(frame)
+        }
+        fn read_entry(&self, table: PhysicalAddress, index: usize) -> Result<u64, Self::Error> {
+            (**self).read_entry(table, index)
+        }
+        fn write_entry(
+            &mut self,
+            table: PhysicalAddress,
+            index: usize,
+            value: u64,
+        ) -> Result<(), Self::Error> {
+            (**self).write_entry(table, index, value)
+        }
+        fn write_bytes(
+            &mut self,
+            frame: PhysicalAddress,
+            offset: usize,
+            bytes: &[u8],
+        ) -> Result<(), Self::Error> {
+            (**self).write_bytes(frame, offset, bytes)
+        }
+        fn bytes_equal(
+            &self,
+            frame: PhysicalAddress,
+            offset: usize,
+            bytes: &[u8],
+        ) -> Result<bool, Self::Error> {
+            (**self).bytes_equal(frame, offset, bytes)
+        }
+        fn bytes_zero(
+            &self,
+            frame: PhysicalAddress,
+            offset: usize,
+            length: usize,
+        ) -> Result<bool, Self::Error> {
+            (**self).bytes_zero(frame, offset, length)
+        }
     }
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1332,11 +1369,7 @@ mod tests {
             Some(INITIAL_USER_STACK_POINTER)
         );
         let stack_pointer = backend
-            .prepare_initial_stack(
-                &installed.process,
-                &[b"push"],
-                &[b"SISYPHUS_PROCESS=push"],
-            )
+            .prepare_initial_stack(&installed.process, &[b"push"], &[b"SISYPHUS_PROCESS=push"])
             .unwrap();
         assert_eq!(stack_pointer, INITIAL_USER_STACK_BASE);
 
@@ -1353,10 +1386,7 @@ mod tests {
             & PAGE_ADDRESS_MASK;
         let leaf = backend
             .memory()
-            .read_entry(
-                PhysicalAddress::new(p1),
-                1,
-            )
+            .read_entry(PhysicalAddress::new(p1), 1)
             .unwrap();
         assert_eq!(
             leaf & (ENTRY_PRESENT | ENTRY_USER),

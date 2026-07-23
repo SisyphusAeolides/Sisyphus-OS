@@ -1,12 +1,12 @@
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SurfaceId(pub u64);
-pub mod riemann;
-pub mod pipeline;
-pub mod tween;
 pub mod gesture;
 pub mod panel;
+pub mod pipeline;
+pub mod riemann;
 pub mod settings;
 pub mod swapchain;
+pub mod tween;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Rectangle {

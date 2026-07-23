@@ -55,7 +55,7 @@ impl Macrophage {
         if self.is_malicious(message.semantic_hash) {
             let antigen = self.extract_antigen(message);
             self.phagocytize(message);
-            
+
             IMMUNE_REGISTRY.broadcast_antigen(antigen);
             trigger_apoptosis(message.sender_pid);
         }
@@ -67,7 +67,11 @@ impl Macrophage {
 
     fn extract_antigen(&self, message: &IpcMessage) -> u32 {
         let mut sig = 0u32;
-        let len = if message.payload_len > 4 { 4 } else { message.payload_len };
+        let len = if message.payload_len > 4 {
+            4
+        } else {
+            message.payload_len
+        };
         for i in 0..len {
             sig |= (message.payload[i] as u32) << (i * 8);
         }

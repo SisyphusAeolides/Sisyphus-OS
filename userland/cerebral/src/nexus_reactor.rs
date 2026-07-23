@@ -2,10 +2,8 @@ use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll};
 
-use slope::resonance_plane::{ResonancePlaneClient, NexusOpcode, NexusTelemetry};
-use slope::scheduler::{
-    self, PhaseHint, Priority,
-};
+use slope::resonance_plane::{NexusOpcode, NexusTelemetry, ResonancePlaneClient};
+use slope::scheduler::{self, PhaseHint, Priority};
 
 const HEAT_CRITICAL: u64 = 850_000;
 const HEAT_EXCITED: u64 = 500_000;
@@ -70,10 +68,8 @@ impl NexusReactor {
 
         match self.state {
             ReactorState::Observe => {
-                self.local_phase =
-                    self.local_phase.wrapping_add(17) & 1023;
-                self.coherence =
-                    self.coherence.saturating_add(4).min(960);
+                self.local_phase = self.local_phase.wrapping_add(17) & 1023;
+                self.coherence = self.coherence.saturating_add(4).min(960);
                 self.cooldown_passes = 0;
 
                 if telemetry.generation != self.last_generation {
@@ -86,27 +82,27 @@ impl NexusReactor {
 
             ReactorState::Rephase => {
                 self.local_phase = kernel_phase;
-                self.coherence =
-                    self.coherence.saturating_sub(16).max(384);
+                self.coherence = self.coherence.saturating_sub(16).max(384);
                 self.cooldown_passes = 0;
 
-                let mass =
-                    0x6000_u16.saturating_add(self.coherence << 4);
+                let mass = 0x6000_u16.saturating_add(self.coherence << 4);
 
                 if !self.client.has_pending_command() {
-                    let _ = self.client.submit(NexusOpcode::SetPriorityMass, [mass as u64, 0, 0, 0]);
+                    let _ = self
+                        .client
+                        .submit(NexusOpcode::SetPriorityMass, [mass as u64, 0, 0, 0]);
                 }
             }
 
             ReactorState::Cooldown => {
-                self.coherence =
-                    self.coherence.saturating_sub(32).max(128);
+                self.coherence = self.coherence.saturating_sub(32).max(128);
 
-                self.cooldown_passes =
-                    self.cooldown_passes.saturating_add(1);
+                self.cooldown_passes = self.cooldown_passes.saturating_add(1);
 
                 if !self.client.has_pending_command() {
-                    let _ = self.client.submit(NexusOpcode::SetPriorityMass, [0x3000, 0, 0, 0]);
+                    let _ = self
+                        .client
+                        .submit(NexusOpcode::SetPriorityMass, [0x3000, 0, 0, 0]);
                 }
             }
         }
@@ -116,10 +112,7 @@ impl NexusReactor {
 impl Future for NexusReactor {
     type Output = ();
 
-    fn poll(
-        mut self: Pin<&mut Self>,
-        context: &mut Context<'_>,
-    ) -> Poll<()> {
+    fn poll(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<()> {
         self.observe();
 
         let priority = match self.state {

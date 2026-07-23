@@ -4,7 +4,7 @@
 //!
 //! A highly theoretical, mad-scientist write-only data-destroying filesystem.
 //! Data placed in the accretion disk is inevitably pulled past the event horizon
-//! by background chronological ticks. Once the horizon is crossed, the file 
+//! by background chronological ticks. Once the horizon is crossed, the file
 //! undergoes "spaghettification": its data is stretched (interleaved with zero entropy),
 //! and holographically hashed onto a 2D surface (a flat array of 64-bit checksums).
 //! The physical file data then evaporates into absolute zero, perfectly preserving
@@ -12,8 +12,8 @@
 
 extern crate alloc;
 
-use alloc::vec::Vec;
 use alloc::vec;
+use alloc::vec::Vec;
 
 const RING_BUFFER_SIZE: usize = 1024;
 const EVENT_HORIZON_THRESHOLD: usize = 512;
@@ -84,9 +84,14 @@ impl VoidFs {
         self.time_dilation_ticks = self.time_dilation_ticks.wrapping_add(1);
 
         for i in 0..RING_BUFFER_SIZE {
-            if let AccretionBlock::Orbiting { inode, data, orbital_decay } = &mut self.accretion_disk[i] {
+            if let AccretionBlock::Orbiting {
+                inode,
+                data,
+                orbital_decay,
+            } = &mut self.accretion_disk[i]
+            {
                 *orbital_decay += 10; // Pull it closer to the horizon
-                
+
                 if *orbital_decay >= EVENT_HORIZON_THRESHOLD {
                     // Spaghettification!
                     let spaghettified = Self::spaghettify(*inode, data);
@@ -109,14 +114,18 @@ impl VoidFs {
         }
 
         // Holographically hash into a 2D surface (array of 64-bit checksums)
-        let num_checksums = if stretched.is_empty() { 1 } else { (stretched.len() + 7) / 8 };
+        let num_checksums = if stretched.is_empty() {
+            1
+        } else {
+            (stretched.len() + 7) / 8
+        };
         let mut checksums = vec![0u64; num_checksums];
-        
+
         for (i, &byte) in stretched.iter().enumerate() {
             let chunk = i / 8;
             let shift = (i % 8) * 8;
             checksums[chunk] ^= (byte as u64) << shift;
-            
+
             // Apply Kerr-metric spin
             checksums[chunk] = checksums[chunk].rotate_left(3).wrapping_add(inode);
         }

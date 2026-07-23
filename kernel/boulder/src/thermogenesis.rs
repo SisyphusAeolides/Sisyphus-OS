@@ -4,29 +4,29 @@ use core::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering};
 
 #[repr(C, align(64))]
 pub struct ThermalPage {
-    pub temperature_zone:    AtomicU8,
-    pub throttle_hint:       AtomicU8,
-    pub kernel_epoch:        AtomicU8,
-    _pad:                    u8,
-    pub tsc_frequency_mhz:   AtomicU32,
-    pub cpu_budget_ticks:    AtomicU64,
-    pub cpu_used_ticks:      AtomicU64,
-    pub thermal_ticks:       AtomicU64,
-    _reserved:               [u8; 32],
+    pub temperature_zone: AtomicU8,
+    pub throttle_hint: AtomicU8,
+    pub kernel_epoch: AtomicU8,
+    _pad: u8,
+    pub tsc_frequency_mhz: AtomicU32,
+    pub cpu_budget_ticks: AtomicU64,
+    pub cpu_used_ticks: AtomicU64,
+    pub thermal_ticks: AtomicU64,
+    _reserved: [u8; 32],
 }
 
 impl ThermalPage {
     pub const fn zeroed() -> Self {
         Self {
-            temperature_zone:  AtomicU8::new(0),
-            throttle_hint:     AtomicU8::new(0),
-            kernel_epoch:      AtomicU8::new(0),
-            _pad:              0,
+            temperature_zone: AtomicU8::new(0),
+            throttle_hint: AtomicU8::new(0),
+            kernel_epoch: AtomicU8::new(0),
+            _pad: 0,
             tsc_frequency_mhz: AtomicU32::new(0),
-            cpu_budget_ticks:  AtomicU64::new(0),
-            cpu_used_ticks:    AtomicU64::new(0),
-            thermal_ticks:     AtomicU64::new(0),
-            _reserved:         [0; 32],
+            cpu_budget_ticks: AtomicU64::new(0),
+            cpu_used_ticks: AtomicU64::new(0),
+            thermal_ticks: AtomicU64::new(0),
+            _reserved: [0; 32],
         }
     }
 }
@@ -40,27 +40,33 @@ fn f64_max(a: f64, b: f64) -> f64 {
 }
 
 fn f64_clamp(val: f64, min: f64, max: f64) -> f64 {
-    if val < min { min } else if val > max { max } else { val }
+    if val < min {
+        min
+    } else if val > max {
+        max
+    } else {
+        val
+    }
 }
 
 // ─────────────────────────────────────────────
 // BIOLOGICAL CONSTANTS
 // ─────────────────────────────────────────────
 
-pub const HAYFLICK_LIMIT:        u64   = 50;     // cell divisions before senescence
-pub const ATP_INITIAL:           f64   = 1000.0; // initial ATP per cell
-pub const ATP_RESTING_RATE:      f64   = 0.1;    // ATP consumed per tick at rest
-pub const ATP_ACTIVE_RATE:       f64   = 2.0;    // ATP consumed per access
-pub const ATP_REGENERATION_RATE: f64   = 0.5;    // ATP regenerated per tick (oxidative phosphorylation)
-pub const TEMP_AMBIENT:          f64   = 37.0;   // °C — normal operating temperature
-pub const TEMP_HEAT_SHOCK:       f64   = 42.0;   // °C — heat shock trigger
-pub const TEMP_NECROSIS:         f64   = 50.0;   // °C — catastrophic failure
-pub const TEMP_ACCESS_HEAT:      f64   = 0.5;    // °C per access
-pub const THERMAL_CONDUCTIVITY:  f64   = 0.05;   // heat dissipation per tick
-pub const MAX_CELLS:             usize = 65536;
-pub const IMMUNE_PATROL_RATE:    usize = 64;     // macrophages check N cells per tick
+pub const HAYFLICK_LIMIT: u64 = 50; // cell divisions before senescence
+pub const ATP_INITIAL: f64 = 1000.0; // initial ATP per cell
+pub const ATP_RESTING_RATE: f64 = 0.1; // ATP consumed per tick at rest
+pub const ATP_ACTIVE_RATE: f64 = 2.0; // ATP consumed per access
+pub const ATP_REGENERATION_RATE: f64 = 0.5; // ATP regenerated per tick (oxidative phosphorylation)
+pub const TEMP_AMBIENT: f64 = 37.0; // °C — normal operating temperature
+pub const TEMP_HEAT_SHOCK: f64 = 42.0; // °C — heat shock trigger
+pub const TEMP_NECROSIS: f64 = 50.0; // °C — catastrophic failure
+pub const TEMP_ACCESS_HEAT: f64 = 0.5; // °C per access
+pub const THERMAL_CONDUCTIVITY: f64 = 0.05; // heat dissipation per tick
+pub const MAX_CELLS: usize = 65536;
+pub const IMMUNE_PATROL_RATE: usize = 64; // macrophages check N cells per tick
 pub const MITOSIS_SIZE_THRESHOLD: usize = 65536; // bytes — divide if larger
-pub const APOPTOSIS_ATP_THRESHOLD: f64  = 50.0;  // ATP below this → apoptosis
+pub const APOPTOSIS_ATP_THRESHOLD: f64 = 50.0; // ATP below this → apoptosis
 
 // ─────────────────────────────────────────────
 // CELL LIFECYCLE STATES
@@ -68,14 +74,14 @@ pub const APOPTOSIS_ATP_THRESHOLD: f64  = 50.0;  // ATP below this → apoptosis
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum CellState {
-    Embryonic,     // just allocated — forming
-    Healthy,       // normal operation
-    Stressed,      // high temperature / low ATP
-    HeatShock,     // fever response — fragmenting
-    Senescent,     // Hayflick limit reached — read-only quarantine
-    Apoptotic,     // programmed death in progress
-    Necrotic,      // catastrophic failure — corrupt
-    Recycled,      // dead, waiting for macrophage cleanup
+    Embryonic, // just allocated — forming
+    Healthy,   // normal operation
+    Stressed,  // high temperature / low ATP
+    HeatShock, // fever response — fragmenting
+    Senescent, // Hayflick limit reached — read-only quarantine
+    Apoptotic, // programmed death in progress
+    Necrotic,  // catastrophic failure — corrupt
+    Recycled,  // dead, waiting for macrophage cleanup
 }
 
 // ─────────────────────────────────────────────
@@ -83,23 +89,23 @@ pub enum CellState {
 // ─────────────────────────────────────────────
 
 pub struct MemoryCell {
-    pub addr:            usize,
-    pub size:            usize,
-    pub state:           CellState,
-    pub temperature:     f64,      // °C
-    pub atp:             f64,      // energy units
-    pub age:             f64,      // biological age (Hayflick counter)
-    pub division_count:  u64,      // how many times this cell has divided (mitosis)
-    pub access_count:    AtomicU64,
+    pub addr: usize,
+    pub size: usize,
+    pub state: CellState,
+    pub temperature: f64,    // °C
+    pub atp: f64,            // energy units
+    pub age: f64,            // biological age (Hayflick counter)
+    pub division_count: u64, // how many times this cell has divided (mitosis)
+    pub access_count: AtomicU64,
     pub last_access_tick: u64,
-    pub metabolic_rate:  f64,      // individual cell metabolism speed
-    pub hsp_proteins:    u32,      // heat shock protein count (protective)
-    pub telomere_length: f64,      // 1.0 = full, 0.0 = senescent (Hayflick analog)
-    pub parent_addr:     Option<usize>, // birth lineage
-    pub daughters:       Vec<usize>,    // mitosis offspring
-    pub immune_flags:    u8,       // macrophage targeting flags
-    pub owner_pid:       u32,
-    pub semantic_class:  u8,       // from blacklab SemanticGraph
+    pub metabolic_rate: f64,        // individual cell metabolism speed
+    pub hsp_proteins: u32,          // heat shock protein count (protective)
+    pub telomere_length: f64,       // 1.0 = full, 0.0 = senescent (Hayflick analog)
+    pub parent_addr: Option<usize>, // birth lineage
+    pub daughters: Vec<usize>,      // mitosis offspring
+    pub immune_flags: u8,           // macrophage targeting flags
+    pub owner_pid: u32,
+    pub semantic_class: u8, // from blacklab SemanticGraph
 }
 
 impl Clone for MemoryCell {
@@ -129,7 +135,8 @@ impl Clone for MemoryCell {
 impl MemoryCell {
     pub fn new(addr: usize, size: usize, owner_pid: u32, tick: u64) -> Self {
         Self {
-            addr, size,
+            addr,
+            size,
             state: CellState::Embryonic,
             temperature: TEMP_AMBIENT,
             atp: ATP_INITIAL,
@@ -155,12 +162,13 @@ impl MemoryCell {
             / (tick - self.last_access_tick + 1).max(1) as f64;
 
         // ATP dynamics: base consumption + access cost + regeneration
-        let atp_consumed = (ATP_RESTING_RATE + ATP_ACTIVE_RATE * access_freq) * self.metabolic_rate * dt;
+        let atp_consumed =
+            (ATP_RESTING_RATE + ATP_ACTIVE_RATE * access_freq) * self.metabolic_rate * dt;
         let atp_regen = ATP_REGENERATION_RATE * (self.atp / ATP_INITIAL) * dt; // diminishing regen
         self.atp = f64_max(self.atp - atp_consumed + atp_regen, 0.0);
 
         // Temperature: heating from accesses, cooling toward ambient
-        let heat_in  = TEMP_ACCESS_HEAT * access_freq;
+        let heat_in = TEMP_ACCESS_HEAT * access_freq;
         let heat_out = THERMAL_CONDUCTIVITY * (self.temperature - TEMP_AMBIENT);
         self.temperature += (heat_in - heat_out) * dt;
         self.temperature = f64_max(self.temperature, TEMP_AMBIENT - 5.0); // can't go below near-ambient
@@ -196,7 +204,7 @@ impl MemoryCell {
                 } else if self.temperature > TEMP_AMBIENT + 3.0 || self.atp < ATP_INITIAL * 0.3 {
                     CellState::Stressed
                 } else if self.state == CellState::Embryonic {
-                    CellState::Healthy  // graduates from embryonic after first metabolize
+                    CellState::Healthy // graduates from embryonic after first metabolize
                 } else {
                     CellState::Healthy
                 }
@@ -238,7 +246,10 @@ impl MemoryCell {
     }
 
     pub fn is_alive(&self) -> bool {
-        !matches!(self.state, CellState::Recycled | CellState::Necrotic | CellState::Apoptotic)
+        !matches!(
+            self.state,
+            CellState::Recycled | CellState::Necrotic | CellState::Apoptotic
+        )
     }
 
     pub fn health_score(&self) -> f64 {
@@ -254,16 +265,22 @@ impl MemoryCell {
 // ─────────────────────────────────────────────
 
 pub struct Macrophage {
-    pub id:           u32,
-    pub patrol_idx:   usize,   // current scan position
-    pub cells_eaten:  u64,
+    pub id: u32,
+    pub patrol_idx: usize, // current scan position
+    pub cells_eaten: u64,
     pub atp_reclaimed: f64,
     pub necrotic_cleared: u64,
 }
 
 impl Macrophage {
     pub fn new(id: u32) -> Self {
-        Self { id, patrol_idx: 0, cells_eaten: 0, atp_reclaimed: 0.0, necrotic_cleared: 0 }
+        Self {
+            id,
+            patrol_idx: 0,
+            cells_eaten: 0,
+            atp_reclaimed: 0.0,
+            necrotic_cleared: 0,
+        }
     }
 
     /// Patrol: scan N cells, engulf dying/dead ones
@@ -284,12 +301,12 @@ impl Macrophage {
                         }
                         self.cells_eaten += 1;
                         freed.push(addr);
-                    },
+                    }
                     CellState::Senescent => {
                         // Flag senescent cells but don't immediately kill —
                         // they can still serve read-only requests
                         cell.immune_flags |= 0x02;
-                    },
+                    }
                     _ => {}
                 }
             }
@@ -305,18 +322,18 @@ impl Macrophage {
 // ─────────────────────────────────────────────
 
 pub struct Thermogenesis {
-    pub cells:           BTreeMap<usize, MemoryCell>,
-    pub macrophages:     Vec<Macrophage>,
-    pub graveyard:       Vec<usize>,      // recycled addresses waiting for rebirth
-    pub tick:            u64,
-    pub system_temp:     f64,             // aggregate system temperature
-    pub total_born:      AtomicU64,
-    pub total_died:      AtomicU64,
-    pub total_divided:   AtomicU64,
-    pub total_necrotic:  AtomicU64,
-    pub heat_events:     AtomicU64,
-    pub thermal_charge:  AtomicU64,
-    pub entropy_state:   AtomicU64,
+    pub cells: BTreeMap<usize, MemoryCell>,
+    pub macrophages: Vec<Macrophage>,
+    pub graveyard: Vec<usize>, // recycled addresses waiting for rebirth
+    pub tick: u64,
+    pub system_temp: f64, // aggregate system temperature
+    pub total_born: AtomicU64,
+    pub total_died: AtomicU64,
+    pub total_divided: AtomicU64,
+    pub total_necrotic: AtomicU64,
+    pub heat_events: AtomicU64,
+    pub thermal_charge: AtomicU64,
+    pub entropy_state: AtomicU64,
     pub collapse_rebates: AtomicU64,
 }
 
@@ -435,9 +452,8 @@ impl Thermogenesis {
 
         // Update system temperature (mean of all cells)
         if !self.cells.is_empty() {
-            self.system_temp = self.cells.values()
-                .map(|c| c.temperature)
-                .sum::<f64>() / self.cells.len() as f64;
+            self.system_temp =
+                self.cells.values().map(|c| c.temperature).sum::<f64>() / self.cells.len() as f64;
         }
     }
 
@@ -446,9 +462,21 @@ impl Thermogenesis {
         self.graveyard.pop()
     }
 
-    pub fn alive_count(&self)     -> usize { self.cells.values().filter(|c| c.is_alive()).count() }
-    pub fn senescent_count(&self) -> usize { self.cells.values().filter(|c| c.state == CellState::Senescent).count() }
-    pub fn stressed_count(&self)  -> usize { self.cells.values().filter(|c| c.state == CellState::Stressed).count() }
+    pub fn alive_count(&self) -> usize {
+        self.cells.values().filter(|c| c.is_alive()).count()
+    }
+    pub fn senescent_count(&self) -> usize {
+        self.cells
+            .values()
+            .filter(|c| c.state == CellState::Senescent)
+            .count()
+    }
+    pub fn stressed_count(&self) -> usize {
+        self.cells
+            .values()
+            .filter(|c| c.state == CellState::Stressed)
+            .count()
+    }
 
     pub fn stats(&self) -> ThermogenesisStats {
         ThermogenesisStats {

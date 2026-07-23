@@ -206,10 +206,7 @@ impl<const CELLS: usize, const LOG: usize> ParadoxEngine<CELLS, LOG> {
 }
 
 fn state_digest(cells: &[u64]) -> u64 {
-    cells
-        .iter()
-        .copied()
-        .fold(0xcbf2_9ce4_8422_2325, mix)
+    cells.iter().copied().fold(0xcbf2_9ce4_8422_2325, mix)
 }
 
 fn mix(mut state: u64, word: u64) -> u64 {

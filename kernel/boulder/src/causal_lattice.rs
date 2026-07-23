@@ -60,22 +60,14 @@ impl CausalClock {
         }
     }
 
-    pub fn observe(
-        &self,
-        remote: CausalStamp,
-        wall_tick: u64,
-    ) -> CausalStamp {
+    pub fn observe(&self, remote: CausalStamp, wall_tick: u64) -> CausalStamp {
         let mut state = self.state.lock();
 
         let local_physical = state.physical_tick;
-        let merged_physical = wall_tick
-            .max(local_physical)
-            .max(remote.physical_tick);
+        let merged_physical = wall_tick.max(local_physical).max(remote.physical_tick);
 
         let merged_logical =
-            if merged_physical == local_physical
-                && merged_physical == remote.physical_tick
-            {
+            if merged_physical == local_physical && merged_physical == remote.physical_tick {
                 state
                     .logical_tick
                     .max(remote.logical_tick)
@@ -114,13 +106,7 @@ pub struct CausalEnvelope {
 const _: () = assert!(core::mem::size_of::<CausalEnvelope>() == 64);
 
 impl CausalEnvelope {
-    pub fn new(
-        stamp: CausalStamp,
-        nonce: u64,
-        route: u32,
-        flags: u16,
-        payload: &[u8],
-    ) -> Self {
+    pub fn new(stamp: CausalStamp, nonce: u64, route: u32, flags: u16, payload: &[u8]) -> Self {
         let mut envelope = Self {
             stamp,
             nonce,
@@ -200,19 +186,12 @@ impl<const N: usize> ReplayShield<N> {
             return Err(ReplayError::InvalidLength);
         }
 
-        if envelope
-            .stamp
-            .physical_tick
-            .saturating_add(maximum_past)
-            < now_tick
-        {
+        if envelope.stamp.physical_tick.saturating_add(maximum_past) < now_tick {
             self.rejected = self.rejected.saturating_add(1);
             return Err(ReplayError::TooOld);
         }
 
-        if envelope.stamp.physical_tick
-            > now_tick.saturating_add(maximum_future)
-        {
+        if envelope.stamp.physical_tick > now_tick.saturating_add(maximum_future) {
             self.rejected = self.rejected.saturating_add(1);
             return Err(ReplayError::TooFarAhead);
         }

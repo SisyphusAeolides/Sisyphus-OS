@@ -20,7 +20,9 @@ impl SyscallGraph {
 
     /// Record a syscall — builds co-occurrence graph online
     pub fn record(&mut self, syscall_id: usize) {
-        if syscall_id >= MAX_SYSCALLS { return; }
+        if syscall_id >= MAX_SYSCALLS {
+            return;
+        }
         self.call_counts[syscall_id] += 1;
         if let Some(prev) = self.last_syscall {
             // Reinforce edge between consecutive syscalls
@@ -52,7 +54,9 @@ impl SyscallGraph {
 
         // Orthogonalize against constant vector (remove Fiedler_0)
         let mean = v.iter().sum::<f32>() / MAX_SYSCALLS as f32;
-        for x in &mut v { *x -= mean; }
+        for x in &mut v {
+            *x -= mean;
+        }
 
         // Power iteration on L_normalized
         for _ in 0..iters {
@@ -62,17 +66,26 @@ impl SyscallGraph {
                 for j in 0..MAX_SYSCALLS {
                     // L_sym = I - D^{-1/2} A D^{-1/2}
                     let dj = if degree[j] < 1.0 { 1.0 } else { degree[j] };
-                    let l_ij = if i == j { 1.0 }
-                               else { -self.adjacency[i][j] / libm::sqrtf(di * dj) };
+                    let l_ij = if i == j {
+                        1.0
+                    } else {
+                        -self.adjacency[i][j] / libm::sqrtf(di * dj)
+                    };
                     new_v[i] += l_ij * v[j];
                 }
             }
             // Re-orthogonalize and normalize
             let m = new_v.iter().sum::<f32>() / MAX_SYSCALLS as f32;
-            for x in &mut new_v { *x -= m; }
-            let mut norm = libm::sqrtf(new_v.iter().map(|x| x*x).sum::<f32>());
-            if norm < 1e-9 { norm = 1e-9; }
-            for x in &mut new_v { *x /= norm; }
+            for x in &mut new_v {
+                *x -= m;
+            }
+            let mut norm = libm::sqrtf(new_v.iter().map(|x| x * x).sum::<f32>());
+            if norm < 1e-9 {
+                norm = 1e-9;
+            }
+            for x in &mut new_v {
+                *x /= norm;
+            }
             v = new_v;
         }
 

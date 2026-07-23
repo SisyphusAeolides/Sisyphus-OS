@@ -1,6 +1,4 @@
-use crate::capability::{
-    Capability, ResonanceRight,
-};
+use crate::capability::{Capability, ResonanceRight};
 use crate::sync::SpinLock;
 
 const ROOT_PARENT: u16 = u16::MAX;
@@ -18,11 +16,7 @@ impl LeaseRights {
     pub const DELEGATE: Self = Self(1 << 31);
 
     pub const ALL: Self = Self(
-        Self::OBSERVE.0
-            | Self::SCHEDULE.0
-            | Self::RESONANCE.0
-            | Self::CONTROL.0
-            | Self::DELEGATE.0,
+        Self::OBSERVE.0 | Self::SCHEDULE.0 | Self::RESONANCE.0 | Self::CONTROL.0 | Self::DELEGATE.0,
     );
 
     pub const fn bits(self) -> u32 {
@@ -54,11 +48,7 @@ impl LeaseToken {
     }
 
     const fn new(slot: u16, generation: u16, tag: u32) -> Self {
-        Self(
-            u64::from(slot)
-                | (u64::from(generation) << 16)
-                | (u64::from(tag) << 32),
-        )
+        Self((slot as u64) | ((generation as u64) << 16) | ((tag as u64) << 32))
     }
 
     const fn slot(self) -> usize {
@@ -185,12 +175,10 @@ impl<const N: usize> LeaseLattice<N> {
             .position(|record| !record.active)
             .ok_or(LeaseError::Capacity)?;
 
-        let generation =
-            state.records[slot].generation.wrapping_add(1).max(1);
+        let generation = state.records[slot].generation.wrapping_add(1).max(1);
 
         let nonce = state.issuance_nonce;
-        state.issuance_nonce =
-            state.issuance_nonce.wrapping_add(1).max(1);
+        state.issuance_nonce = state.issuance_nonce.wrapping_add(1).max(1);
 
         let mut record = LeaseRecord {
             active: true,
@@ -210,11 +198,7 @@ impl<const N: usize> LeaseLattice<N> {
         record.tag = seal(self.secret, slot, record, nonce);
         state.records[slot] = record;
 
-        Ok(LeaseToken::new(
-            slot as u16,
-            generation,
-            record.tag,
-        ))
+        Ok(LeaseToken::new(slot as u16, generation, record.tag))
     }
 
     pub fn attenuate(
@@ -230,8 +214,7 @@ impl<const N: usize> LeaseLattice<N> {
         }
 
         let mut state = self.state.lock();
-        let parent_index =
-            validate_token(&state, self.secret, parent_token, now_tick)?;
+        let parent_index = validate_token(&state, self.secret, parent_token, now_tick)?;
 
         validate_ancestry(&state, parent_index)?;
 
@@ -253,8 +236,7 @@ impl<const N: usize> LeaseLattice<N> {
             return Err(LeaseError::InvalidLifetime);
         }
 
-        let available =
-            parent.quota_limit.saturating_sub(parent.uses);
+        let available = parent.quota_limit.saturating_sub(parent.uses);
 
         if quota > available {
             return Err(LeaseError::InvalidQuota);
@@ -266,19 +248,12 @@ impl<const N: usize> LeaseLattice<N> {
             .position(|record| !record.active)
             .ok_or(LeaseError::Capacity)?;
 
-        let generation = state.records[child_index]
-            .generation
-            .wrapping_add(1)
-            .max(1);
+        let generation = state.records[child_index].generation.wrapping_add(1).max(1);
 
         let nonce = state.issuance_nonce;
-        state.issuance_nonce =
-            state.issuance_nonce.wrapping_add(1).max(1);
+        state.issuance_nonce = state.issuance_nonce.wrapping_add(1).max(1);
 
-        state.records[parent_index].uses =
-            state.records[parent_index]
-                .uses
-                .saturating_add(quota);
+        state.records[parent_index].uses = state.records[parent_index].uses.saturating_add(quota);
 
         let mut child = LeaseRecord {
             active: true,
@@ -295,16 +270,11 @@ impl<const N: usize> LeaseLattice<N> {
             tag: 0,
         };
 
-        child.tag =
-            seal(self.secret, child_index, child, nonce);
+        child.tag = seal(self.secret, child_index, child, nonce);
 
         state.records[child_index] = child;
 
-        Ok(LeaseToken::new(
-            child_index as u16,
-            generation,
-            child.tag,
-        ))
+        Ok(LeaseToken::new(child_index as u16, generation, child.tag))
     }
 
     pub fn admit(
@@ -315,8 +285,7 @@ impl<const N: usize> LeaseLattice<N> {
     ) -> Result<LeaseAdmission, LeaseError> {
         let mut state = self.state.lock();
 
-        let index =
-            validate_token(&state, self.secret, token, now_tick)?;
+        let index = validate_token(&state, self.secret, token, now_tick)?;
 
         validate_ancestry(&state, index)?;
 
@@ -334,8 +303,7 @@ impl<const N: usize> LeaseLattice<N> {
 
         Ok(LeaseAdmission {
             rights: record.rights,
-            remaining_uses:
-                record.quota_limit.saturating_sub(record.uses),
+            remaining_uses: record.quota_limit.saturating_sub(record.uses),
             expires_at: record.expires_at,
             depth: record.depth,
         })
@@ -348,14 +316,9 @@ impl<const N: usize> LeaseLattice<N> {
     ) -> Result<(), LeaseError> {
         let mut state = self.state.lock();
 
-        let index = validate_token_without_time(
-            &state,
-            self.secret,
-            token,
-        )?;
+        let index = validate_token_without_time(&state, self.secret, token)?;
 
-        let generation =
-            state.records[index].generation.wrapping_add(1).max(1);
+        let generation = state.records[index].generation.wrapping_add(1).max(1);
 
         state.records[index] = LeaseRecord {
             generation,
@@ -366,10 +329,7 @@ impl<const N: usize> LeaseLattice<N> {
     }
 }
 
-fn validate_lifetime(
-    not_before: u64,
-    expires_at: u64,
-) -> Result<(), LeaseError> {
+fn validate_lifetime(not_before: u64, expires_at: u64) -> Result<(), LeaseError> {
     if expires_at == 0 || expires_at <= not_before {
         Err(LeaseError::InvalidLifetime)
     } else {
@@ -383,8 +343,7 @@ fn validate_token<const N: usize>(
     token: LeaseToken,
     now_tick: u64,
 ) -> Result<usize, LeaseError> {
-    let index =
-        validate_token_without_time(state, secret, token)?;
+    let index = validate_token_without_time(state, secret, token)?;
 
     let record = state.records[index];
 
@@ -443,14 +402,9 @@ fn validate_ancestry<const N: usize>(
         }
 
         let parent_index = usize::from(record.parent_slot);
-        let parent = state
-            .records
-            .get(parent_index)
-            .ok_or(LeaseError::Invalid)?;
+        let parent = state.records.get(parent_index).ok_or(LeaseError::Invalid)?;
 
-        if !parent.active
-            || parent.generation != record.parent_generation
-        {
+        if !parent.active || parent.generation != record.parent_generation {
             return Err(LeaseError::Invalid);
         }
 
@@ -458,12 +412,7 @@ fn validate_ancestry<const N: usize>(
     }
 }
 
-fn seal(
-    secret: u64,
-    slot: usize,
-    record: LeaseRecord,
-    nonce: u64,
-) -> u32 {
+fn seal(secret: u64, slot: usize, record: LeaseRecord, nonce: u64) -> u32 {
     let mut state = secret ^ nonce.rotate_left(17);
 
     state = mix(state, slot as u64);
@@ -474,8 +423,7 @@ fn seal(
     state = mix(state, u64::from(record.quota_limit));
     state = mix(
         state,
-        u64::from(record.parent_slot)
-            | (u64::from(record.parent_generation) << 16),
+        u64::from(record.parent_slot) | (u64::from(record.parent_generation) << 16),
     );
 
     (state ^ (state >> 32)) as u32

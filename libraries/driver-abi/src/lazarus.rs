@@ -32,19 +32,18 @@
 
 #![allow(dead_code)]
 extern crate alloc;
+use super::{DeviceInfo, Handle, INVALID_HANDLE, KernelApi, STATUS_IO_ERROR, STATUS_OK, Status};
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use core::ffi::c_void;
-use super::{KernelApi, DeviceInfo, Handle, Status,
-            STATUS_OK, STATUS_IO_ERROR, INVALID_HANDLE};
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 // ─────────────────────────────────────────────
 // CONSTANTS
 // ─────────────────────────────────────────────
 
-pub const MAX_JOURNAL_ENTRIES:   usize = 512;
-pub const MAX_RESURRECTIONS:     u32   = 3;
-pub const WATCHDOG_TICK_LIMIT:   u64   = 10_000_000; // 10M ticks ≈ ~3ms @ 3GHz
+pub const MAX_JOURNAL_ENTRIES: usize = 512;
+pub const MAX_RESURRECTIONS: u32 = 3;
+pub const WATCHDOG_TICK_LIMIT: u64 = 10_000_000; // 10M ticks ≈ ~3ms @ 3GHz
 pub const MAX_LAZARUS_INSTANCES: usize = 64;
 
 // ─────────────────────────────────────────────
@@ -54,22 +53,22 @@ pub const MAX_LAZARUS_INSTANCES: usize = 64;
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum JournalOp {
-    MmioMap    = 1,
-    DmaAlloc   = 2,
-    IrqRegister= 3,
-    MemAlloc   = 4,
+    MmioMap = 1,
+    DmaAlloc = 2,
+    IrqRegister = 3,
+    MemAlloc = 4,
     Checkpoint = 0xFF,
 }
 
 #[derive(Clone, Copy)]
 pub struct JournalEntry {
-    pub op:             JournalOp,
-    pub handle:         Handle,       // handle returned by the kernel call
-    pub aux_addr:       u64,          // for alloc: virtual address
-    pub aux_size:       usize,        // for alloc: size
-    pub aux_align:      usize,        // for alloc: alignment
-    pub committed:      bool,         // past a checkpoint
-    pub rolled_back:    bool,
+    pub op: JournalOp,
+    pub handle: Handle,   // handle returned by the kernel call
+    pub aux_addr: u64,    // for alloc: virtual address
+    pub aux_size: usize,  // for alloc: size
+    pub aux_align: usize, // for alloc: alignment
+    pub committed: bool,  // past a checkpoint
+    pub rolled_back: bool,
 }
 
 impl JournalEntry {
@@ -77,8 +76,11 @@ impl JournalEntry {
         Self {
             op: JournalOp::Checkpoint,
             handle: INVALID_HANDLE,
-            aux_addr: 0, aux_size: 0, aux_align: 0,
-            committed: false, rolled_back: false,
+            aux_addr: 0,
+            aux_size: 0,
+            aux_align: 0,
+            committed: false,
+            rolled_back: false,
         }
     }
 }
@@ -88,9 +90,9 @@ impl JournalEntry {
 // ─────────────────────────────────────────────
 
 pub struct ShadowJournal {
-    pub entries:       [JournalEntry; MAX_JOURNAL_ENTRIES],
-    pub head:          usize,           // next write position
-    pub checkpoint:    usize,           // last committed checkpoint
+    pub entries: [JournalEntry; MAX_JOURNAL_ENTRIES],
+    pub head: usize,       // next write position
+    pub checkpoint: usize, // last committed checkpoint
     pub total_entries: AtomicU64,
     pub total_rollbacks: AtomicU32,
 }
@@ -107,7 +109,9 @@ impl ShadowJournal {
     }
 
     pub fn push(&mut self, entry: JournalEntry) -> bool {
-        if self.head >= MAX_JOURNAL_ENTRIES { return false; }
+        if self.head >= MAX_JOURNAL_ENTRIES {
+            return false;
+        }
         self.entries[self.head] = entry;
         self.head += 1;
         self.total_entries.fetch_add(1, Ordering::Relaxed);
@@ -116,16 +120,21 @@ impl ShadowJournal {
 
     pub fn set_checkpoint(&mut self) {
         // Mark all current entries as committed
-        for e in &mut self.entries[..self.head] { e.committed = true; }
+        for e in &mut self.entries[..self.head] {
+            e.committed = true;
+        }
         self.checkpoint = self.head;
     }
 
     /// Rollback: undo all uncommitted entries in reverse order
     /// Calls the provided inverse-op callback for each entry
     pub fn rollback<F>(&mut self, mut inverse_fn: F)
-    where F: FnMut(&JournalEntry)
+    where
+        F: FnMut(&JournalEntry),
     {
-        if self.head == 0 { return; }
+        if self.head == 0 {
+            return;
+        }
         // Replay in reverse from head to checkpoint
         let mut i = self.head;
         while i > self.checkpoint {
@@ -141,7 +150,9 @@ impl ShadowJournal {
     }
 
     pub fn reset(&mut self) {
-        for e in &mut self.entries { *e = JournalEntry::empty(); }
+        for e in &mut self.entries {
+            *e = JournalEntry::empty();
+        }
         self.head = 0;
         self.checkpoint = 0;
     }
@@ -154,10 +165,10 @@ impl ShadowJournal {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum DriverHealth {
     Healthy,
-    Degraded,         // had errors but still running
-    FlatLined,        // crashed / timed out
-    Quarantined,      // exceeded MAX_RESURRECTIONS
-    Resurrecting,     // rollback in progress
+    Degraded,     // had errors but still running
+    FlatLined,    // crashed / timed out
+    Quarantined,  // exceeded MAX_RESURRECTIONS
+    Resurrecting, // rollback in progress
 }
 
 // ─────────────────────────────────────────────
@@ -165,18 +176,18 @@ pub enum DriverHealth {
 // ─────────────────────────────────────────────
 
 pub struct LazarusMembrane {
-    pub driver_handle:      u64,
-    pub journal:            ShadowJournal,
-    pub health:             DriverHealth,
+    pub driver_handle: u64,
+    pub journal: ShadowJournal,
+    pub health: DriverHealth,
     pub resurrection_count: u32,
-    pub total_calls:        AtomicU64,
-    pub total_errors:       AtomicU32,
-    pub total_resurrections:AtomicU32,
-    pub watchdog_start:     u64,
-    pub watchdog_limit:     u64,
-    pub last_good_tick:     u64,
+    pub total_calls: AtomicU64,
+    pub total_errors: AtomicU32,
+    pub total_resurrections: AtomicU32,
+    pub watchdog_start: u64,
+    pub watchdog_limit: u64,
+    pub last_good_tick: u64,
     // Shadow of driver's registered resources (for resurrection replay)
-    pub last_device_info:   Option<DeviceInfo>,
+    pub last_device_info: Option<DeviceInfo>,
 }
 
 impl LazarusMembrane {
@@ -211,8 +222,16 @@ impl LazarusMembrane {
         let mut out_ptr: *mut u8 = core::ptr::null_mut();
 
         let status = match api.mmio_map {
-            Some(f) => unsafe { f(api.kernel_context, phys_addr, length, flags,
-                         &mut out_handle, &mut out_ptr) },
+            Some(f) => unsafe {
+                f(
+                    api.kernel_context,
+                    phys_addr,
+                    length,
+                    flags,
+                    &mut out_handle,
+                    &mut out_ptr,
+                )
+            },
             None => STATUS_IO_ERROR,
         };
 
@@ -247,8 +266,17 @@ impl LazarusMembrane {
         let mut out_dev_addr: u64 = 0;
 
         let status = match api.dma_alloc {
-            Some(f) => unsafe { f(api.kernel_context, size, alignment, flags,
-                         &mut out_handle, &mut out_cpu, &mut out_dev_addr) },
+            Some(f) => unsafe {
+                f(
+                    api.kernel_context,
+                    size,
+                    alignment,
+                    flags,
+                    &mut out_handle,
+                    &mut out_cpu,
+                    &mut out_dev_addr,
+                )
+            },
             None => STATUS_IO_ERROR,
         };
 
@@ -281,7 +309,16 @@ impl LazarusMembrane {
         let mut out_handle: Handle = INVALID_HANDLE;
 
         let status = match api.irq_register {
-            Some(f) => unsafe { f(api.kernel_context, irq, flags, Some(handler), driver_ctx, &mut out_handle) },
+            Some(f) => unsafe {
+                f(
+                    api.kernel_context,
+                    irq,
+                    flags,
+                    Some(handler),
+                    driver_ctx,
+                    &mut out_handle,
+                )
+            },
             None => STATUS_IO_ERROR,
         };
 
@@ -290,8 +327,10 @@ impl LazarusMembrane {
                 op: JournalOp::IrqRegister,
                 handle: out_handle,
                 aux_addr: irq as u64,
-                aux_size: 0, aux_align: 0,
-                committed: false, rolled_back: false,
+                aux_size: 0,
+                aux_align: 0,
+                committed: false,
+                rolled_back: false,
             });
         }
         (status, out_handle)
@@ -308,33 +347,41 @@ impl LazarusMembrane {
         self.health = DriverHealth::Resurrecting;
         let kernel_ctx = api.kernel_context;
 
-        self.journal.rollback(|entry| {
-            match entry.op {
-                JournalOp::MmioMap => {
-                    if let Some(f) = api.mmio_unmap {
-                        unsafe { let _ = f(kernel_ctx, entry.handle); }
+        self.journal.rollback(|entry| match entry.op {
+            JournalOp::MmioMap => {
+                if let Some(f) = api.mmio_unmap {
+                    unsafe {
+                        let _ = f(kernel_ctx, entry.handle);
                     }
                 }
-                JournalOp::DmaAlloc => {
-                    if let Some(f) = api.dma_free {
-                        unsafe { let _ = f(kernel_ctx, entry.handle); }
-                    }
-                }
-                JournalOp::IrqRegister => {
-                    if let Some(f) = api.irq_unregister {
-                        unsafe { let _ = f(kernel_ctx, entry.handle); }
-                    }
-                }
-                JournalOp::MemAlloc => {
-                    if let Some(f) = api.dealloc {
-                        unsafe { let _ = f(kernel_ctx,
-                                  entry.aux_addr as *mut c_void,
-                                  entry.aux_size,
-                                  entry.aux_align); }
-                    }
-                }
-                _ => {}
             }
+            JournalOp::DmaAlloc => {
+                if let Some(f) = api.dma_free {
+                    unsafe {
+                        let _ = f(kernel_ctx, entry.handle);
+                    }
+                }
+            }
+            JournalOp::IrqRegister => {
+                if let Some(f) = api.irq_unregister {
+                    unsafe {
+                        let _ = f(kernel_ctx, entry.handle);
+                    }
+                }
+            }
+            JournalOp::MemAlloc => {
+                if let Some(f) = api.dealloc {
+                    unsafe {
+                        let _ = f(
+                            kernel_ctx,
+                            entry.aux_addr as *mut c_void,
+                            entry.aux_size,
+                            entry.aux_align,
+                        );
+                    }
+                }
+            }
+            _ => {}
         });
 
         self.total_resurrections.fetch_add(1, Ordering::Relaxed);
@@ -352,12 +399,14 @@ impl LazarusMembrane {
         if self.resurrection_count >= MAX_RESURRECTIONS {
             self.health = DriverHealth::Quarantined;
             return ResurrectionResult::Quarantined {
-                count: self.resurrection_count
+                count: self.resurrection_count,
             };
         }
 
         // Step 1: rollback all uncommitted state
-        unsafe { self.rollback(api); }
+        unsafe {
+            self.rollback(api);
+        }
 
         // Step 2: re-call probe with last known good DeviceInfo
         let device_info = match &self.last_device_info {
@@ -403,34 +452,41 @@ impl LazarusMembrane {
 
     pub fn stats(&self) -> LazarusStats {
         LazarusStats {
-            driver_handle:    self.driver_handle,
-            health:           self.health,
-            resurrections:    self.resurrection_count,
-            journal_entries:  self.journal.head as u32,
+            driver_handle: self.driver_handle,
+            health: self.health,
+            resurrections: self.resurrection_count,
+            journal_entries: self.journal.head as u32,
             journal_checkpoint: self.journal.checkpoint as u32,
-            total_calls:      self.total_calls.load(Ordering::Relaxed),
-            total_errors:     self.total_errors.load(Ordering::Relaxed),
+            total_calls: self.total_calls.load(Ordering::Relaxed),
+            total_errors: self.total_errors.load(Ordering::Relaxed),
         }
     }
 }
 
 #[derive(Clone, Copy, Debug)]
 pub enum ResurrectionResult {
-    Revived { resurrection_number: u32, new_instance: *mut c_void },
-    Quarantined { count: u32 },
-    Failed { status: Status },
+    Revived {
+        resurrection_number: u32,
+        new_instance: *mut c_void,
+    },
+    Quarantined {
+        count: u32,
+    },
+    Failed {
+        status: Status,
+    },
     NoDeviceInfo,
 }
 
 #[derive(Clone, Copy, Debug)]
 pub struct LazarusStats {
-    pub driver_handle:      u64,
-    pub health:             DriverHealth,
-    pub resurrections:      u32,
-    pub journal_entries:    u32,
+    pub driver_handle: u64,
+    pub health: DriverHealth,
+    pub resurrections: u32,
+    pub journal_entries: u32,
     pub journal_checkpoint: u32,
-    pub total_calls:        u64,
-    pub total_errors:       u32,
+    pub total_calls: u64,
+    pub total_errors: u32,
 }
 
 // ─────────────────────────────────────────────
@@ -438,10 +494,10 @@ pub struct LazarusStats {
 // ─────────────────────────────────────────────
 
 pub struct LazarusPool {
-    pub membranes:    Vec<LazarusMembrane>,
-    pub total_alive:  AtomicU32,
-    pub total_dead:   AtomicU32,
-    pub total_revived:AtomicU32,
+    pub membranes: Vec<LazarusMembrane>,
+    pub total_alive: AtomicU32,
+    pub total_dead: AtomicU32,
+    pub total_revived: AtomicU32,
 }
 
 impl LazarusPool {
@@ -462,7 +518,9 @@ impl LazarusPool {
     }
 
     pub fn get_mut(&mut self, driver_handle: u64) -> Option<&mut LazarusMembrane> {
-        self.membranes.iter_mut().find(|m| m.driver_handle == driver_handle)
+        self.membranes
+            .iter_mut()
+            .find(|m| m.driver_handle == driver_handle)
     }
 
     pub fn tick_watchdogs(&mut self, current_tsc: u64) -> Vec<u64> {

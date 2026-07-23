@@ -1,6 +1,7 @@
 #![no_std]
 
 pub mod bridge;
+pub mod capability;
 pub mod env;
 pub mod executor;
 pub mod fabric;
@@ -10,18 +11,17 @@ pub mod ipc;
 pub mod kairos;
 pub mod memory;
 pub mod net;
+pub mod nexus;
 pub mod process;
 pub mod resonance_plane;
 pub mod runtime;
+pub mod scheduler;
 pub mod signal;
 pub mod storage;
 pub mod sync;
 pub mod syscalls;
 pub mod thermogenesis;
 pub mod time;
-pub mod capability;
-pub mod scheduler;
-pub mod nexus;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SyscallError(pub isize);
@@ -44,7 +44,11 @@ pub unsafe fn syscall(number: usize, arguments: [usize; 6]) -> Result<usize, Sys
             options(nostack),
         );
     }
-    if result < 0 { Err(SyscallError(result)) } else { Ok(result as usize) }
+    if result < 0 {
+        Err(SyscallError(result))
+    } else {
+        Ok(result as usize)
+    }
 }
 
 #[cfg(not(target_arch = "x86_64"))]

@@ -584,8 +584,7 @@ impl LatticeCell {
 
     fn score(&self) -> u64 {
         let gain = 65_536_u128 + u128::from(self.gradient.gain_q16);
-        ((self.energy() as u128 * gain) >> 16)
-            .min(u64::MAX as u128) as u64
+        ((self.energy() as u128 * gain) >> 16).min(u64::MAX as u128) as u64
     }
 }
 
@@ -606,13 +605,7 @@ impl<const BINS: usize> ResonanceField<BINS> {
 
     /// `phase_bin` spans the full u16 phase circle.
     /// `weight_q16` is 1.0 at 65535.
-    pub fn accumulate(
-        &mut self,
-        phase_bin: u16,
-        re_q31: i32,
-        im_q31: i32,
-        weight_q16: u16,
-    ) {
+    pub fn accumulate(&mut self, phase_bin: u16, re_q31: i32, im_q31: i32, weight_q16: u16) {
         if BINS == 0 {
             return;
         }
@@ -662,16 +655,12 @@ impl<const BINS: usize> ResonanceField<BINS> {
         let delta = wrapped_phase_delta(current_phase, target_phase);
         let cell = &mut self.cells[current_index];
 
-        let scaled_delta =
-            ((i64::from(delta) * i64::from(rate_q16)) >> 16)
-                .clamp(i16::MIN as i64, i16::MAX as i64) as i16;
+        let scaled_delta = ((i64::from(delta) * i64::from(rate_q16)) >> 16)
+            .clamp(i16::MIN as i64, i16::MAX as i64) as i16;
 
-        cell.gradient.phase_delta =
-            cell.gradient.phase_delta.saturating_add(scaled_delta);
-        cell.gradient.gain_q16 =
-            cell.gradient.gain_q16.saturating_add(rate_q16 >> 3);
-        cell.gradient.confidence_q16 =
-            cell.gradient.confidence_q16.saturating_add(rate_q16 >> 2);
+        cell.gradient.phase_delta = cell.gradient.phase_delta.saturating_add(scaled_delta);
+        cell.gradient.gain_q16 = cell.gradient.gain_q16.saturating_add(rate_q16 >> 3);
+        cell.gradient.confidence_q16 = cell.gradient.confidence_q16.saturating_add(rate_q16 >> 2);
     }
 
     pub fn decay(&mut self, shift: u32) {

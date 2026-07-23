@@ -21,24 +21,24 @@
 
 #![allow(dead_code)]
 extern crate alloc;
-use alloc::vec::Vec;
 use alloc::collections::BTreeMap;
+use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 // ─────────────────────────────────────────────
 // CONSTANTS (all page-unit)
 // ─────────────────────────────────────────────
 
-pub const MAX_PAGES:            usize = 1 << 20;   // 4 GB / 4 KB
-pub const MAX_HYPHAE:           usize = 4096;
-pub const MAX_SPORES:           usize = 256;
-pub const ANASTOMOSIS_RADIUS:   usize = 8;          // pages — fusion distance
-pub const DIFFUSION_LAMBDA:     usize = 512;        // pages — nutrient decay half-length
-pub const INHIBITION_LAMBDA:    usize = 64;         // pages — allelopathy radius
-pub const INHIBITION_ALPHA_FP:  u32   = 0x0000_8000; // 0.5 in 16.16 fixed-point
-pub const SPORE_THRESHOLD:      usize = 128;        // pages in mat before sporulation
-pub const DECOMP_PULSE_RADIUS:  usize = 32;         // pages — nutrient pulse on free()
-pub const GRADIENT_LUT_LEN:     usize = 1024;       // precomputed exp decay entries
+pub const MAX_PAGES: usize = 1 << 20; // 4 GB / 4 KB
+pub const MAX_HYPHAE: usize = 4096;
+pub const MAX_SPORES: usize = 256;
+pub const ANASTOMOSIS_RADIUS: usize = 8; // pages — fusion distance
+pub const DIFFUSION_LAMBDA: usize = 512; // pages — nutrient decay half-length
+pub const INHIBITION_LAMBDA: usize = 64; // pages — allelopathy radius
+pub const INHIBITION_ALPHA_FP: u32 = 0x0000_8000; // 0.5 in 16.16 fixed-point
+pub const SPORE_THRESHOLD: usize = 128; // pages in mat before sporulation
+pub const DECOMP_PULSE_RADIUS: usize = 32; // pages — nutrient pulse on free()
+pub const GRADIENT_LUT_LEN: usize = 1024; // precomputed exp decay entries
 
 // ─────────────────────────────────────────────
 // FIXED-POINT EXP DECAY LUT
@@ -47,14 +47,14 @@ pub const GRADIENT_LUT_LEN:     usize = 1024;       // precomputed exp decay ent
 // ─────────────────────────────────────────────
 
 pub struct GradientLut {
-    pub nutrient:    [u32; GRADIENT_LUT_LEN], // exp(-d / DIFFUSION_LAMBDA)
-    pub inhibition:  [u32; GRADIENT_LUT_LEN], // exp(-d / INHIBITION_LAMBDA)
+    pub nutrient: [u32; GRADIENT_LUT_LEN], // exp(-d / DIFFUSION_LAMBDA)
+    pub inhibition: [u32; GRADIENT_LUT_LEN], // exp(-d / INHIBITION_LAMBDA)
 }
 
 impl GradientLut {
     pub const fn zeroed() -> Self {
         Self {
-            nutrient:   [0u32; GRADIENT_LUT_LEN],
+            nutrient: [0u32; GRADIENT_LUT_LEN],
             inhibition: [0u32; GRADIENT_LUT_LEN],
         }
     }
@@ -69,14 +69,18 @@ impl GradientLut {
             self.nutrient[d] = val as u32;
             // Multiply by (1 - 1/λ): val = val * (λ-1) / λ
             val = val * (DIFFUSION_LAMBDA as u64 - 1) / DIFFUSION_LAMBDA as u64;
-            if val == 0 { break; }
+            if val == 0 {
+                break;
+            }
         }
         // Inhibition LUT
         let mut val: u64 = 0x0001_0000;
         for d in 0..GRADIENT_LUT_LEN {
             self.inhibition[d] = val as u32;
             val = val * (INHIBITION_LAMBDA as u64 - 1) / INHIBITION_LAMBDA as u64;
-            if val == 0 { break; }
+            if val == 0 {
+                break;
+            }
         }
     }
 
@@ -98,28 +102,28 @@ impl GradientLut {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum PageState {
     Free,
-    Hyphal(u32),     // occupied by PID
-    Spore,           // cached for burst allocation
-    Decomposing,     // recently freed — nutrient pulse active
+    Hyphal(u32), // occupied by PID
+    Spore,       // cached for burst allocation
+    Decomposing, // recently freed — nutrient pulse active
 }
 
 /// Flat substrate array. One entry per physical page.
 /// We keep this in a fixed-size array to stay no_std / no heap for the
 /// substrate itself — kernel maps this into BSS or reserved memory.
 pub struct Substrate {
-    pub pages:          [PageState; MAX_PAGES],
-    pub nutrient_pulse: [u16; MAX_PAGES],   // active nutrient pulse strength (16.16 hi-word)
-    pub free_count:     AtomicUsize,
-    pub total_pages:    usize,
+    pub pages: [PageState; MAX_PAGES],
+    pub nutrient_pulse: [u16; MAX_PAGES], // active nutrient pulse strength (16.16 hi-word)
+    pub free_count: AtomicUsize,
+    pub total_pages: usize,
 }
 
 impl Substrate {
     pub const fn new() -> Self {
         Self {
-            pages:          [PageState::Free; MAX_PAGES],
+            pages: [PageState::Free; MAX_PAGES],
             nutrient_pulse: [0u16; MAX_PAGES],
-            free_count:     AtomicUsize::new(0),
-            total_pages:    0,
+            free_count: AtomicUsize::new(0),
+            total_pages: 0,
         }
     }
 
@@ -134,7 +138,9 @@ impl Substrate {
 
     /// Claim a page for a hyphal tip
     pub fn claim(&mut self, page: usize, pid: u32) -> bool {
-        if !self.is_free(page) { return false; }
+        if !self.is_free(page) {
+            return false;
+        }
         self.pages[page] = PageState::Hyphal(pid);
         self.free_count.fetch_sub(1, Ordering::Relaxed);
         true
@@ -142,7 +148,9 @@ impl Substrate {
 
     /// Release a page back to free, emit nutrient pulse
     pub fn release(&mut self, page: usize) {
-        if page >= self.total_pages { return; }
+        if page >= self.total_pages {
+            return;
+        }
         self.pages[page] = PageState::Decomposing;
         self.free_count.fetch_add(1, Ordering::Relaxed);
         // Emit nutrient pulse in radius — decays each tick
@@ -171,12 +179,7 @@ impl Substrate {
 
     /// Compute nutrient gradient score at `page` for PID `pid` (fixed-point u32)
     /// G(p) = pulse[p] + Σ nearby free pages − Σ rival tips (allelopathy)
-    pub fn gradient_score(
-        &self,
-        page: usize,
-        pid: u32,
-        lut: &GradientLut,
-    ) -> u32 {
+    pub fn gradient_score(&self, page: usize, pid: u32, lut: &GradientLut) -> u32 {
         let mut score: u32 = self.nutrient_pulse[page] as u32 * 16; // pulse bonus
         let scan_lo = page.saturating_sub(DIFFUSION_LAMBDA.min(GRADIENT_LUT_LEN));
         let scan_hi = (page + DIFFUSION_LAMBDA.min(GRADIENT_LUT_LEN)).min(self.total_pages);
@@ -186,13 +189,13 @@ impl Substrate {
             match self.pages[p] {
                 PageState::Free | PageState::Decomposing => {
                     score = score.saturating_add(lut.nutrient_at(dist));
-                },
+                }
                 PageState::Hyphal(rival_pid) if rival_pid != pid => {
                     // Allelopathy: rival tips suppress this direction
-                    let inhibit = ((lut.inhibition_at(dist) as u64
-                        * INHIBITION_ALPHA_FP as u64) >> 16) as u32;
+                    let inhibit = ((lut.inhibition_at(dist) as u64 * INHIBITION_ALPHA_FP as u64)
+                        >> 16) as u32;
                     score = score.saturating_sub(inhibit);
-                },
+                }
                 _ => {}
             }
         }
@@ -206,35 +209,39 @@ impl Substrate {
 
 #[derive(Clone)]
 pub struct HyphalTip {
-    pub tip_id:      u32,
-    pub pid:         u32,
-    pub position:    usize,          // current page index
-    pub extent_lo:   usize,          // lowest page claimed by this hypha
-    pub extent_hi:   usize,          // highest page claimed
-    pub page_count:  usize,          // total pages in this cord
-    pub growth_ticks:u64,
-    pub stalled:     bool,           // no free pages nearby
-    pub anastomosed: bool,           // merged into another tip
-    pub merged_into: Option<u32>,    // tip_id of dominant cord after anastomosis
+    pub tip_id: u32,
+    pub pid: u32,
+    pub position: usize,   // current page index
+    pub extent_lo: usize,  // lowest page claimed by this hypha
+    pub extent_hi: usize,  // highest page claimed
+    pub page_count: usize, // total pages in this cord
+    pub growth_ticks: u64,
+    pub stalled: bool,            // no free pages nearby
+    pub anastomosed: bool,        // merged into another tip
+    pub merged_into: Option<u32>, // tip_id of dominant cord after anastomosis
 }
 
 impl HyphalTip {
     pub fn new(tip_id: u32, pid: u32, seed_page: usize) -> Self {
         Self {
-            tip_id, pid, position: seed_page,
-            extent_lo: seed_page, extent_hi: seed_page,
-            page_count: 1, growth_ticks: 0,
-            stalled: false, anastomosed: false, merged_into: None,
+            tip_id,
+            pid,
+            position: seed_page,
+            extent_lo: seed_page,
+            extent_hi: seed_page,
+            page_count: 1,
+            growth_ticks: 0,
+            stalled: false,
+            anastomosed: false,
+            merged_into: None,
         }
     }
 
     /// Advance: scan neighbors, pick best gradient, claim page
-    pub fn advance(
-        &mut self,
-        substrate: &mut Substrate,
-        lut: &GradientLut,
-    ) -> Option<usize> {
-        if self.anastomosed || self.stalled { return None; }
+    pub fn advance(&mut self, substrate: &mut Substrate, lut: &GradientLut) -> Option<usize> {
+        if self.anastomosed || self.stalled {
+            return None;
+        }
 
         // Scan 3 candidate directions: left, right, and current+2 (jump)
         let candidates = [
@@ -244,11 +251,13 @@ impl HyphalTip {
             self.position.saturating_sub(2),
         ];
 
-        let mut best_page  = 0usize;
+        let mut best_page = 0usize;
         let mut best_score = 0u32;
 
         for &cand in &candidates {
-            if !substrate.is_free(cand) { continue; }
+            if !substrate.is_free(cand) {
+                continue;
+            }
             let score = substrate.gradient_score(cand, self.pid, lut);
             if score > best_score {
                 best_score = score;
@@ -284,16 +293,16 @@ impl HyphalTip {
 
 #[derive(Clone, Copy)]
 pub struct Spore {
-    pub page_lo:  usize,
-    pub page_hi:  usize,
-    pub pid:      u32,
-    pub age:      u64,
+    pub page_lo: usize,
+    pub page_hi: usize,
+    pub pid: u32,
+    pub age: u64,
 }
 
 pub struct SporeCache {
     pub spores: [Option<Spore>; MAX_SPORES],
-    pub count:  usize,
-    pub hits:   AtomicU64,
+    pub count: usize,
+    pub hits: AtomicU64,
     pub misses: AtomicU64,
 }
 
@@ -336,16 +345,16 @@ impl SporeCache {
 // ─────────────────────────────────────────────
 
 pub struct Mycelium {
-    pub substrate:    Substrate,
-    pub lut:          GradientLut,
-    pub hyphae:       BTreeMap<u32, HyphalTip>,  // tip_id → tip
-    pub spores:       SporeCache,
-    pub next_tip_id:  u32,
-    pub tick:         u64,
-    pub total_alloc:  AtomicU64,
-    pub total_free:   AtomicU64,
-    pub anastomoses:  AtomicU64,
-    pub stalls:       AtomicU64,
+    pub substrate: Substrate,
+    pub lut: GradientLut,
+    pub hyphae: BTreeMap<u32, HyphalTip>, // tip_id → tip
+    pub spores: SporeCache,
+    pub next_tip_id: u32,
+    pub tick: u64,
+    pub total_alloc: AtomicU64,
+    pub total_free: AtomicU64,
+    pub anastomoses: AtomicU64,
+    pub stalls: AtomicU64,
 }
 
 impl Mycelium {
@@ -360,9 +369,9 @@ impl Mycelium {
             next_tip_id: 1,
             tick: 0,
             total_alloc: AtomicU64::new(0),
-            total_free:  AtomicU64::new(0),
+            total_free: AtomicU64::new(0),
             anastomoses: AtomicU64::new(0),
-            stalls:      AtomicU64::new(0),
+            stalls: AtomicU64::new(0),
         }
     }
 
@@ -386,12 +395,19 @@ impl Mycelium {
         let mut best_score = 0u32;
 
         for p in scan_lo..scan_hi {
-            if !self.substrate.is_free(p) { continue; }
+            if !self.substrate.is_free(p) {
+                continue;
+            }
             let score = self.substrate.gradient_score(p, pid, &self.lut);
-            if score > best_score { best_score = score; best_page = p; }
+            if score > best_score {
+                best_score = score;
+                best_page = p;
+            }
         }
 
-        if !self.substrate.claim(best_page, pid) { return None; }
+        if !self.substrate.claim(best_page, pid) {
+            return None;
+        }
 
         let tip_id = self.next_tip_id;
         self.next_tip_id = self.next_tip_id.wrapping_add(1);
@@ -411,9 +427,14 @@ impl Mycelium {
         for tip_id in tip_ids {
             // Advance tip
             {
-                let tip = match self.hyphae.get_mut(&tip_id) { Some(t) => t, None => continue };
+                let tip = match self.hyphae.get_mut(&tip_id) {
+                    Some(t) => t,
+                    None => continue,
+                };
                 let _ = tip.advance(&mut self.substrate, &self.lut);
-                if tip.stalled { self.stalls.fetch_add(1, Ordering::Relaxed); }
+                if tip.stalled {
+                    self.stalls.fetch_add(1, Ordering::Relaxed);
+                }
             }
 
             // Sporulation: large mats shed spores
@@ -437,21 +458,24 @@ impl Mycelium {
     fn check_anastomosis(&mut self) {
         let ids: Vec<u32> = self.hyphae.keys().cloned().collect();
         for i in 0..ids.len() {
-            for j in (i+1)..ids.len() {
+            for j in (i + 1)..ids.len() {
                 let (a_id, b_id) = (ids[i], ids[j]);
-                let (a_pos, a_pid, b_pos, b_pid) = match (
-                    self.hyphae.get(&a_id), self.hyphae.get(&b_id)
-                ) {
-                    (Some(a), Some(b)) => (a.position, a.pid, b.position, b.pid),
-                    _ => continue,
-                };
-                if a_pid != b_pid { continue; }
+                let (a_pos, a_pid, b_pos, b_pid) =
+                    match (self.hyphae.get(&a_id), self.hyphae.get(&b_id)) {
+                        (Some(a), Some(b)) => (a.position, a.pid, b.position, b.pid),
+                        _ => continue,
+                    };
+                if a_pid != b_pid {
+                    continue;
+                }
                 if a_pos.abs_diff(b_pos) <= ANASTOMOSIS_RADIUS {
                     // Fuse: absorb b into a
                     let (b_lo, b_hi, b_count) = if let Some(b) = self.hyphae.get(&b_id) {
                         (b.extent_lo, b.extent_hi, b.page_count)
-                    } else { continue; };
-                    
+                    } else {
+                        continue;
+                    };
+
                     if let Some(a) = self.hyphae.get_mut(&a_id) {
                         a.extent_lo = a.extent_lo.min(b_lo);
                         a.extent_hi = a.extent_hi.max(b_hi);
@@ -494,13 +518,13 @@ impl Mycelium {
 
 #[derive(Clone, Copy, Debug)]
 pub struct MyceliumStats {
-    pub free_pages:    usize,
-    pub total_pages:   usize,
+    pub free_pages: usize,
+    pub total_pages: usize,
     pub active_hyphae: u32,
-    pub spore_count:   u32,
-    pub tick:          u64,
-    pub anastomoses:   u64,
-    pub stalls:        u64,
-    pub spore_hits:    u64,
-    pub spore_misses:  u64,
+    pub spore_count: u32,
+    pub tick: u64,
+    pub anastomoses: u64,
+    pub stalls: u64,
+    pub spore_hits: u64,
+    pub spore_misses: u64,
 }

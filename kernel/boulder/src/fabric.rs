@@ -608,10 +608,7 @@ impl ControlWeaveState {
             .is_some_and(|slot| slot.active && slot.generation == endpoint.generation)
     }
 
-    fn endpoint_mut(
-        &mut self,
-        endpoint: FabricEndpoint,
-    ) -> Result<&mut EndpointSlot, WeaveError> {
+    fn endpoint_mut(&mut self, endpoint: FabricEndpoint) -> Result<&mut EndpointSlot, WeaveError> {
         let slot = self
             .endpoints
             .get_mut(usize::from(endpoint.index))

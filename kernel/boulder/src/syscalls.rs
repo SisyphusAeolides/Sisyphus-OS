@@ -112,17 +112,11 @@ extern "C" fn boulder_syscall_dispatch(frame: *mut SyscallFrame) {
         grimoire::SYS_WAIT => wait_from_user(frame.arguments),
         grimoire::SYS_DISP_QUERY => kairos_query_to_user(frame.arguments),
         grimoire::SYS_DISP_LEASE => kairos_abi_to_user(frame.arguments),
-        grimoire::SYS_NEXUS_TELEMETRY => {
-            nexus_telemetry_to_user(frame.arguments)
-        }
+        grimoire::SYS_NEXUS_TELEMETRY => nexus_telemetry_to_user(frame.arguments),
 
-        grimoire::SYS_NEXUS_CONTROL => {
-            nexus_control_from_user(frame.arguments)
-        }
+        grimoire::SYS_NEXUS_CONTROL => nexus_control_from_user(frame.arguments),
 
-        id @ grimoire::SYS_NEXUS_ENTANGLE
-            ..=grimoire::SYS_NEXUS_EXPERIMENT =>
-        {
+        id @ grimoire::SYS_NEXUS_ENTANGLE..=grimoire::SYS_NEXUS_EXPERIMENT => {
             // Compatibility path for the existing scalar conduits.
             let mut thermal = crate::quantum_nexus::ThermalBudget;
 
@@ -192,12 +186,12 @@ fn spawn_from_user(_arguments: [u64; 6]) -> isize {
 fn wait_from_user(arguments: [u64; 6]) -> isize {
     let pid_ptr = arguments[0];
     let status_ptr = arguments[1];
-    
+
     let exited = EXITED_PID.swap(0, Ordering::Acquire);
     if exited == 0 {
         return -11; // EAGAIN
     }
-    
+
     if pid_ptr != 0 {
         if copy_value_to_user(pid_ptr, &(exited as u32)).is_err() {
             return ERROR_BAD_ADDRESS;
@@ -209,7 +203,7 @@ fn wait_from_user(arguments: [u64; 6]) -> isize {
             return ERROR_BAD_ADDRESS;
         }
     }
-    
+
     0
 }
 
@@ -456,10 +450,8 @@ enum UserCopyError {
 
 #[cfg(target_os = "none")]
 fn nexus_control_from_user(arguments: [u64; 6]) -> isize {
-    use aether::nexus_wire::{
-        NexusCommand, NexusReply,
-    };
     use crate::arch::{Active, Architecture};
+    use aether::nexus_wire::{NexusCommand, NexusReply};
 
     if arguments[2] != core::mem::size_of::<NexusCommand>() as u64
         || arguments[3] != core::mem::size_of::<NexusReply>() as u64
@@ -494,18 +486,15 @@ fn nexus_control_from_user(arguments: [u64; 6]) -> isize {
 
 #[cfg(target_os = "none")]
 fn nexus_telemetry_to_user(arguments: [u64; 6]) -> isize {
-    use aether::nexus_wire::NexusTelemetry;
     use crate::arch::{Active, Architecture};
+    use aether::nexus_wire::NexusTelemetry;
 
     if arguments[1] != core::mem::size_of::<NexusTelemetry>() as u64 {
         return ERROR_INVALID_ARGUMENT;
     }
 
     let sequence = arguments[2];
-    let telemetry = crate::nexus_runtime::telemetry(
-        sequence,
-        Active::counter_sample(),
-    );
+    let telemetry = crate::nexus_runtime::telemetry(sequence, Active::counter_sample());
 
     if copy_value_to_user(arguments[0], &telemetry).is_err() {
         return ERROR_BAD_ADDRESS;

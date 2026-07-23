@@ -1,7 +1,6 @@
 use aether::grimoire;
 use aether::nexus_wire::{
-    NexusCommand, NexusOpcode, NexusReply, NexusStatus,
-    NexusTelemetry, WireError,
+    NexusCommand, NexusOpcode, NexusReply, NexusStatus, NexusTelemetry, WireError,
 };
 
 use crate::{SyscallError, syscall};
@@ -34,12 +33,7 @@ impl NexusClient {
         let sequence = self.next_sequence;
         self.next_sequence = self.next_sequence.wrapping_add(1).max(1);
 
-        let command = NexusCommand::new(
-            opcode,
-            sequence,
-            self.capability,
-            arguments,
-        );
+        let command = NexusCommand::new(opcode, sequence, self.capability, arguments);
 
         let mut reply = NexusReply::ZERO;
 
@@ -60,9 +54,7 @@ impl NexusClient {
         }
         .map_err(NexusClientError::Syscall)?;
 
-        let status = reply
-            .validate(sequence)
-            .map_err(NexusClientError::Wire)?;
+        let status = reply.validate(sequence).map_err(NexusClientError::Wire)?;
 
         if status != NexusStatus::Ok {
             return Err(NexusClientError::Kernel(status));
@@ -71,9 +63,7 @@ impl NexusClient {
         Ok(reply)
     }
 
-    pub fn telemetry(
-        &mut self,
-    ) -> Result<NexusTelemetry, NexusClientError> {
+    pub fn telemetry(&mut self) -> Result<NexusTelemetry, NexusClientError> {
         let sequence = self.next_sequence;
         self.next_sequence = self.next_sequence.wrapping_add(1).max(1);
 
@@ -96,16 +86,12 @@ impl NexusClient {
         }
         .map_err(NexusClientError::Syscall)?;
 
-        telemetry
-            .validate()
-            .map_err(NexusClientError::Wire)?;
+        telemetry.validate().map_err(NexusClientError::Wire)?;
 
         Ok(telemetry)
     }
 
-    pub fn query_stats(
-        &mut self,
-    ) -> Result<NexusReply, NexusClientError> {
+    pub fn query_stats(&mut self) -> Result<NexusReply, NexusClientError> {
         self.transact(NexusOpcode::QueryStats, [0; 4])
     }
 
@@ -114,10 +100,7 @@ impl NexusClient {
         task: u64,
         packed_hint: u64,
     ) -> Result<NexusReply, NexusClientError> {
-        self.transact(
-            NexusOpcode::AttachTask,
-            [task, packed_hint, 0, 0],
-        )
+        self.transact(NexusOpcode::AttachTask, [task, packed_hint, 0, 0])
     }
 
     pub fn entangle(
@@ -129,12 +112,9 @@ impl NexusClient {
         re_q16: i32,
         im_q16: i32,
     ) -> Result<NexusReply, NexusClientError> {
-        let phase_and_flags =
-            u64::from(phase_bin) | (u64::from(flags) << 32);
+        let phase_and_flags = u64::from(phase_bin) | (u64::from(flags) << 32);
 
-        let amplitude =
-            u64::from(re_q16 as u32)
-                | (u64::from(im_q16 as u32) << 32);
+        let amplitude = u64::from(re_q16 as u32) | (u64::from(im_q16 as u32) << 32);
 
         self.transact(
             NexusOpcode::Entangle,
@@ -146,30 +126,15 @@ impl NexusClient {
         &mut self,
         threshold: u64,
     ) -> Result<NexusReply, NexusClientError> {
-        self.transact(
-            NexusOpcode::SetCollapseThreshold,
-            [threshold, 0, 0, 0],
-        )
+        self.transact(NexusOpcode::SetCollapseThreshold, [threshold, 0, 0, 0])
     }
 
-    pub fn set_priority_mass(
-        &mut self,
-        mass: u16,
-    ) -> Result<NexusReply, NexusClientError> {
-        self.transact(
-            NexusOpcode::SetPriorityMass,
-            [u64::from(mass), 0, 0, 0],
-        )
+    pub fn set_priority_mass(&mut self, mass: u16) -> Result<NexusReply, NexusClientError> {
+        self.transact(NexusOpcode::SetPriorityMass, [u64::from(mass), 0, 0, 0])
     }
 
-    pub fn offer_kairos(
-        &mut self,
-        pair_index: usize,
-    ) -> Result<NexusReply, NexusClientError> {
-        self.transact(
-            NexusOpcode::OfferKairos,
-            [pair_index as u64, 0, 0, 0],
-        )
+    pub fn offer_kairos(&mut self, pair_index: usize) -> Result<NexusReply, NexusClientError> {
+        self.transact(NexusOpcode::OfferKairos, [pair_index as u64, 0, 0, 0])
     }
 }
 

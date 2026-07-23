@@ -4,18 +4,18 @@
 // SYMBIOSIS — Endosymbiotic Process Merger
 //
 // Concept based on the Endosymbiotic Theory (how mitochondria evolved):
-// When two isolated processes communicate heavily via IPC (detected by 
-// high coupling in the Eigenthread Hamiltonian), the kernel initiates 
+// When two isolated processes communicate heavily via IPC (detected by
+// high coupling in the Eigenthread Hamiltonian), the kernel initiates
 // forced endosymbiosis.
 //
 // The smaller/subservient process is "engulfed" by the larger process.
 //   1. Their virtual address spaces are quantum-entangled (Tartarus Deep).
-//   2. The engulfed process becomes an obligate parasite (a thread) 
+//   2. The engulfed process becomes an obligate parasite (a thread)
 //      within the host process's domain.
 //   3. IPC channels between them decay into direct memory reads/writes.
 //
-// If the symbiosis turns parasitic (the engulfed thread consumes too much 
-// CPU without yielding beneficial data), the host immune system (Macrophage) 
+// If the symbiosis turns parasitic (the engulfed thread consumes too much
+// CPU without yielding beneficial data), the host immune system (Macrophage)
 // will trigger apoptosis in the parasite.
 
 #![allow(dead_code)]
@@ -36,17 +36,19 @@ pub const MAX_ORGANELLES: usize = 16;
 // ─────────────────────────────────────────────
 
 pub struct Organelle {
-    pub original_pid:    u32,
+    pub original_pid: u32,
     pub instruction_ptr: u64,
-    pub stack_ptr:       u64,
-    pub atp_production:  i64, // Utility provided to host (16.16 fp)
+    pub stack_ptr: u64,
+    pub atp_production: i64,  // Utility provided to host (16.16 fp)
     pub atp_consumption: i64, // CPU time consumed (16.16 fp)
-    pub alive:           bool,
+    pub alive: bool,
 }
 
 impl Organelle {
     pub fn utility_ratio(&self) -> i64 {
-        if self.atp_consumption == 0 { return 0x0001_0000; }
+        if self.atp_consumption == 0 {
+            return 0x0001_0000;
+        }
         (self.atp_production << 16) / self.atp_consumption
     }
 }
@@ -56,9 +58,9 @@ impl Organelle {
 // ─────────────────────────────────────────────
 
 pub struct Eukaryote {
-    pub host_pid:   u32,
+    pub host_pid: u32,
     pub organelles: Vec<Organelle>,
-    pub cr3_hash:   u64, // Unified page table hash
+    pub cr3_hash: u64, // Unified page table hash
 }
 
 impl Eukaryote {
@@ -72,7 +74,9 @@ impl Eukaryote {
 
     /// Phagocytosis: Host engulfs the target process
     pub fn engulf(&mut self, target_pid: u32, target_ip: u64, target_sp: u64) -> bool {
-        if self.organelles.len() >= MAX_ORGANELLES { return false; }
+        if self.organelles.len() >= MAX_ORGANELLES {
+            return false;
+        }
         self.organelles.push(Organelle {
             original_pid: target_pid,
             instruction_ptr: target_ip,
@@ -118,18 +122,31 @@ impl SymbiosisEngine {
     }
 
     /// Check if two processes should merge based on Hamiltonian coupling
-    pub fn evaluate_coupling(&mut self, pid_a: u32, pid_b: u32, coupling_fp: i64, a_is_larger: bool) -> bool {
+    pub fn evaluate_coupling(
+        &mut self,
+        pid_a: u32,
+        pid_b: u32,
+        coupling_fp: i64,
+        a_is_larger: bool,
+    ) -> bool {
         if coupling_fp > SYMBIOSIS_THRESHOLD_FP {
             // Initiate merger!
-            let (host, parasite) = if a_is_larger { (pid_a, pid_b) } else { (pid_b, pid_a) };
-            
+            let (host, parasite) = if a_is_larger {
+                (pid_a, pid_b)
+            } else {
+                (pid_b, pid_a)
+            };
+
             // Find or create host
-            let host_idx = self.eukaryotes.iter().position(|e| e.host_pid == host)
+            let host_idx = self
+                .eukaryotes
+                .iter()
+                .position(|e| e.host_pid == host)
                 .unwrap_or_else(|| {
                     self.eukaryotes.push(Eukaryote::new(host, 0x1000)); // fake CR3
                     self.eukaryotes.len() - 1
                 });
-            
+
             if self.eukaryotes[host_idx].engulf(parasite, 0x400000, 0x7FFFFFFF0000) {
                 self.total_mergers.fetch_add(1, Ordering::Relaxed);
                 return true; // Merger successful

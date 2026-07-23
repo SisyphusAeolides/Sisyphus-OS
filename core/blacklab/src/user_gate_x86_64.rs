@@ -30,7 +30,11 @@ pub mod plat {
     pub const PTE_NX: u64 = 1 << 63;
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub enum VmError { Oom, Map, Bad }
+    pub enum VmError {
+        Oom,
+        Map,
+        Bad,
+    }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub struct AddressSpace {
@@ -57,7 +61,12 @@ pub mod plat {
         Ok((p, p as *mut u8))
     }
 
-    pub unsafe fn map_page(_aspace: &AddressSpace, _vaddr: u64, _paddr: u64, _flags: u64) -> Result<(), VmError> {
+    pub unsafe fn map_page(
+        _aspace: &AddressSpace,
+        _vaddr: u64,
+        _paddr: u64,
+        _flags: u64,
+    ) -> Result<(), VmError> {
         // STUB: Wire this to your real page table walk
         Ok(())
     }
@@ -65,7 +74,10 @@ pub mod plat {
     pub unsafe fn new_user_address_space() -> Result<AddressSpace, VmError> {
         let (p, v) = alloc_phys_page()?;
         ptr::write_bytes(v, 0, PAGE_SIZE);
-        Ok(AddressSpace { root_phys: p, epoch: 1 })
+        Ok(AddressSpace {
+            root_phys: p,
+            epoch: 1,
+        })
     }
 
     pub unsafe fn map_range_zeroed(
@@ -79,8 +91,12 @@ pub mod plat {
             let (p, v) = alloc_phys_page()?;
             ptr::write_bytes(v, 0, PAGE_SIZE);
             let mut f = PTE_P | PTE_U;
-            if writable { f |= PTE_W; }
-            if !executable { f |= PTE_NX; }
+            if writable {
+                f |= PTE_W;
+            }
+            if !executable {
+                f |= PTE_NX;
+            }
             map_page(aspace, start + (i as u64 * PAGE_SIZE as u64), p, f)?;
         }
         Ok(())
@@ -90,7 +106,9 @@ pub mod plat {
         static mut RSP0: u64 = 0;
         CpuLocal {
             cpu_id: 0,
-            tss: TssRef { rsp0_slot: &raw mut RSP0 },
+            tss: TssRef {
+                rsp0_slot: &raw mut RSP0,
+            },
             kernel_stack_top: 0xFFFF_8000_0007_F000,
         }
     }
@@ -158,21 +176,44 @@ pub mod elf64 {
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub enum ElfError {
-        TooSmall, BadMagic, BadClass, BadEndian, BadMachine, BadType, BadPhentsize, Truncated,
+        TooSmall,
+        BadMagic,
+        BadClass,
+        BadEndian,
+        BadMachine,
+        BadType,
+        BadPhentsize,
+        Truncated,
     }
 
     pub unsafe fn parse_header(image: &[u8]) -> Result<&Ehdr, ElfError> {
-        if image.len() < size_of::<Ehdr>() { return Err(ElfError::TooSmall); }
+        if image.len() < size_of::<Ehdr>() {
+            return Err(ElfError::TooSmall);
+        }
         let eh = &*(image.as_ptr() as *const Ehdr);
-        if eh.e_ident[0..4] != [0x7F, b'E', b'L', b'F'] { return Err(ElfError::BadMagic); }
-        if eh.e_ident[4] != 2 { return Err(ElfError::BadClass); } // 64-bit
-        if eh.e_ident[5] != 1 { return Err(ElfError::BadEndian); } // LSB
-        if eh.e_machine != EM_X86_64 { return Err(ElfError::BadMachine); }
-        if eh.e_type != ET_EXEC && eh.e_type != ET_DYN { return Err(ElfError::BadType); }
-        if eh.e_phentsize as usize != size_of::<Phdr>() { return Err(ElfError::BadPhentsize); }
-        
+        if eh.e_ident[0..4] != [0x7F, b'E', b'L', b'F'] {
+            return Err(ElfError::BadMagic);
+        }
+        if eh.e_ident[4] != 2 {
+            return Err(ElfError::BadClass);
+        } // 64-bit
+        if eh.e_ident[5] != 1 {
+            return Err(ElfError::BadEndian);
+        } // LSB
+        if eh.e_machine != EM_X86_64 {
+            return Err(ElfError::BadMachine);
+        }
+        if eh.e_type != ET_EXEC && eh.e_type != ET_DYN {
+            return Err(ElfError::BadType);
+        }
+        if eh.e_phentsize as usize != size_of::<Phdr>() {
+            return Err(ElfError::BadPhentsize);
+        }
+
         let end = eh.e_phoff as usize + eh.e_phnum as usize * size_of::<Phdr>();
-        if end > image.len() { return Err(ElfError::Truncated); }
+        if end > image.len() {
+            return Err(ElfError::Truncated);
+        }
         Ok(eh)
     }
 
@@ -189,9 +230,9 @@ pub mod elf64 {
 // ============================================================================
 pub mod sigil {
     pub const SIGIL_LAUNCH: u64 = 0xA11CE_1000;
-    pub const SIGIL_WRITE:  u64 = 0xA11CE_1001;
-    pub const SIGIL_YIELD:  u64 = 0xA11CE_1002;
-    pub const SIGIL_TIME:   u64 = 0xA11CE_1003;
+    pub const SIGIL_WRITE: u64 = 0xA11CE_1001;
+    pub const SIGIL_YIELD: u64 = 0xA11CE_1002;
+    pub const SIGIL_TIME: u64 = 0xA11CE_1003;
     pub const SIGIL_REVOKE: u64 = 0xA11CE_10FE;
 
     #[repr(C)]
@@ -206,10 +247,7 @@ pub mod sigil {
     }
 
     pub fn seal(pid: u32, epoch: u64, entry: u64) -> u64 {
-        (pid as u64)
-            ^ epoch.rotate_left(17)
-            ^ entry.rotate_right(9)
-            ^ 0xD15C_A11C_E000_0001
+        (pid as u64) ^ epoch.rotate_left(17) ^ entry.rotate_right(9) ^ 0xD15C_A11C_E000_0001
     }
 }
 
@@ -269,20 +307,36 @@ pub mod blacklab {
     static GLOBAL_EPOCH: AtomicU64 = AtomicU64::new(1);
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub enum LoadError { Elf(ElfError), Vm(plat::VmError), Poison, BadLaunch }
+    pub enum LoadError {
+        Elf(ElfError),
+        Vm(plat::VmError),
+        Poison,
+        BadLaunch,
+    }
 
     // Minimal x86-64 hardware trap frame for IRETQ/SYSCALL
     #[repr(C, packed)]
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub struct TrapFrame {
         // Offset 0x00
-        pub r15: u64, pub r14: u64, pub r13: u64, pub r12: u64,
+        pub r15: u64,
+        pub r14: u64,
+        pub r13: u64,
+        pub r12: u64,
         // Offset 0x20
-        pub r11: u64, pub r10: u64, pub r9: u64,  pub r8: u64,
+        pub r11: u64,
+        pub r10: u64,
+        pub r9: u64,
+        pub r8: u64,
         // Offset 0x40
-        pub rbp: u64, pub rdi: u64, pub rsi: u64, pub rdx: u64,
+        pub rbp: u64,
+        pub rdi: u64,
+        pub rsi: u64,
+        pub rdx: u64,
         // Offset 0x60
-        pub rcx: u64, pub rbx: u64, pub rax: u64,
+        pub rcx: u64,
+        pub rbx: u64,
+        pub rax: u64,
         // Offset 0x78
         pub error_code: u64,
         // Offset 0x80 (IRETQ Frame)
@@ -294,30 +348,51 @@ pub mod blacklab {
     }
 
     impl Default for TrapFrame {
-        fn default() -> Self { unsafe { core::mem::zeroed() } }
+        fn default() -> Self {
+            unsafe { core::mem::zeroed() }
+        }
     }
 
-    pub fn next_epoch() -> u64 { GLOBAL_EPOCH.fetch_add(1, Ordering::AcqRel) }
+    pub fn next_epoch() -> u64 {
+        GLOBAL_EPOCH.fetch_add(1, Ordering::AcqRel)
+    }
 
     fn build_stack(top: u64) -> u64 {
         let mut sp = top & !0xF;
-        sp -= 8; unsafe { *(sp as *mut u64) = 0; } // Auxv end / env end
-        sp -= 8; unsafe { *(sp as *mut u64) = 0; } // argv end
-        sp -= 8; unsafe { *(sp as *mut u64) = 0; } // argc = 0
+        sp -= 8;
+        unsafe {
+            *(sp as *mut u64) = 0;
+        } // Auxv end / env end
+        sp -= 8;
+        unsafe {
+            *(sp as *mut u64) = 0;
+        } // argv end
+        sp -= 8;
+        unsafe {
+            *(sp as *mut u64) = 0;
+        } // argc = 0
         sp
     }
 
-    unsafe fn map_segment(aspace: &plat::AddressSpace, image: &[u8], ph: &Phdr) -> Result<(), LoadError> {
-        if ph.p_memsz < ph.p_filesz { return Err(LoadError::BadLaunch); }
+    unsafe fn map_segment(
+        aspace: &plat::AddressSpace,
+        image: &[u8],
+        ph: &Phdr,
+    ) -> Result<(), LoadError> {
+        if ph.p_memsz < ph.p_filesz {
+            return Err(LoadError::BadLaunch);
+        }
         let start = ph.p_vaddr & !((plat::PAGE_SIZE as u64) - 1);
-        let end = (ph.p_vaddr + ph.p_memsz + (plat::PAGE_SIZE as u64 - 1)) & !((plat::PAGE_SIZE as u64) - 1);
+        let end = (ph.p_vaddr + ph.p_memsz + (plat::PAGE_SIZE as u64 - 1))
+            & !((plat::PAGE_SIZE as u64) - 1);
         let pages = ((end - start) / plat::PAGE_SIZE as u64) as usize;
-        
+
         let writable = (ph.p_flags & PF_W) != 0;
         let executable = (ph.p_flags & PF_X) != 0;
-        
-        plat::map_range_zeroed(aspace, start, pages, writable, executable).map_err(LoadError::Vm)?;
-        
+
+        plat::map_range_zeroed(aspace, start, pages, writable, executable)
+            .map_err(LoadError::Vm)?;
+
         if ph.p_filesz != 0 {
             let src = image.as_ptr().add(ph.p_offset as usize);
             let dst = ph.p_vaddr as *mut u8;
@@ -337,36 +412,78 @@ pub mod blacklab {
         let mut hi = 0u64;
 
         for p in ph {
-            if p.p_type != PT_LOAD { continue; }
-            if p.p_vaddr >= plat::USER_TOP { return Err(LoadError::BadLaunch); }
+            if p.p_type != PT_LOAD {
+                continue;
+            }
+            if p.p_vaddr >= plat::USER_TOP {
+                return Err(LoadError::BadLaunch);
+            }
             map_segment(&aspace, image, p)?;
             lo = lo.min(p.p_vaddr & !((plat::PAGE_SIZE as u64) - 1));
-            hi = hi.max((p.p_vaddr + p.p_memsz + (plat::PAGE_SIZE as u64 - 1)) & !((plat::PAGE_SIZE as u64) - 1));
+            hi = hi.max(
+                (p.p_vaddr + p.p_memsz + (plat::PAGE_SIZE as u64 - 1))
+                    & !((plat::PAGE_SIZE as u64) - 1),
+            );
         }
 
         // Establish stack and shadow-stack zones.
         let user_stack_top = plat::USER_STACK_TOP;
-        let shadow_stack_top = plat::USER_STACK_TOP - ((plat::USER_STACK_PAGES as u64 + plat::USER_GUARD_PAGES as u64) * plat::PAGE_SIZE as u64);
-        
-        plat::map_range_zeroed(&aspace, shadow_stack_top - (plat::USER_STACK_PAGES as u64 * plat::PAGE_SIZE as u64), plat::USER_STACK_PAGES, true, false).map_err(LoadError::Vm)?;
-        plat::map_range_zeroed(&aspace, user_stack_top - (plat::USER_STACK_PAGES as u64 * plat::PAGE_SIZE as u64), plat::USER_STACK_PAGES, true, false).map_err(LoadError::Vm)?;
+        let shadow_stack_top = plat::USER_STACK_TOP
+            - ((plat::USER_STACK_PAGES as u64 + plat::USER_GUARD_PAGES as u64)
+                * plat::PAGE_SIZE as u64);
+
+        plat::map_range_zeroed(
+            &aspace,
+            shadow_stack_top - (plat::USER_STACK_PAGES as u64 * plat::PAGE_SIZE as u64),
+            plat::USER_STACK_PAGES,
+            true,
+            false,
+        )
+        .map_err(LoadError::Vm)?;
+        plat::map_range_zeroed(
+            &aspace,
+            user_stack_top - (plat::USER_STACK_PAGES as u64 * plat::PAGE_SIZE as u64),
+            plat::USER_STACK_PAGES,
+            true,
+            false,
+        )
+        .map_err(LoadError::Vm)?;
 
         let launch_seal = sigil::seal(pid, epoch, eh.e_entry);
         let process = Process {
-            pid, epoch, aspace, entry: eh.e_entry, image_lo: lo, image_hi: hi,
-            stack_top: build_stack(user_stack_top), shadow_stack_top,
+            pid,
+            epoch,
+            aspace,
+            entry: eh.e_entry,
+            image_lo: lo,
+            image_hi: hi,
+            stack_top: build_stack(user_stack_top),
+            shadow_stack_top,
             ownership: Ownership {
-                parent_pid: 0, owner_uid: 0, owner_gid: 0, session_id: pid,
-                retained: 1, launch_epoch: epoch,
+                parent_pid: 0,
+                owner_uid: 0,
+                owner_gid: 0,
+                session_id: pid,
+                retained: 1,
+                launch_epoch: epoch,
             },
-            launch_seal, active: true, poison: 0, journal_head: 0,
+            launch_seal,
+            active: true,
+            poison: 0,
+            journal_head: 0,
         };
 
         let thread = Thread {
-            tid: NEXT_TID.fetch_add(1, Ordering::AcqRel), pid,
-            user_rip: process.entry, user_rsp: process.stack_top, user_ssp: process.shadow_stack_top,
+            tid: NEXT_TID.fetch_add(1, Ordering::AcqRel),
+            pid,
+            user_rip: process.entry,
+            user_rsp: process.stack_top,
+            user_ssp: process.shadow_stack_top,
             kernel_rsp0: plat::current_cpu_local().kernel_stack_top,
-            fs_base: 0, gs_base: 0, state: 1, sigil: launch_seal,
+            fs_base: 0,
+            gs_base: 0,
+            state: 1,
+            sigil: launch_seal,
         };
 
         Ok((process, thread))
@@ -379,7 +496,7 @@ pub mod blacklab {
         tf.rflags = unsafe { plat::rflags() } | (1 << 9); // Interrupts enabled (IF)
         tf.rsp = thread.user_rsp;
         tf.ss = plat::USER_DS as u64;
-        
+
         // Pass the sigil to user-space in rax to authorize the launch.
         tf.rax = proc.launch_seal;
         tf
@@ -428,7 +545,6 @@ pub mod blacklab {
         naked_asm!(
             // Move pointer to the TrapFrame into a less clobbered register
             "mov rdx, rdi",
-            
             // Restore GPRs from offsets based on TrapFrame layout
             "mov r15, [rdx + 0x00]",
             "mov r14, [rdx + 0x08]",
@@ -445,17 +561,14 @@ pub mod blacklab {
             "mov rcx, [rdx + 0x60]",
             "mov rbx, [rdx + 0x68]",
             "mov rax, [rdx + 0x70]",
-            
             // Construct the IRETQ stack frame (SS, RSP, RFLAGS, CS, RIP)
             "push qword ptr [rdx + 0xA0]", // SS
             "push qword ptr [rdx + 0x98]", // RSP
             "push qword ptr [rdx + 0x90]", // RFLAGS
             "push qword ptr [rdx + 0x88]", // CS
             "push qword ptr [rdx + 0x80]", // RIP
-            
             // Finally restore RDX
             "mov rdx, [rdx + 0x58]",
-            
             // Blast off into Ring 3
             "iretq",
         )
@@ -476,13 +589,13 @@ pub fn rdtsc() -> u64 {
 pub unsafe fn launch_blacklab(image: &[u8]) -> Result<blacklab::TrapFrame, blacklab::LoadError> {
     let (proc, thread) = blacklab::load(image)?;
     let cpu = plat::current_cpu_local();
-    
+
     // Set up the Ring 0 stack pointer for when the user process traps.
     plat::write_tss_rsp0(&cpu, thread.kernel_rsp0);
-    
+
     // Install the user address space.
     plat::load_cr3(proc.aspace.root_phys);
-    
+
     // Return the trap frame ready for `enter_ring3`
     Ok(blacklab::make_user_tf(&proc, &thread))
 }

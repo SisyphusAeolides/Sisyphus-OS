@@ -1,9 +1,9 @@
 #![no_std]
 
-pub mod prometheus;
 pub mod golem;
 pub mod lazarus;
 pub mod membrane;
+pub mod prometheus;
 
 use core::ffi::c_void;
 

@@ -15,7 +15,11 @@ impl EventHorizon {
         let size = width * height;
         let mut data = Vec::with_capacity(size);
         data.resize(size, 0);
-        Self { data, width, height }
+        Self {
+            data,
+            width,
+            height,
+        }
     }
 }
 
@@ -52,7 +56,7 @@ impl Swapchain {
         // Spaghettification: zero out the old buffer asynchronously
         spaghettify(old_front).await;
     }
-    
+
     /// Get a reference to the backbuffer for drawing.
     /// Safety: Caller must ensure this isn't called concurrently with `flip_and_spaghettify`.
     pub unsafe fn backbuffer(&self) -> &mut EventHorizon {
