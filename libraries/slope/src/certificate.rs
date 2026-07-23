@@ -9,6 +9,13 @@ pub enum CertificateReaderError {
     InvalidCertificate(CertificateError),
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct EchoState {
+    pub chain_root: u64,
+    pub sequence: u64,
+    pub verdict: u64,
+}
+
 pub struct CertificateReader {
     page: &'static CertificatePage,
 }
@@ -60,5 +67,15 @@ impl CertificateReader {
             .map_err(CertificateReaderError::InvalidCertificate)?;
 
         Ok((outcome == CertificateOutcome::Committed).then_some(certificate))
+    }
+
+    pub fn echo_state(&self) -> EchoState {
+        let (chain_root, sequence, verdict) = self.page.echo_state();
+
+        EchoState {
+            chain_root,
+            sequence,
+            verdict,
+        }
     }
 }

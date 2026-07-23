@@ -162,9 +162,19 @@ impl CertificatePage {
     }
 
     pub fn publish_echo_state(&self, echo_root: u64, sequence: u64, verdict: u64) {
-        self.core.reserved[0].store(echo_root, Ordering::Release);
-        self.core.reserved[1].store(sequence, Ordering::Release);
+        self.core.reserved[0].store(echo_root, Ordering::Relaxed);
+        self.core.reserved[1].store(sequence, Ordering::Relaxed);
         self.core.reserved[2].store(verdict, Ordering::Release);
+    }
+
+    pub fn echo_state(&self) -> (u64, u64, u64) {
+        let verdict = self.core.reserved[2].load(Ordering::Acquire);
+
+        let root = self.core.reserved[0].load(Ordering::Relaxed);
+
+        let sequence = self.core.reserved[1].load(Ordering::Relaxed);
+
+        (root, sequence, verdict)
     }
 }
 
