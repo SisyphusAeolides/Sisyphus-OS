@@ -160,7 +160,7 @@ impl BootstrapChronal {
         let mut export_hash = [0u64; HASH_WORDS];
         let mut j = 0usize;
         while j < exports.len() {
-            let w = splitmix64(exports[j] ^ 0xE490_878A_5400_0000u64);
+            let w = splitmix64(exports[j] ^ 0xE8B0_97A5_5000_0000);
             export_hash[j % HASH_WORDS] ^= w;
             j += 1;
         }
