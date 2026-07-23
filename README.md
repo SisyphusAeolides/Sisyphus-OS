@@ -175,10 +175,16 @@ Aether provides allocation-free effect state machines whose handlers fail
 closed on unknown operations, a bounded single-writer flight recorder with
 stable logical tickets, and a policy VM with verified registers and branches,
 bounded execution fuel, serialized program replacement, and explicit
-host-call registration. Boulder supplies architecture timestamps and CPU IDs
-and gates policy installation through scoped authority. Software provenance,
-speculative journals, and linear session IPC remain disabled until their
-cross-CPU ownership and revocation models are complete.
+host-call registration. It executes policy mutations across a trinary
+counterfactual Reality Forge (lanes α, β, and γ), reducing state divergence
+to a 2-of-3 consensus majority. This self-verifying state-transmutation layer
+ensures deterministic replay and fault containment without hidden runtime
+machinery. Rejected realities are preserved in a bounded Divergence Vault,
+while committed transitions are cryptographically sealed into a 128-byte
+Transition Certificate, published atomically to user-space via Cerebral's
+read-only pages. Software provenance, speculative journals, and linear session
+IPC remain disabled until their cross-CPU ownership and revocation models are
+complete.
 
 Kairos strictly negotiates self-describing ABI layouts and feature
 intersections, constructs bounded machine profiles from Boulder's real ACPI,
