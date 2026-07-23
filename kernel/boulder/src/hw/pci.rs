@@ -197,6 +197,73 @@ fn decode_device(
         interrupt_pin: (interrupt >> 8) as u8,
     }
 }
+/// Read a 32-bit PCI config dword. Safe wrapper over the locked CF8/CFC path.
+pub unsafe fn read_config_u32(address: PciAddress, offset: u8) -> u32 {
+    unsafe { read_configuration_u32(address, offset) }
+}
+
+/// Write a 32-bit PCI config dword under the global configuration lock.
+pub unsafe fn write_config_u32(address: PciAddress, offset: u8, value: u32) {
+    let _access = CONFIGURATION_ACCESS.lock();
+    unsafe {
+        outl(CONFIG_ADDRESS, address.configuration_address(offset));
+        outl(CONFIG_DATA, value);
+    }
+}
+
+/// Probe BAR sizes for a type-0 header without permanently destroying BARs.
+///
+/// Returns lengths in bytes for BAR0..BAR5. 64-bit BARs report size in the
+/// low slot and 0 in the high slot. I/O BARs report their I/O window size.
+///
+/// # Safety
+/// Device must be quiescent. No concurrent MMIO through these BARs.
+pub unsafe fn bar_lengths(address: PciAddress) -> [u64; 6] {
+    let mut lengths = [0_u64; 6];
+    let mut index = 0_usize;
+    while index < 6 {
+        let offset = 0x10 + (index as u8) * 4;
+        let original = unsafe { read_configuration_u32(address, offset) };
+        unsafe { write_config_u32(address, offset, 0xffff_ffff) };
+        let probed = unsafe { read_configuration_u32(address, offset) };
+        unsafe { write_config_u32(address, offset, original) };
+
+        if probed == 0 || probed == 0xffff_ffff {
+            index += 1;
+            continue;
+        }
+
+        let is_io = original & 1 != 0;
+        if is_io {
+            let mask = probed & 0xffff_fffc;
+            lengths[index] = (!mask).wrapping_add(1) as u64 & 0xffff;
+            index += 1;
+            continue;
+        }
+
+        let mem_type = (original >> 1) & 0b11;
+        if mem_type == 0b10 && index + 1 < 6 {
+            // 64-bit memory BAR
+            let offset_hi = offset + 4;
+            let original_hi = unsafe { read_configuration_u32(address, offset_hi) };
+            unsafe { write_config_u32(address, offset_hi, 0xffff_ffff) };
+            let probed_hi = unsafe { read_configuration_u32(address, offset_hi) };
+            unsafe { write_config_u32(address, offset_hi, original_hi) };
+
+            let low = (probed & 0xffff_fff0) as u64;
+            let high = (probed_hi as u64) << 32;
+            let mask = low | high;
+            lengths[index] = (!mask).wrapping_add(1);
+            lengths[index + 1] = 0;
+            index += 2;
+        } else {
+            let mask = probed & 0xffff_fff0;
+            lengths[index] = (!mask).wrapping_add(1) as u64;
+            index += 1;
+        }
+    }
+    lengths
+}
 
 #[cfg(test)]
 mod tests {
