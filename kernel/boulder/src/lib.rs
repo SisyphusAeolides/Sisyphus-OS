@@ -16,7 +16,6 @@ pub mod capability;
 pub mod cassandra_reactor;
 pub mod causal_lattice;
 pub mod cech_h1;
-pub mod manifold_orchestrator;
 
 pub mod charybdis_dma_firewall;
 pub mod chronovore;
@@ -45,6 +44,7 @@ pub mod kairos;
 pub mod kardashev_governor;
 pub mod lab_capsule;
 pub mod lease_lattice;
+pub mod manifold_orchestrator;
 pub mod many_worlds;
 pub mod memory;
 pub mod mirage;

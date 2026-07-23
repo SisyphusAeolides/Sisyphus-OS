@@ -190,9 +190,11 @@ pub mod ghost_kind {
     pub const PARADOX_ROLLBACK: u16 = 8;
     pub const WORLD_SELECTED: u16 = 9;
     pub const CAUSAL_REJECTION: u16 = 10;
-    pub const TOPOLOGY_SEED: u16 = 11;
-    pub const TOPOLOGY_HODGE_HEAT: u16 = 12;
-    pub const TOPOLOGY_CLUSTER_MUT: u16 = 13;
-    pub const TOPOLOGY_FAIRQ_PICK: u16 = 14;
-    pub const TOPOLOGY_ACTUATION: u16 = 15;
+    // Manifold orchestrator
+    pub const MANIFOLD_BOOT: u16 = 0xA001;
+    pub const HODGE_HEAT: u16 = 0xA002;
+    pub const CLUSTER_MUT: u16 = 0xA003;
+    pub const NTT_PICK: u16 = 0xA004;
+    pub const COMPLEX_ID: u16 = 0xA005;
+    pub const SEED_REPORT: u16 = 0xA006;
 }
