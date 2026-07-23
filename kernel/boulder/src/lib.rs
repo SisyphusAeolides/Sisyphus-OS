@@ -12,6 +12,7 @@ pub mod commit_reactor;
 pub mod continuity_vault;
 pub mod counterfactual;
 pub mod cpu;
+pub mod divergence_vault;
 pub mod drivers;
 pub mod fabric;
 pub mod fabric_weave;
