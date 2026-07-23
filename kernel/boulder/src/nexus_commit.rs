@@ -5,7 +5,7 @@ use aether::witness_chain::{CommitOutcome, CommitWitness, WitnessChain};
 
 use crate::nexus_matrix::{MatrixError, NexusMatrix};
 use crate::sync::SpinLock;
-use crate::thermogenesis::Thermogenesis;
+use crate::thermogenesis::ThermalLedger;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CommitError {
@@ -173,9 +173,10 @@ pub fn apply_prepared<
     const MOMENTS: usize,
     const BINS: usize,
     const N: usize,
+    T: ThermalLedger + ?Sized,
 >(
     matrix: &mut NexusMatrix<TASKS, PAIRS, CAGES, MOMENTS, BINS>,
-    thermal: &mut Thermogenesis,
+    thermal: &T,
     prepared: &PreparedEffects<N>,
     wall_tick: u64,
 ) -> Result<(), CommitError> {

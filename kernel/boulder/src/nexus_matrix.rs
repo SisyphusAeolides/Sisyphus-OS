@@ -8,7 +8,7 @@ use crate::kairos::{CriticalMoment, FLAG_KAIROS, KairosScheduler, KairosWindow, 
 use crate::ouroboros::{ConstructiveRing, ExecutorHook, PhaseHint, TaskId};
 use crate::quantum_nexus::Amplitude;
 use crate::tartarus_deep::{DecoherenceEvent, QuarantineLevel, TartarusCage};
-use crate::thermogenesis::Thermogenesis;
+use crate::thermogenesis::ThermalLedger;
 
 pub const MATRIX_PHASE_BINS: u16 = 1024;
 pub const MATRIX_HOLOGRAM_LEAVES: usize = 512;
@@ -118,12 +118,12 @@ impl<
         }
     }
 
-    pub fn execute(
+    pub fn execute<T: ThermalLedger + ?Sized>(
         &mut self,
         opcode: NexusOpcode,
         arguments: [u64; 4],
         wall_tick: u64,
-        thermal: &Thermogenesis,
+        thermal: &T,
     ) -> Result<[u64; 3], MatrixError> {
         match opcode {
             NexusOpcode::QueryStats | NexusOpcode::QueryTelemetry => {
@@ -248,7 +248,11 @@ impl<
         self.generation = self.generation.wrapping_add(1).max(1);
     }
 
-    pub fn heartbeat(&mut self, wall_tick: u64, thermal: &Thermogenesis) -> MatrixPulse {
+    pub fn heartbeat<T: ThermalLedger + ?Sized>(
+        &mut self,
+        wall_tick: u64,
+        thermal: &T,
+    ) -> MatrixPulse {
         let logical_tick = self.chrono.now_tick(ChronoTick(wall_tick)).0;
         self.last_logical_tick = logical_tick;
         self.last_heat = thermal.current_heat();
@@ -421,14 +425,14 @@ impl<
         tree.rebuild()
     }
 
-    fn entangle(
+    fn entangle<T: ThermalLedger + ?Sized>(
         &mut self,
         task_a: TaskId,
         task_b: TaskId,
         phase_bin: u16,
         flags: u32,
         amplitude: Amplitude,
-        thermal: &Thermogenesis,
+        thermal: &T,
     ) -> Result<usize, MatrixError> {
         if task_a == task_b || task_a == TaskId::INVALID || task_b == TaskId::INVALID {
             return Err(MatrixError::InvalidTask);
