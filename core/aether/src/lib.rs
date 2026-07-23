@@ -10,6 +10,7 @@ pub mod event_horizon;
 pub mod flight;
 pub mod grimoire;
 pub mod holographic;
+pub mod invariant_mesh;
 pub mod lockfree;
 pub mod nexus_wire;
 pub mod policy;
