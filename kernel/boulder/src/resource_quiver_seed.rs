@@ -18,8 +18,8 @@
 #![allow(dead_code)]
 
 use crate::cluster_quiver::{ClusterFault, FP_ONE, Fp, MAX_N, NodeKind, ResourceQuiver};
-use crate::drivers::drivernet::DrivernetSummary;
-use crate::drivers::drivernet::compat_oracle::DriverStrategy;
+use crate::drivers::drivernet::DriverNetSummary;
+use crate::drivers::drivernet::model::DriverStrategy;
 use crate::hw::pci::{PciDevice, PciInventory};
 
 const MAX_SEED_DEV: usize = 10;
@@ -66,18 +66,18 @@ fn seed_x(d: &PciDevice) -> Fp {
 
 fn strategy_congestion(s: DriverStrategy) -> Fp {
     match s {
-        DriverStrategy::HermesNative => 3 * FP_ONE,
-        DriverStrategy::MesaOpen => 2 * FP_ONE,
-        DriverStrategy::DrmKmsOnly => 2 * FP_ONE,
-        DriverStrategy::VfioHold => FP_ONE,
-        DriverStrategy::VesaFallback => FP_ONE / 2,
+        DriverStrategy::HermesNvidia => 3 * FP_ONE,
+        DriverStrategy::AmdDisplay | DriverStrategy::IntelDisplay => 2 * FP_ONE,
+        DriverStrategy::VirtioGpu | DriverStrategy::VirtualSvga => FP_ONE,
+        DriverStrategy::FirmwareFramebuffer => FP_ONE / 2,
+        DriverStrategy::Quarantine => 4 * FP_ONE,
     }
 }
 
 /// Build quiver. Returns report. `q` is overwritten.
 pub fn seed_from_pci_and_drivernet(
     inv: &PciInventory,
-    drive: &DrivernetSummary,
+    drive: &DriverNetSummary,
     q: &mut ResourceQuiver,
 ) -> Result<SeedReport, ClusterFault> {
     let devices = inv.devices();
@@ -115,7 +115,7 @@ pub fn seed_from_pci_and_drivernet(
     }
 
     // unique strategies from drivernet
-    let mut strats = [DriverStrategy::VesaFallback; 5];
+    let mut strats = [DriverStrategy::FirmwareFramebuffer; 5];
     let mut n_strat = 0usize;
     for r in drive.resolutions() {
         let s = r.strategy;

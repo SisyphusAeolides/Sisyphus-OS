@@ -27,6 +27,7 @@ pub mod cpu;
 pub mod cyclotomic_ntt;
 pub mod divergence_vault;
 pub mod driver_mitosis;
+pub mod drivernet_host;
 pub mod drivers;
 pub mod er_epr_memory;
 pub mod fabric;

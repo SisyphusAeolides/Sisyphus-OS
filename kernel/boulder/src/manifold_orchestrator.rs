@@ -18,8 +18,8 @@ use crate::cluster_quiver::{
     ClusterFault, FP_ONE as Q_ONE, Fp as QFp, MAX_N, NodeKind, ResourceQuiver,
 };
 use crate::cyclotomic_ntt::CyclotomicFairQ;
-use crate::drivers::drivernet::DrivernetSummary;
-use crate::drivers::drivernet::compat_oracle::DriverStrategy;
+use crate::drivers::drivernet::DriverNetSummary;
+use crate::drivers::drivernet::model::DriverStrategy;
 use crate::ghost_chronicle::{GhostChronicle, ghost_kind as orch_kind};
 use crate::hodge_cech::{FP_ONE as H_ONE, Fp as HFp, HodgeFault, HodgeNerve, MAX_F, MAX_V};
 use crate::hw::pci::{PciDevice, PciInventory};
@@ -168,7 +168,7 @@ impl ManifoldOrchestrator {
     pub fn boot(
         &mut self,
         inv: &PciInventory,
-        drive: &DrivernetSummary,
+        drive: &DriverNetSummary,
         serial: &mut SerialPort,
     ) -> Result<Actuation, OrchFault> {
         if self.phase != OrchPhase::Cold {
@@ -382,7 +382,7 @@ pub fn global_epoch() -> u64 {
 }
 
 /// main.rs bolt-in after drivernet::resolve_all.
-pub fn boot_after_drivernet(inv: &PciInventory, drive: &DrivernetSummary, serial: &mut SerialPort) {
+pub fn boot_after_drivernet(inv: &PciInventory, drive: &DriverNetSummary, serial: &mut SerialPort) {
     let orch = unsafe { global_mut() };
     match orch.boot(inv, drive, serial) {
         Ok(act) => {
@@ -452,16 +452,17 @@ fn seed_x(d: &PciDevice) -> QFp {
 
 fn strategy_congestion(s: DriverStrategy) -> QFp {
     match s {
-        DriverStrategy::HermesNative => 3 * Q_ONE,
-        DriverStrategy::MesaOpen | DriverStrategy::DrmKmsOnly => 2 * Q_ONE,
-        DriverStrategy::VfioHold => Q_ONE,
-        DriverStrategy::VesaFallback => Q_ONE / 2,
+        DriverStrategy::HermesNvidia => 3 * Q_ONE,
+        DriverStrategy::AmdDisplay | DriverStrategy::IntelDisplay => 2 * Q_ONE,
+        DriverStrategy::VirtioGpu | DriverStrategy::VirtualSvga => Q_ONE,
+        DriverStrategy::FirmwareFramebuffer => Q_ONE / 2,
+        DriverStrategy::Quarantine => 4 * Q_ONE,
     }
 }
 
 fn seed_quiver(
     inv: &PciInventory,
-    drive: &DrivernetSummary,
+    drive: &DriverNetSummary,
     q: &mut ResourceQuiver,
 ) -> Result<SeedReport, ClusterFault> {
     let devices = inv.devices();
@@ -496,7 +497,7 @@ fn seed_quiver(
         }
     }
 
-    let mut strats = [DriverStrategy::VesaFallback; 5];
+    let mut strats = [DriverStrategy::FirmwareFramebuffer; 5];
     let mut n_strat = 0usize;
     for r in drive.resolutions() {
         if !strats[..n_strat].contains(&r.strategy) && n_strat < 5 {

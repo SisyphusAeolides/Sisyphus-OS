@@ -1,0 +1,41 @@
+schema_version=2
+
+corpus_root=0x37d1e466f8787790
+
+model_root=0x908b27ce1c2a3b03
+
+quantization=7203.05532034
+
+training
+count=70
+accuracy=1.000000
+macro_accuracy=1.000000
+confusion:
+actual\predicted        HermesNvidia          AmdDisplay        IntelDisplay           VirtioGpu         VirtualSvga FirmwareFramebuffer          Quarantine
+    HermesNvidia                  10                   0                   0                   0                   0                   0                   0
+      AmdDisplay                   0                  10                   0                   0                   0                   0                   0
+    IntelDisplay                   0                   0                  10                   0                   0                   0                   0
+       VirtioGpu                   0                   0                   0                  10                   0                   0                   0
+     VirtualSvga                   0                   0                   0                   0                  10                   0                   0
+FirmwareFramebuffer                   0                   0                   0                   0                   0                  10                   0
+      Quarantine                   0                   0                   0                   0                   0                   0                  10
+margin_min=3913472
+margin_median=9554344.0
+margin_max=14291803
+
+validation
+count=14
+accuracy=0.928571
+macro_accuracy=0.928571
+confusion:
+actual\predicted        HermesNvidia          AmdDisplay        IntelDisplay           VirtioGpu         VirtualSvga FirmwareFramebuffer          Quarantine
+    HermesNvidia                   2                   0                   0                   0                   0                   0                   0
+      AmdDisplay                   1                   1                   0                   0                   0                   0                   0
+    IntelDisplay                   0                   0                   2                   0                   0                   0                   0
+       VirtioGpu                   0                   0                   0                   2                   0                   0                   0
+     VirtualSvga                   0                   0                   0                   0                   2                   0                   0
+FirmwareFramebuffer                   0                   0                   0                   0                   0                   2                   0
+      Quarantine                   0                   0                   0                   0                   0                   0                   2
+margin_min=202292
+margin_median=8921056.5
+margin_max=13829949

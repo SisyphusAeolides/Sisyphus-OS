@@ -1,11 +1,11 @@
-use crate::drivers::drivernet::fingerprint::VENDOR_NVIDIA;
+use crate::drivers::drivernet::fingerprint::VENDOR_AMD;
 use crate::drivers::drivernet::model::DriverStrategy;
 use crate::drivers::drivernet::registry::{
-    PROBE_EVIDENCE_COMMAND_RING, PROBE_EVIDENCE_HEALTH, PROBE_EVIDENCE_IDENTITY,
+    PROBE_EVIDENCE_DISPLAY_ENGINE, PROBE_EVIDENCE_HEALTH, PROBE_EVIDENCE_IDENTITY,
     PROBE_EVIDENCE_IOMMU_DOMAIN, PROBE_EVIDENCE_MMIO_DECODE, PROBE_EVIDENCE_RESET_PATH,
-    PROBE_EVIDENCE_TRANSPORT, ProbeProgram, ProbeSemantic, SHIM_FLAG_PRESERVE_FIRMWARE_DISPLAY,
-    SHIM_FLAG_READ_ONLY_PROBE, SHIM_FLAG_REQUIRES_EXCLUSIVE_DEVICE, SHIM_FLAG_SUPPORTS_ROLLBACK,
-    ShimDescriptor, VendorGate, empty_steps, native_required_topology, step,
+    ProbeProgram, ProbeSemantic, SHIM_FLAG_PRESERVE_FIRMWARE_DISPLAY, SHIM_FLAG_READ_ONLY_PROBE,
+    SHIM_FLAG_REQUIRES_EXCLUSIVE_DEVICE, SHIM_FLAG_SUPPORTS_ROLLBACK, ShimDescriptor, VendorGate,
+    empty_steps, native_required_topology, step,
 };
 
 pub const fn descriptor() -> ShimDescriptor {
@@ -32,11 +32,11 @@ pub const fn descriptor() -> ShimDescriptor {
         0,
     );
     steps[3] = step(
-        ProbeSemantic::SampleVendorSignature,
-        PROBE_EVIDENCE_MMIO_DECODE,
-        256,
+        ProbeSemantic::VerifyDisplayEngine,
+        PROBE_EVIDENCE_DISPLAY_ENGINE,
+        768,
         2,
-        3,
+        0,
     );
     steps[4] = step(
         ProbeSemantic::VerifyResetMechanism,
@@ -46,20 +46,6 @@ pub const fn descriptor() -> ShimDescriptor {
         0,
     );
     steps[5] = step(
-        ProbeSemantic::VerifyTransportPersonality,
-        PROBE_EVIDENCE_TRANSPORT,
-        1024,
-        1,
-        0,
-    );
-    steps[6] = step(
-        ProbeSemantic::VerifyCommandRingGeometry,
-        PROBE_EVIDENCE_COMMAND_RING,
-        512,
-        0,
-        0,
-    );
-    steps[7] = step(
         ProbeSemantic::EstablishHealthBaseline,
         PROBE_EVIDENCE_HEALTH,
         512,
@@ -68,11 +54,11 @@ pub const fn descriptor() -> ShimDescriptor {
     );
 
     ShimDescriptor {
-        strategy: DriverStrategy::HermesNvidia,
-        name: "hermes-nvidia",
+        strategy: DriverStrategy::AmdDisplay,
+        name: "amd-display",
         abi_version: 2,
         vendor_gate: VendorGate {
-            vendor_id: VENDOR_NVIDIA,
+            vendor_id: VENDOR_AMD,
             device_id_mask: 0,
             device_id_value: 0,
         },
@@ -83,19 +69,18 @@ pub const fn descriptor() -> ShimDescriptor {
             | SHIM_FLAG_READ_ONLY_PROBE
             | SHIM_FLAG_REQUIRES_EXCLUSIVE_DEVICE
             | SHIM_FLAG_SUPPORTS_ROLLBACK,
-        activation_budget_ticks: 32_768,
+        activation_budget_ticks: 24_576,
         health_budget_ticks: 8_192,
         program: ProbeProgram::new(
             steps,
-            8,
+            6,
             PROBE_EVIDENCE_IDENTITY
                 | PROBE_EVIDENCE_IOMMU_DOMAIN
                 | PROBE_EVIDENCE_MMIO_DECODE
+                | PROBE_EVIDENCE_DISPLAY_ENGINE
                 | PROBE_EVIDENCE_RESET_PATH
-                | PROBE_EVIDENCE_TRANSPORT
-                | PROBE_EVIDENCE_COMMAND_RING
                 | PROBE_EVIDENCE_HEALTH,
-            4_096,
+            3_072,
         ),
     }
 }

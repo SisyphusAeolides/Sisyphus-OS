@@ -796,7 +796,8 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
     );
 
     // Drivernet: collapse GPU driver superposition before Kairos profiles I/O.
-    let drivernet = boulder::drivers::drivernet::resolve_all(&pci_inventory, &mut serial);
+    let drivernet =
+        boulder::drivernet_host::resolve_drivernet(&pci_inventory, authority, &mut blacklab);
     let _ = writeln!(
         serial,
         "Boulder: drivernet resolved {} GPU slot(s), {} display function(s)",
