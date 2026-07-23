@@ -90,10 +90,12 @@ fn evaluate_policy_and_publish(wall_tick: u64) {
     if let Ok(Some(commit)) = LAB_CAPSULE.evaluate(metrics) {
         if POLICY_CRYSTAL.publish(commit.policy).is_ok() {
             if let Ok(majority) = POLICY_CRYSTAL.snapshot() {
-                let _ = nexus_runtime::apply_policy(majority.policy, wall_tick);
+                let _ = nexus_runtime::propose_policy(majority.policy, wall_tick);
             }
         }
     }
+
+    let _ = nexus_runtime::service_policy_commit(wall_tick);
 
     let (state_root, checkpoint_generation, witness_root) = nexus_runtime::continuity_state();
 

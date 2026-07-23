@@ -10,7 +10,9 @@ use aether::temporal_contract::{
 };
 
 use crate::capability::{Capability, ResonanceRight};
+use crate::commit_reactor::{CausalCommitReactor, ReactorError, ReactorPoll};
 use crate::continuity_vault::{CheckpointId, ContinuityVault};
+use crate::counterfactual::CounterfactualUniverse;
 use crate::lease_lattice::LeaseError;
 use crate::nexus_gateway::{GatewayError, NexusGateway};
 use crate::nexus_matrix::{
@@ -19,6 +21,7 @@ use crate::nexus_matrix::{
 use crate::singularity::{ContainmentOrder, StabilitySample};
 use crate::sync::SpinLock;
 use crate::thermogenesis::Thermogenesis;
+use aether::temporal_contract::TemporalObservation;
 
 pub const NEXUS_TASKS: usize = 64;
 pub const NEXUS_PAIRS: usize = 256;
@@ -51,7 +54,8 @@ static LAST_CHECKPOINT: SpinLock<Option<CheckpointId>> = SpinLock::new(None);
 
 static GATEWAY: KernelGateway = KernelGateway::new(0, 0x51_4e_45_58_55_53_21);
 
-static COMMIT_ENGINE: NexusCommitEngine<1, 16> = NexusCommitEngine::new(0);
+static POLICY_REACTOR: CausalCommitReactor<1, 16, 4> =
+    CausalCommitReactor::new(0x4341_5553_414c_5f31);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum InitializeError {
@@ -239,75 +243,118 @@ pub fn policy_contract(
     }
 }
 
-pub fn apply_policy(policy: ResonancePolicy, wall_tick: u64) -> Result<(), CommitError> {
-    if !READY.load(Ordering::Acquire) {
-        return Ok(());
-    }
+pub fn propose_policy(policy: ResonancePolicy, wall_tick: u64) -> Result<(), ReactorError> {
+    let matrix = MATRIX.lock();
+    let thermal_guard = THERMAL.lock();
 
-    let mut matrix = MATRIX.lock();
-    let mut thermal_guard = THERMAL.lock();
-
-    let Some(thermal) = thermal_guard.as_mut() else {
+    let Some(thermal) = thermal_guard.as_ref() else {
         return Ok(());
     };
 
-    let stats_before = matrix.stats();
-    let root_before = HOLOGRAM.lock().root();
+    let mut hologram = HOLOGRAM.lock();
 
-    let program = policy_effects(policy, stats_before.generation, root_before);
+    let root = matrix.refresh_hologram(&mut hologram).unwrap_or(0);
+
+    let stats = matrix.stats();
+
+    let observation = TemporalObservation {
+        generation: stats.generation,
+        pairs_live: stats.pairs_live,
+        state_root: root,
+        collapses: stats.collapses,
+        heat: thermal.current_heat(),
+        phase_bin: stats.global_phase,
+        reserved: 0,
+    };
+
+    let program = policy_effects(policy, stats.generation, root);
 
     let prepared = program
-        .prepare(stats_before.generation, root_before, thermal.current_heat())
-        .map_err(CommitError::Effects)?;
+        .prepare(stats.generation, root, thermal.current_heat())
+        .map_err(|error| ReactorError::Commit(CommitError::Effects(error)))?;
 
-    let online_cpu_count = 1_usize;
-    let required_cpus = usize::from(online_cpu_count).max(1);
+    let contract = policy_contract(policy, stats.generation, root, wall_tick);
 
-    let ticket = COMMIT_ENGINE.begin(&prepared, required_cpus)?;
+    POLICY_REACTOR.propose(prepared, contract, observation, 1, wall_tick)?;
 
-    let current_cpu_index = 0;
-    COMMIT_ENGINE.acknowledge(current_cpu_index, ticket)?;
+    POLICY_REACTOR.acknowledge(0, observation, wall_tick)?;
 
-    if !COMMIT_ENGINE.ready(ticket)? {
-        return Ok(());
-    }
+    Ok(())
+}
 
-    let _checkpoint = checkpoint_runtime(&matrix, thermal, wall_tick);
+pub fn service_policy_commit(wall_tick: u64) -> Result<bool, ReactorError> {
+    match POLICY_REACTOR.poll(wall_tick)? {
+        ReactorPoll::Idle | ReactorPoll::Waiting { .. } => Ok(false),
 
-    match apply_prepared(&mut matrix, thermal, &prepared, wall_tick) {
-        Ok(()) => {
-            let root_after = matrix
-                .refresh_hologram(&mut HOLOGRAM.lock())
-                .unwrap_or(root_before);
-            let stats_after = matrix.stats();
+        ReactorPoll::Expired(pending) => {
+            let contract = pending.contract;
 
-            let receipt = COMMIT_ENGINE.finalize_success(
-                ticket,
-                &prepared,
-                root_before,
-                root_after,
-                stats_before.generation,
-                stats_after.generation,
+            let _ = POLICY_REACTOR.finalize_abort(
+                pending,
+                contract.expected_state_root,
+                contract.expected_generation,
+                wall_tick,
+                false,
+            );
+
+            Ok(false)
+        }
+
+        ReactorPoll::Ready(pending) => {
+            let mut matrix = MATRIX.lock();
+            let thermal_guard = THERMAL.lock();
+
+            let Some(thermal) = thermal_guard.as_ref() else {
+                let _ = POLICY_REACTOR.finalize_abort(
+                    pending,
+                    pending.contract.expected_state_root,
+                    pending.contract.expected_generation,
+                    wall_tick,
+                    false,
+                );
+
+                return Ok(false);
+            };
+
+            let mut hologram = HOLOGRAM.lock();
+
+            let live_root = matrix.refresh_hologram(&mut hologram).unwrap_or(0);
+
+            let universe = CounterfactualUniverse::simulate(
+                &matrix,
+                thermal,
+                &pending.prepared,
+                pending.contract,
+                wall_tick,
+                live_root,
+            )
+            .map_err(|_| ReactorError::Commit(CommitError::Thermal))?;
+
+            let before = universe.before();
+            let predicted_after = universe.after();
+
+            let receipt = universe
+                .commit(&mut matrix, thermal, live_root)
+                .map_err(|_| ReactorError::Commit(CommitError::Thermal))?;
+
+            let committed_root = matrix
+                .refresh_hologram(&mut hologram)
+                .unwrap_or(receipt.after.state_root);
+
+            debug_assert_eq!(committed_root, predicted_after.state_root,);
+
+            let commit = POLICY_REACTOR.finalize_success(
+                pending,
+                before.state_root,
+                committed_root,
+                before.generation,
+                receipt.after.generation,
                 wall_tick,
             )?;
 
-            crate::nexus_plane::observation().publish_witness_root(receipt.witness_root);
-            Ok(())
-        }
+            crate::nexus_plane::observation().publish_witness_root(commit.witness_root);
 
-        Err(error) => {
-            rollback_latest(&mut matrix, thermal);
-
-            let _ = COMMIT_ENGINE.finalize_abort(
-                ticket,
-                &prepared,
-                root_before,
-                stats_before.generation,
-                wall_tick,
-                true,
-            );
-
-            Err(error)
+            Ok(true)
         }
     }
 }
@@ -382,7 +429,7 @@ pub fn continuity_state() -> (u64, u64, u64) {
     (
         root,
         checkpoint_generation as u64,
-        COMMIT_ENGINE.witness_root(),
+        POLICY_REACTOR.witness_root(),
     )
 }
 
