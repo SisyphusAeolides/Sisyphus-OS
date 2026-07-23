@@ -60,6 +60,12 @@ impl<const CPUS: usize, const WITNESSES: usize> NexusCommitEngine<CPUS, WITNESSE
         self.quorum.ready(ticket).map_err(CommitError::Quorum)
     }
 
+    pub fn prepared_count(&self, ticket: QuorumTicket) -> Result<u32, CommitError> {
+        self.quorum
+            .prepared_count(ticket)
+            .map_err(CommitError::Quorum)
+    }
+
     pub fn finalize_success<const N: usize>(
         &self,
         ticket: QuorumTicket,

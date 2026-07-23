@@ -8,6 +8,7 @@ pub mod boot;
 pub mod capability;
 pub mod causal_lattice;
 pub mod chronovore;
+pub mod commit_reactor;
 pub mod continuity_vault;
 pub mod counterfactual;
 pub mod cpu;
