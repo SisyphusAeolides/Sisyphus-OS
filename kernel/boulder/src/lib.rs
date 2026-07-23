@@ -42,6 +42,7 @@ pub mod phase_rotor;
 pub mod policy_chamber;
 pub mod process;
 pub mod quantum_nexus;
+pub mod reality_forge;
 pub mod scheduler;
 pub mod serial;
 pub mod shim;
