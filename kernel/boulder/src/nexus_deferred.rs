@@ -86,6 +86,7 @@ pub fn run_deferred(maximum_passes: u32) -> DeferredReport {
 
         let _ = crate::manifold_orchestrator::run_tensor_online_update_deferred();
         let _ = crate::manifold_orchestrator::run_tensor_analysis_deferred();
+        let _ = crate::manifold_orchestrator::run_predictive_control_deferred();
 
         ticks_absorbed = ticks_absorbed.saturating_add(pending);
         passes += 1;

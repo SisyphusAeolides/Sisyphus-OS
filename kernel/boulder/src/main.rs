@@ -806,7 +806,12 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
     );
 
     // Manifold: PCI/drivernet → cluster quiver → Hodge Δ₁ → NTT64 fairq
-    boulder::manifold_orchestrator::boot_after_drivernet(&pci_inventory, &drivernet, &mut serial);
+    boulder::manifold_orchestrator::boot_after_drivernet(
+        &pci_inventory,
+        &drivernet,
+        PUSH_EXPECTED_SHA256,
+        &mut serial,
+    );
 
     let machine_profile_control = authority.grant::<MachineProfileControl>();
     let kairos = match boulder::kairos::initialize(

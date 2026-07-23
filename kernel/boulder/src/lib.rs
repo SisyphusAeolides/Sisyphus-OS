@@ -70,6 +70,8 @@ pub mod persist_homology;
 pub mod phase_rotor;
 pub mod phononic_irq;
 pub mod policy_chamber;
+pub mod predictive_control;
+pub mod predictive_kernel;
 pub mod process;
 pub mod quantum_crest_gateway;
 pub mod quantum_desktop_recovery;

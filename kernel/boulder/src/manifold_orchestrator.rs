@@ -529,6 +529,25 @@ impl From<crate::certified_math::RuntimeError> for TensorDeferredError {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PredictiveDeferredError {
+    Predictive(crate::predictive_kernel::PredictiveKernelError),
+    Math(crate::certified_math::RuntimeError),
+    CertifiedRuntimeUnavailable,
+}
+
+impl From<crate::predictive_kernel::PredictiveKernelError> for PredictiveDeferredError {
+    fn from(error: crate::predictive_kernel::PredictiveKernelError) -> Self {
+        Self::Predictive(error)
+    }
+}
+
+impl From<crate::certified_math::RuntimeError> for PredictiveDeferredError {
+    fn from(error: crate::certified_math::RuntimeError) -> Self {
+        Self::Math(error)
+    }
+}
+
 pub fn initialize_tensor_runtime(
     secret: u64,
 ) -> Result<(), crate::tensor_kernel::TensorKernelError> {
@@ -553,10 +572,46 @@ pub fn global_epoch() -> u64 {
 }
 
 /// main.rs bolt-in after drivernet::resolve_all.
-pub fn boot_after_drivernet(inv: &PciInventory, drive: &DriverNetSummary, serial: &mut SerialPort) {
+pub fn boot_after_drivernet(
+    inv: &PciInventory,
+    drive: &DriverNetSummary,
+    measured_image_digest: [u8; 32],
+    serial: &mut SerialPort,
+) {
     let orch = unsafe { global_mut() };
     match orch.boot(inv, drive, serial) {
         Ok(act) => {
+            let boot_counter = <crate::arch::Active as crate::arch::Architecture>::counter_sample();
+            let domains = match crate::predictive_control::BootDomains::derive(
+                measured_image_digest,
+                boot_counter,
+                inv,
+                drive,
+            ) {
+                Ok(domains) => domains,
+                Err(error) => {
+                    let _ = writeln!(serial, "Manifold: boot-domain derivation failed: {error:?}");
+                    return;
+                }
+            };
+
+            if let Err(error) =
+                crate::manifold_orchestrator::initialize_tensor_runtime(domains.tensor)
+            {
+                let _ = writeln!(serial, "Manifold: tensor runtime init failed: {error:?}");
+                return;
+            }
+            if let Err(error) = crate::predictive_kernel::initialize(
+                domains.predictive,
+                crate::predictive_control::PredictivePolicy::KERNEL_DEFAULT,
+            ) {
+                let _ = writeln!(
+                    serial,
+                    "Manifold: predictive runtime init failed: {error:?}"
+                );
+                return;
+            }
+
             READY.store(true, Ordering::Release);
             EPOCH.store(act.epoch, Ordering::Relaxed);
             let _ = writeln!(
@@ -564,22 +619,24 @@ pub fn boot_after_drivernet(inv: &PciInventory, drive: &DriverNetSummary, serial
                 "Manifold: boot ok fair_class={} energy0={} ceilings={}",
                 act.fair_class, act.energy0, act.n_ceilings
             );
-            let tensor_secret = 0xAAAAAAAA; // Domain-separated secret
-            if let Err(e) = crate::manifold_orchestrator::initialize_tensor_runtime(tensor_secret) {
-                let _ = writeln!(serial, "Manifold: Tensor runtime init failed: {:?}", e);
-            }
+            let _ = writeln!(
+                serial,
+                "Manifold: boot domains fingerprint={:#x}",
+                domains.boot_fingerprint,
+            );
 
             // --- 8. Initialize the certified runtime ---
+            let certified = domains.certified;
             let secrets = crate::certified_math::MathDomainSecrets {
-                controller: 0x11111111,
-                hodge: 0x22222222,
-                optimization: 0x33333333,
-                sheaf: 0x44444444,
-                stabilizer: 0x55555555,
-                persistence: 0x66666666,
-                spectral: 0x77777777,
-                tropical: 0x88888888,
-                density: 0x99999999,
+                controller: certified.controller,
+                hodge: certified.hodge,
+                optimization: certified.optimization,
+                sheaf: certified.sheaf,
+                stabilizer: certified.stabilizer,
+                persistence: certified.persistence,
+                spectral: certified.spectral,
+                tropical: certified.tropical,
+                density: certified.density,
             };
 
             if let Ok(runtime) = crate::certified_math::CertifiedMathRuntime::from_manifold(
@@ -646,6 +703,8 @@ pub fn tick(now_tsc: u64) -> Option<Actuation> {
         Ok(act) => {
             EPOCH.store(act.epoch, Ordering::Relaxed);
             let _ = crate::tensor_kernel::observe(&act);
+            let tensor_directive = crate::tensor_kernel::last_directive().ok().flatten();
+            let _ = crate::predictive_kernel::observe(&act, tensor_directive.as_ref());
 
             // --- 9. Execute one certified step ---
             let mut guard = CERTIFIED_RUNTIME.lock();
@@ -703,6 +762,30 @@ pub fn run_tensor_analysis_deferred()
         )?;
     }
 
+    Ok(Some(directive))
+}
+
+pub fn run_predictive_control_deferred()
+-> Result<Option<crate::predictive_control::PredictiveDirective>, PredictiveDeferredError> {
+    let _ = crate::predictive_kernel::update_model_deferred()?;
+
+    let Some((directive, _plan)) = crate::predictive_kernel::plan_deferred()? else {
+        return Ok(None);
+    };
+
+    let mut guard = CERTIFIED_RUNTIME.lock();
+    let state = guard
+        .as_mut()
+        .ok_or(PredictiveDeferredError::CertifiedRuntimeUnavailable)?;
+
+    if directive.queue_charge != 0 {
+        state.runtime.charge_external_class(
+            directive.queue_class as usize,
+            u64::from(directive.queue_charge),
+        )?;
+    }
+
+    crate::predictive_kernel::mark_applied(directive)?;
     Ok(Some(directive))
 }
 
