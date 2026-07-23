@@ -99,6 +99,7 @@ fn evaluate_policy_and_publish(wall_tick: u64) {
     }
 
     let _ = nexus_runtime::service_policy_commit(wall_tick);
+    let _ = nexus_runtime::service_temporal_echo(wall_tick);
 
     let (state_root, checkpoint_generation, witness_root) = nexus_runtime::continuity_state();
 

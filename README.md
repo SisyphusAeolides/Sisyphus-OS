@@ -182,7 +182,43 @@ ensures deterministic replay and fault containment without hidden runtime
 machinery. Rejected realities are preserved in a bounded Divergence Vault,
 while committed transitions are cryptographically sealed into a 128-byte
 Transition Certificate, published atomically to user-space via Cerebral's
-read-only pages. Software provenance, speculative journals, and linear session
+read-only pages. 
+
+Final machine model:
+```text
+typed effect program
+        │
+        ▼
+causal CPU quorum
+        │
+        ▼
+trinary reality forge
+  α         β         γ
+        │
+        ▼
+invariant mesh
+        │
+        ▼
+live atomic cutover
+        │
+        ├── transition certificate
+        ├── witness-chain root
+        └── protected pre-state
+                    │
+          2048 logical ticks later
+                    │
+                    ▼
+             temporal echo
+                    │
+        ┌───────────┴───────────┐
+        ▼                       ▼
+ exact reproduction         divergence
+        │                       │
+        ▼                       ▼
+ echo-chain proof       guarded state rewind
+```
+
+Software provenance, speculative journals, and linear session
 IPC remain disabled until their cross-CPU ownership and revocation models are
 complete.
 
