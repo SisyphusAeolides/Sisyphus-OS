@@ -21,4 +21,5 @@ mod sync;
 
 pub mod causal_quorum;
 pub mod effect_program;
+pub mod temporal_contract;
 pub mod witness_chain;

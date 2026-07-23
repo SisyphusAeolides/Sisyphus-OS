@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 use alloc::{collections::BTreeMap, vec, vec::Vec};
+use core::cell::Cell;
 use core::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering};
 
 #[repr(C, align(64))]
@@ -606,5 +607,151 @@ impl Thermogenesis {
         let _ = self.charge(accepted);
         self.system_temp += accepted as f64 / 1_000.0;
         self.heat_events.fetch_add(1, Ordering::AcqRel);
+    }
+}
+
+pub trait ThermalLedger {
+    fn current_heat(&self) -> u64;
+    fn current_charge(&self) -> u64;
+
+    fn charge(&self, amount: u64) -> Result<u64, ThermalChargeError>;
+
+    fn credit_collapse_rebate(&self, amount: u64) -> u64;
+}
+
+impl ThermalLedger for Thermogenesis {
+    fn current_heat(&self) -> u64 {
+        Thermogenesis::current_heat(self)
+    }
+
+    fn current_charge(&self) -> u64 {
+        Thermogenesis::current_charge(self)
+    }
+
+    fn charge(&self, amount: u64) -> Result<u64, ThermalChargeError> {
+        Thermogenesis::charge(self, amount)
+    }
+
+    fn credit_collapse_rebate(&self, amount: u64) -> u64 {
+        Thermogenesis::credit_collapse_rebate(self, amount)
+    }
+}
+
+pub struct ThermalTransaction {
+    base_charge: u64,
+    ambient_heat: u64,
+
+    projected_charge: Cell<u64>,
+    staged_rebates: Cell<u64>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ThermalTransactionError {
+    Conflict { expected: u64, observed: u64 },
+    Budget(ThermalChargeError),
+}
+
+impl ThermalTransaction {
+    pub fn begin(live: &Thermogenesis) -> Self {
+        let base_charge = live.current_charge();
+        let ambient_heat = live.current_heat().saturating_sub(base_charge);
+
+        Self {
+            base_charge,
+            ambient_heat,
+            projected_charge: Cell::new(base_charge),
+            staged_rebates: Cell::new(0),
+        }
+    }
+
+    pub fn commit(self, live: &Thermogenesis) -> Result<u64, ThermalTransactionError> {
+        live.commit_budget_projection(
+            self.base_charge,
+            self.projected_charge.get(),
+            self.staged_rebates.get(),
+        )
+    }
+
+    pub const fn base_charge(&self) -> u64 {
+        self.base_charge
+    }
+
+    pub fn projected_charge(&self) -> u64 {
+        self.projected_charge.get()
+    }
+
+    pub fn staged_rebates(&self) -> u64 {
+        self.staged_rebates.get()
+    }
+}
+
+impl ThermalLedger for ThermalTransaction {
+    fn current_heat(&self) -> u64 {
+        self.ambient_heat
+            .saturating_add(self.projected_charge.get())
+    }
+
+    fn current_charge(&self) -> u64 {
+        self.projected_charge.get()
+    }
+
+    fn charge(&self, amount: u64) -> Result<u64, ThermalChargeError> {
+        let current = self.projected_charge.get();
+
+        let next = current
+            .checked_add(amount)
+            .filter(|next| *next <= MAX_THERMAL_CHARGE)
+            .ok_or(ThermalChargeError::BudgetExceeded {
+                current,
+                requested: amount,
+                maximum: MAX_THERMAL_CHARGE,
+            })?;
+
+        self.projected_charge.set(next);
+        Ok(next)
+    }
+
+    fn credit_collapse_rebate(&self, amount: u64) -> u64 {
+        self.staged_rebates
+            .set(self.staged_rebates.get().saturating_add(amount));
+
+        let next = self.projected_charge.get().saturating_sub(amount);
+
+        self.projected_charge.set(next);
+        next
+    }
+}
+
+impl Thermogenesis {
+    pub fn begin_budget_transaction(&self) -> ThermalTransaction {
+        ThermalTransaction::begin(self)
+    }
+
+    fn commit_budget_projection(
+        &self,
+        expected_charge: u64,
+        projected_charge: u64,
+        staged_rebates: u64,
+    ) -> Result<u64, ThermalTransactionError> {
+        match self.thermal_charge.compare_exchange(
+            expected_charge,
+            projected_charge.min(MAX_THERMAL_CHARGE),
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => {
+                if staged_rebates != 0 {
+                    self.collapse_rebates
+                        .fetch_add(staged_rebates, Ordering::AcqRel);
+                }
+
+                Ok(projected_charge)
+            }
+
+            Err(observed) => Err(ThermalTransactionError::Conflict {
+                expected: expected_charge,
+                observed,
+            }),
+        }
     }
 }
