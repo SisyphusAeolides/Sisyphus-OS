@@ -5,6 +5,9 @@ use aether::effect_program::{EffectIntent, EffectKind, EffectProgram};
 use aether::holographic::HolographicTree;
 use aether::nexus_wire::{NexusCommand, NexusOpcode, NexusReply, NexusStatus, NexusTelemetry};
 use aether::resonance_policy::{POLICY_REPHASE, ResonancePolicy};
+use aether::temporal_contract::{
+    CONTRACT_REQUIRE_GENERATION_CHANGE, CONTRACT_REQUIRE_ROOT_CHANGE, TemporalContract, effect_bit,
+};
 
 use crate::capability::{Capability, ResonanceRight};
 use crate::continuity_vault::{CheckpointId, ContinuityVault};
@@ -201,6 +204,39 @@ pub fn policy_effects(
     }
 
     program.seal()
+}
+
+pub fn policy_contract(
+    policy: ResonancePolicy,
+    generation: u32,
+    state_root: u64,
+    wall_tick: u64,
+) -> TemporalContract {
+    let mut allowed = effect_bit(EffectKind::SetCollapseThreshold as u8)
+        | effect_bit(EffectKind::SetPriorityMass as u8);
+
+    if policy.flags & POLICY_REPHASE != 0 {
+        allowed |= effect_bit(EffectKind::Rephase as u8);
+    }
+
+    TemporalContract {
+        expected_generation: generation,
+
+        flags: CONTRACT_REQUIRE_ROOT_CHANGE | CONTRACT_REQUIRE_GENERATION_CHANGE,
+
+        expected_state_root: state_root,
+        deadline_tick: wall_tick.saturating_add(4096),
+
+        maximum_heat: policy.heat_ceiling,
+        maximum_generation_delta: 4,
+        maximum_pair_growth: 0,
+
+        maximum_collapse_growth: 0,
+        maximum_phase_distance: 512,
+        reserved: 0,
+
+        allowed_effects: allowed,
+    }
 }
 
 pub fn apply_policy(policy: ResonancePolicy, wall_tick: u64) -> Result<(), CommitError> {
