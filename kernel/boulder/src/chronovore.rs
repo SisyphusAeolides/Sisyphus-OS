@@ -446,6 +446,7 @@ impl DilatedDuration {
     }
 }
 
+#[derive(Clone)]
 pub struct TickDevourer {
     wall_origin: ChronoTick,
     logical_origin: ChronoTick,

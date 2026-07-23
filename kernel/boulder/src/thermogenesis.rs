@@ -520,6 +520,16 @@ pub enum ThermalChargeError {
 }
 
 impl Thermogenesis {
+    #[inline(always)]
+    pub fn current_charge(&self) -> u64 {
+        self.thermal_charge.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn restore_charge(&self, charge: u64) {
+        self.thermal_charge
+            .store(charge.min(MAX_THERMAL_CHARGE), Ordering::Release);
+    }
+
     pub fn current_heat(&self) -> u64 {
         let base = if self.system_temp <= 0.0 {
             0

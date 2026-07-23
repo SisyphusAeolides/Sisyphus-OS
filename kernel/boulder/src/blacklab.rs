@@ -588,6 +588,7 @@ impl LatticeCell {
     }
 }
 
+#[derive(Clone)]
 pub struct ResonanceField<const BINS: usize> {
     cells: [LatticeCell; BINS],
     epoch: u32,

@@ -2,6 +2,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use aether::blacklab_vm::LabMetrics;
 use aether::event_horizon::EVENT_HORIZON_PROGRAM;
+use aether::policy_crystal::PolicyCrystal;
 use aether::resonance_policy::ResonancePolicy;
 use aether::resonance_split::{ResonanceIngressPage, ResonanceObservationPage};
 
@@ -15,6 +16,7 @@ static INGRESS_PAGE: ResonanceIngressPage = ResonanceIngressPage::new();
 static OBSERVATION_PAGE: ResonanceObservationPage = ResonanceObservationPage::new();
 
 static LAB_CAPSULE: LabCapsule = LabCapsule::new();
+static POLICY_CRYSTAL: PolicyCrystal = PolicyCrystal::new();
 
 static LAST_COLLAPSES: AtomicU64 = AtomicU64::new(0);
 
@@ -23,6 +25,7 @@ static mut PRIVATE_CURSOR: u64 = 0;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PlaneDriverInitError {
     Capsule(CapsuleError),
+    PolicyCrystal,
 }
 
 pub fn initialize(authority: &Capability<'_, LearningRight>) -> Result<(), PlaneDriverInitError> {
@@ -32,6 +35,10 @@ pub fn initialize(authority: &Capability<'_, LearningRight>) -> Result<(), Plane
     LAB_CAPSULE
         .initialize(EVENT_HORIZON_PROGRAM, ResonancePolicy::DEFAULT, authority)
         .map_err(PlaneDriverInitError::Capsule)?;
+
+    POLICY_CRYSTAL
+        .publish(ResonancePolicy::DEFAULT)
+        .map_err(|_| PlaneDriverInitError::PolicyCrystal)?;
 
     Ok(())
 }
@@ -81,9 +88,17 @@ fn evaluate_policy_and_publish(wall_tick: u64) {
     };
 
     if let Ok(Some(commit)) = LAB_CAPSULE.evaluate(metrics) {
-        nexus_runtime::apply_policy(commit.policy, wall_tick);
+        if POLICY_CRYSTAL.publish(commit.policy).is_ok() {
+            if let Ok(majority) = POLICY_CRYSTAL.snapshot() {
+                nexus_runtime::apply_policy(majority.policy, wall_tick);
+            }
+        }
     }
 
+    let (state_root, checkpoint_generation) = nexus_runtime::continuity_state();
+
+    OBSERVATION_PAGE.publish_state_root(state_root);
+    OBSERVATION_PAGE.publish_checkpoint_generation(checkpoint_generation);
     OBSERVATION_PAGE.publish_telemetry(&telemetry);
 }
 

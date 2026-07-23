@@ -1,12 +1,16 @@
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use aether::nexus_wire::{NexusCommand, NexusReply, NexusStatus, NexusTelemetry};
+use aether::holographic::HolographicTree;
+use aether::nexus_wire::{NexusCommand, NexusOpcode, NexusReply, NexusStatus, NexusTelemetry};
 use aether::resonance_policy::ResonancePolicy;
 
 use crate::capability::{Capability, ResonanceRight};
+use crate::continuity_vault::{CheckpointId, ContinuityVault};
 use crate::lease_lattice::LeaseError;
 use crate::nexus_gateway::{GatewayError, NexusGateway};
-use crate::nexus_matrix::{MatrixError, NexusMatrix};
+use crate::nexus_matrix::{
+    MATRIX_HOLOGRAM_LEAVES, MATRIX_HOLOGRAM_NODES, MatrixError, NexusMatrix,
+};
 use crate::singularity::{ContainmentOrder, StabilitySample};
 use crate::sync::SpinLock;
 use crate::thermogenesis::Thermogenesis;
@@ -16,10 +20,18 @@ pub const NEXUS_PAIRS: usize = 256;
 pub const NEXUS_CAGES: usize = 256;
 pub const NEXUS_MOMENTS: usize = 64;
 pub const NEXUS_BINS: usize = 64;
+const CEREBRAL_LEASE_QUOTA: u32 = 1_000_000;
+const CEREBRAL_LEASE_LIFETIME: u64 = 1_u64 << 40;
 
 type KernelMatrix = NexusMatrix<NEXUS_TASKS, NEXUS_PAIRS, NEXUS_CAGES, NEXUS_MOMENTS, NEXUS_BINS>;
 
 type KernelGateway = NexusGateway<64, 256, 512, 64>;
+
+#[derive(Clone)]
+struct RuntimeImage {
+    matrix: KernelMatrix,
+    thermal_charge: u64,
+}
 
 static READY: AtomicBool = AtomicBool::new(false);
 
@@ -27,11 +39,17 @@ static MATRIX: SpinLock<KernelMatrix> = SpinLock::new(KernelMatrix::new(0));
 
 static THERMAL: SpinLock<Option<Thermogenesis>> = SpinLock::new(None);
 
+static CONTINUITY_VAULT: ContinuityVault<RuntimeImage, 4> = ContinuityVault::new();
+static HOLOGRAM: SpinLock<HolographicTree<MATRIX_HOLOGRAM_LEAVES, MATRIX_HOLOGRAM_NODES>> =
+    SpinLock::new(HolographicTree::new());
+static LAST_CHECKPOINT: SpinLock<Option<CheckpointId>> = SpinLock::new(None);
+
 static GATEWAY: KernelGateway = KernelGateway::new(0, 0x51_4e_45_58_55_53_21);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum InitializeError {
     AlreadyInitialized,
+    LeaseInitialization,
     Gateway(GatewayError),
 }
 
@@ -42,21 +60,41 @@ pub fn initialize(
         return Err(InitializeError::AlreadyInitialized);
     }
 
-    let seed = <crate::arch::Active as crate::arch::Architecture>::counter_sample();
-    crate::nexus_gateway::LEASES.init(seed);
+    let boot_entropy_word = <crate::arch::Active as crate::arch::Architecture>::counter_sample();
+    let now_tick = boot_entropy_word;
+    let lease_secret = boot_entropy_word;
 
-    let token = crate::nexus_gateway::LEASES
+    let leases = crate::nexus_gateway::LEASES
+        .initialize(crate::lease_lattice::LeaseLattice::new(lease_secret))
+        .map_err(|_| InitializeError::LeaseInitialization)?;
+
+    let root = leases
         .issue_root(
             crate::lease_lattice::LeaseRights::ALL,
-            0,
+            now_tick,
             u64::MAX,
             u32::MAX,
             authority,
         )
-        .map_err(|_| InitializeError::Gateway(GatewayError::Capacity))?;
+        .map_err(|error| InitializeError::Gateway(GatewayError::Lease(error)))?;
+
+    let cerebral_rights = crate::lease_lattice::LeaseRights::OBSERVE
+        .union(crate::lease_lattice::LeaseRights::SCHEDULE)
+        .union(crate::lease_lattice::LeaseRights::RESONANCE)
+        .union(crate::lease_lattice::LeaseRights::CONTROL);
+
+    let cerebral_token = leases
+        .attenuate(
+            root,
+            cerebral_rights,
+            now_tick.saturating_add(CEREBRAL_LEASE_LIFETIME),
+            CEREBRAL_LEASE_QUOTA,
+            now_tick,
+        )
+        .map_err(|error| InitializeError::Gateway(GatewayError::Lease(error)))?;
 
     *THERMAL.lock() = Some(Thermogenesis::new(4));
-    Ok(token)
+    Ok(cerebral_token)
 }
 
 pub fn control(command: &NexusCommand, wall_tick: u64) -> NexusReply {
@@ -97,7 +135,19 @@ pub fn control(command: &NexusCommand, wall_tick: u64) -> NexusReply {
         );
     };
 
-    match matrix.execute(admission.opcode, command.arguments, wall_tick, thermal) {
+    let checkpoint = opcode_mutates(admission.opcode)
+        .then(|| checkpoint_runtime(&matrix, thermal, wall_tick))
+        .flatten();
+
+    let result = matrix.execute(admission.opcode, command.arguments, wall_tick, thermal);
+
+    if result.is_err() {
+        if let Some(checkpoint) = checkpoint {
+            let _ = CONTINUITY_VAULT.discard(checkpoint);
+        }
+    }
+
+    match result {
         Ok(values) => GATEWAY.finish(
             admission,
             NexusStatus::Ok,
@@ -174,9 +224,11 @@ pub fn heartbeat_batch(wall_tick: u64, batch_size: u64) {
             let _ = target_phase_bin;
         }
 
-        ContainmentOrder::Quarantine { .. }
-        | ContainmentOrder::Rollback { .. }
-        | ContainmentOrder::None => {}
+        ContainmentOrder::Rollback { .. } => {
+            let _ = rollback_latest(&mut matrix, thermal);
+        }
+
+        ContainmentOrder::Quarantine { .. } | ContainmentOrder::None => {}
     }
 }
 
@@ -184,28 +236,73 @@ pub fn chronicle_is_valid() -> bool {
     GATEWAY.chronicle_is_valid()
 }
 
-fn gateway_status(error: GatewayError) -> NexusStatus {
-    match error {
-        GatewayError::Wire(_) => NexusStatus::BadFrame,
-        GatewayError::Replay(_) => NexusStatus::BadFrame,
-        GatewayError::Denied => NexusStatus::Denied,
-        GatewayError::Expired => NexusStatus::Expired,
-        GatewayError::Capacity => NexusStatus::Capacity,
-        GatewayError::Lease(error) => lease_status(error),
-    }
+pub fn continuity_state() -> (u64, u64) {
+    let root = HOLOGRAM.lock().root();
+
+    let checkpoint_generation = match *LAST_CHECKPOINT.lock() {
+        Some(checkpoint) => checkpoint.generation,
+        None => 0,
+    };
+
+    (root, checkpoint_generation)
 }
 
-fn lease_status(error: LeaseError) -> NexusStatus {
+fn checkpoint_runtime(
+    matrix: &KernelMatrix,
+    thermal: &Thermogenesis,
+    wall_tick: u64,
+) -> Option<CheckpointId> {
+    let mut hologram = HOLOGRAM.lock();
+    let root = matrix.refresh_hologram(&mut hologram).ok()?;
+
+    let image = RuntimeImage {
+        matrix: matrix.clone(),
+        thermal_charge: thermal.current_charge(),
+    };
+
+    let checkpoint = CONTINUITY_VAULT.checkpoint(&image, root, wall_tick).ok()?;
+
+    *LAST_CHECKPOINT.lock() = Some(checkpoint);
+
+    Some(checkpoint)
+}
+
+fn rollback_latest(matrix: &mut KernelMatrix, thermal: &Thermogenesis) -> bool {
+    let Some(checkpoint) = *LAST_CHECKPOINT.lock() else {
+        return false;
+    };
+
+    let Ok(image) = CONTINUITY_VAULT.restore(checkpoint) else {
+        return false;
+    };
+
+    *matrix = image.matrix;
+    thermal.restore_charge(image.thermal_charge);
+
+    true
+}
+
+fn opcode_mutates(opcode: NexusOpcode) -> bool {
+    !matches!(
+        opcode,
+        NexusOpcode::QueryStats | NexusOpcode::QueryTelemetry
+    )
+}
+
+fn gateway_status(error: GatewayError) -> NexusStatus {
     match error {
-        LeaseError::Invalid | LeaseError::Forged => NexusStatus::BadFrame,
-        LeaseError::NotYetValid | LeaseError::Expired => NexusStatus::Expired,
-        LeaseError::Exhausted | LeaseError::Capacity => NexusStatus::Capacity,
-        LeaseError::MissingRight
-        | LeaseError::CannotDelegate
-        | LeaseError::RightsAmplification
-        | LeaseError::DelegationDepth
-        | LeaseError::InvalidLifetime
-        | LeaseError::InvalidQuota => NexusStatus::Denied,
+        GatewayError::Wire(_) | GatewayError::Replay(_) => NexusStatus::BadFrame,
+
+        GatewayError::NotReady => NexusStatus::NotReady,
+
+        GatewayError::Expired
+        | GatewayError::Lease(LeaseError::Expired | LeaseError::NotYetValid) => {
+            NexusStatus::Expired
+        }
+
+        GatewayError::Capacity | GatewayError::Lease(LeaseError::Capacity) => NexusStatus::Capacity,
+
+        GatewayError::Denied | GatewayError::Lease(_) => NexusStatus::Denied,
     }
 }
 

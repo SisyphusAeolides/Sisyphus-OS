@@ -663,6 +663,7 @@ impl CageRecord {
     };
 }
 
+#[derive(Clone)]
 pub struct TartarusCage<const N: usize> {
     records: [CageRecord; N],
 }

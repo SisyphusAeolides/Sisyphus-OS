@@ -257,6 +257,22 @@ impl ResonanceObservationPage {
         self.core.reply_publications.fetch_add(1, Ordering::Relaxed);
     }
 
+    pub fn publish_state_root(&self, root: u64) {
+        self.core.reserved[0].store(root, Ordering::Release);
+    }
+
+    pub fn state_root(&self) -> u64 {
+        self.core.reserved[0].load(Ordering::Acquire)
+    }
+
+    pub fn publish_checkpoint_generation(&self, generation: u64) {
+        self.core.reserved[1].store(generation, Ordering::Release);
+    }
+
+    pub fn checkpoint_generation(&self) -> u64 {
+        self.core.reserved[1].load(Ordering::Acquire)
+    }
+
     /// Userland reader.
     pub fn telemetry(&self) -> Option<NexusTelemetry> {
         if !self.compatible() {

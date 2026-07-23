@@ -382,6 +382,7 @@ impl MomentSlot {
     };
 }
 
+#[derive(Clone)]
 pub struct KairosScheduler<const N: usize> {
     slots: [MomentSlot; N],
 }

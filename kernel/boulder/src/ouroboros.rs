@@ -854,6 +854,7 @@ impl RingEntry {
     };
 }
 
+#[derive(Clone)]
 pub struct ConstructiveRing<const N: usize> {
     entries: [RingEntry; N],
 }

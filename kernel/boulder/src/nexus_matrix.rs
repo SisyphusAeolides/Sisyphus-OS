@@ -1,3 +1,4 @@
+use aether::holographic::{HolographicError, HolographicTree};
 use aether::nexus_wire::NexusOpcode;
 use aether::resonance_policy::{POLICY_REPHASE, ResonancePolicy};
 
@@ -10,6 +11,8 @@ use crate::tartarus_deep::{DecoherenceEvent, QuarantineLevel, TartarusCage};
 use crate::thermogenesis::Thermogenesis;
 
 pub const MATRIX_PHASE_BINS: u16 = 1024;
+pub const MATRIX_HOLOGRAM_LEAVES: usize = 512;
+pub const MATRIX_HOLOGRAM_NODES: usize = 1024;
 pub const PAIR_FLAG_KAIROS: u32 = 1 << 0;
 
 #[derive(Clone, Copy)]
@@ -66,6 +69,7 @@ pub struct MatrixPulse {
     pub collapses: u64,
 }
 
+#[derive(Clone)]
 pub struct NexusMatrix<
     const TASKS: usize,
     const PAIRS: usize,
@@ -369,6 +373,54 @@ impl<
         }
     }
 
+    pub fn refresh_hologram(
+        &self,
+        tree: &mut HolographicTree<MATRIX_HOLOGRAM_LEAVES, MATRIX_HOLOGRAM_NODES>,
+    ) -> Result<u64, HolographicError> {
+        tree.clear()?;
+
+        tree.write_leaf(0, self.last_logical_tick)?;
+        tree.write_leaf(1, u64::from(self.global_phase))?;
+
+        tree.write_leaf(
+            2,
+            u64::from(self.live_pairs()) | (u64::from(self.generation) << 32),
+        )?;
+
+        tree.write_leaf(3, self.collapses)?;
+        tree.write_leaf(4, self.last_heat)?;
+        tree.write_leaf(5, self.collapse_threshold)?;
+
+        tree.write_leaf(6, u64::from(self.chrono.priority_mass()))?;
+
+        tree.write_leaf(7, u64::from(self.field.eigenphase_bin().unwrap_or(0)))?;
+
+        for (index, pair) in self.pairs.iter().enumerate() {
+            let value = if pair.active {
+                let mut digest =
+                    mix_matrix_state(task_to_raw(pair.task_a), task_to_raw(pair.task_b));
+
+                digest = mix_matrix_state(
+                    digest,
+                    pair.amplitude.re as u32 as u64 | ((pair.amplitude.im as u32 as u64) << 32),
+                );
+
+                digest = mix_matrix_state(
+                    digest,
+                    u64::from(pair.phase_bin) | (u64::from(pair.flags) << 16),
+                );
+
+                mix_matrix_state(digest, u64::from(pair.generation))
+            } else {
+                0
+            };
+
+            tree.write_leaf(16 + index, value)?;
+        }
+
+        tree.rebuild()
+    }
+
     fn entangle(
         &mut self,
         task_a: TaskId,
@@ -464,4 +516,11 @@ fn rotor_from_delta(delta: i16) -> u8 {
     } else {
         (64_i16 + step) as u8
     }
+}
+
+fn mix_matrix_state(mut state: u64, value: u64) -> u64 {
+    state ^= value.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    state = state.rotate_left(27);
+    state = state.wrapping_mul(0x94d0_49bb_1331_11eb);
+    state ^ (state >> 31)
 }

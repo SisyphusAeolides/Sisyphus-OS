@@ -1,3 +1,4 @@
+use aether::boot_cell::BootCell;
 use aether::nexus_wire::{NexusCommand, NexusOpcode, NexusReply, NexusStatus, WireError};
 
 use crate::capability::{Capability, ResonanceRight};
@@ -11,30 +12,7 @@ const GHOST_COMMAND: u16 = 0x100;
 const GHOST_REPLY: u16 = 0x101;
 const GHOST_DENIED: u16 = 0x102;
 
-pub struct BootLeases(core::cell::UnsafeCell<Option<LeaseLattice<256>>>);
-unsafe impl Sync for BootLeases {}
-
-impl BootLeases {
-    pub const fn new() -> Self {
-        Self(core::cell::UnsafeCell::new(None))
-    }
-
-    pub fn init(&self, secret: u64) {
-        unsafe {
-            *self.0.get() = Some(LeaseLattice::new(secret));
-        }
-    }
-}
-
-impl core::ops::Deref for BootLeases {
-    type Target = LeaseLattice<256>;
-
-    fn deref(&self) -> &Self::Target {
-        unsafe { (*self.0.get()).as_ref().unwrap() }
-    }
-}
-
-pub static LEASES: BootLeases = BootLeases::new();
+pub static LEASES: BootCell<LeaseLattice<256>> = BootCell::new();
 
 struct GatewayState<
     const GRANTS: usize,
@@ -83,6 +61,7 @@ pub enum GatewayError {
     Denied,
     Expired,
     Capacity,
+    NotReady,
     Lease(LeaseError),
 }
 
@@ -115,10 +94,14 @@ impl<const GRANTS: usize, const REPLAY: usize, const LOG: usize, const HISTORY: 
     pub fn admit(&self, command: &NexusCommand, now_tick: u64) -> Result<Admission, GatewayError> {
         let opcode = command.validate().map_err(GatewayError::Wire)?;
 
-        let token = LeaseToken::from_raw(command.capability);
+        let leases = LEASES.get().ok_or(GatewayError::NotReady)?;
 
-        LEASES
-            .admit(token, rights_for_opcode(opcode), now_tick)
+        leases
+            .admit(
+                LeaseToken::from_raw(command.capability),
+                rights_for_opcode(opcode),
+                now_tick,
+            )
             .map_err(GatewayError::Lease)?;
 
         let stamp = self.clock.stamp(now_tick);
