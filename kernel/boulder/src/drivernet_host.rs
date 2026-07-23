@@ -3,7 +3,7 @@
 
 use crate::blacklab_bootstrap::BlackLabComplex;
 use crate::capability::{
-    Capability, DeviceMemoryControl, DmaControl, FaultPolicyControl, PolicyControl, Authority,
+    Authority, Capability, DeviceMemoryControl, DmaControl, FaultPolicyControl, PolicyControl,
 };
 use crate::drivers::drivernet::blacklab_observer::BlackLabDriverObserver;
 use crate::drivers::drivernet::brokers::{

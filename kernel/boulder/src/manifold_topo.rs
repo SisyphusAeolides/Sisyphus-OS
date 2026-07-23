@@ -8,8 +8,8 @@
 
 #![allow(dead_code)]
 
-use crate::cluster_quiver::{ResourceQuiver, Arrow, MAX_E, MAX_N};
-use crate::hodge_cech::{HodgeNerve, Fp as HFp, FP_ONE as H_ONE, MAX_V, MAX_E as HMAX_E};
+use crate::cluster_quiver::{Arrow, MAX_E, MAX_N, ResourceQuiver};
+use crate::hodge_cech::{FP_ONE as H_ONE, Fp as HFp, HodgeNerve, MAX_E as HMAX_E, MAX_V};
 
 // ---------------------------------------------------------------------------
 // ZX-style quiver simplification (spider fusion + 2-cycle cancel + parallel merge)
@@ -502,7 +502,7 @@ pub fn tropical_critical(q: &ResourceQuiver) -> TropicalReport {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cluster_quiver::{NodeKind, FP_ONE};
+    use crate::cluster_quiver::{FP_ONE, NodeKind};
     use crate::hodge_cech::HodgeNerve;
 
     #[test]

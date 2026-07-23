@@ -31,7 +31,7 @@ const MAX_SEED_DEV: usize = 10;
 const GHOST_CAP: usize = 64;
 
 use crate::manifold_topo::{
-    cech_h1_on_hodge, fiedler_on_hodge, tropical_critical, zx_simplify_quiver, TropicalReport,
+    TropicalReport, cech_h1_on_hodge, fiedler_on_hodge, tropical_critical, zx_simplify_quiver,
 };
 
 // ---------------------------------------------------------------------------
@@ -55,7 +55,7 @@ pub struct Actuation {
     pub epoch: u64,
     /// Fiedler bipartition: bit i set ⇒ vertex on positive side of cut.
     pub fiedler_mask: u64,
-    pub fiedler_value_fp: i32,     // algebraic connectivity λ₂ (16.16)
+    pub fiedler_value_fp: i32, // algebraic connectivity λ₂ (16.16)
 
     /// Čech H¹: non-zero ⇒ cover fails to glue (obstruction present).
     pub cech_h1_dim: u16,
@@ -64,7 +64,7 @@ pub struct Actuation {
     /// Tropical critical chain (vertex indices, 0xFF = pad).
     pub tropical_chain: [u8; 8],
     pub tropical_chain_len: u8,
-    pub tropical_length_fp: i32,   // max-plus path weight
+    pub tropical_length_fp: i32, // max-plus path weight
 
     /// ZX rewrite stats
     pub zx_edges_before: u16,
@@ -234,7 +234,12 @@ impl ManifoldOrchestrator {
 
         // 1b. ZX simplify quiver BEFORE first cluster mutation
         let zx = zx_simplify_quiver(&mut self.quiver);
-        self.record(0, orch_kind::ZX_REWRITE, zx.edges_before as u64, zx.edges_after as u64);
+        self.record(
+            0,
+            orch_kind::ZX_REWRITE,
+            zx.edges_before as u64,
+            zx.edges_after as u64,
+        );
         let _ = writeln!(
             serial,
             "Manifold: ZX rewrite E {} -> {} fused={} cancel={}",
@@ -255,7 +260,12 @@ impl ManifoldOrchestrator {
 
         // 2b. Fiedler on Hodge adjacency
         let fied = fiedler_on_hodge(&self.hodge);
-        self.record(0, orch_kind::FIEDLER_CUT, fied.mask, fied.lambda2_fp as u32 as u64);
+        self.record(
+            0,
+            orch_kind::FIEDLER_CUT,
+            fied.mask,
+            fied.lambda2_fp as u32 as u64,
+        );
         let _ = writeln!(
             serial,
             "Manifold: Fiedler λ₂={} mask={:#x} +{}/-{}",
@@ -266,7 +276,12 @@ impl ManifoldOrchestrator {
 
         // 2c. Čech H¹ on same nerve
         let h1 = cech_h1_on_hodge(&self.hodge);
-        self.record(0, orch_kind::CECH_H1, h1.betti1 as u64, h1.components as u64);
+        self.record(
+            0,
+            orch_kind::CECH_H1,
+            h1.betti1 as u64,
+            h1.components as u64,
+        );
         let _ = writeln!(
             serial,
             "Manifold: Čech H¹ β₁={} components={} obstructed={}",

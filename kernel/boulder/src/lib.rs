@@ -57,6 +57,8 @@ pub mod nexus_deferred;
 pub mod nexus_gateway;
 pub mod nexus_matrix;
 
+pub mod certified_math;
+pub mod manifold_topo;
 pub mod nexus_plane;
 pub mod nexus_runtime;
 pub mod noether_guard;
@@ -90,7 +92,6 @@ pub mod temporal_echo;
 pub mod thermogenesis;
 pub mod tropical_crit;
 pub mod zx_rewrite;
-pub mod manifold_topo;
 
 use crate::axiom_manifold::{
     AxiomManifold, AxiomPolicy, CELL_READ_ONLY, CommitCertificate, DraftError, DriveOutcome,
