@@ -3,6 +3,7 @@ extern crate alloc;
 
 pub mod aether;
 pub mod arch;
+pub mod axiom_manifold;
 pub mod blacklab;
 pub mod boot;
 pub mod capability;
