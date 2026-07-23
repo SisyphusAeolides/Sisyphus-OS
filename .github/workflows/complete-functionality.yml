@@ -1,0 +1,42 @@
+name: Complete Functionality Gate
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  source-and-host:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.85.0
+        with:
+          components: rustfmt,clippy
+      - run: cargo fmt --all --check
+      - run: cargo check --workspace
+      - run: cargo test --workspace
+      - run: |
+          tracked=$(git ls-files | grep -E '(^|/)(scratch\.rs|.*\.(rlib|rmeta|o|a))$' || true)
+          test -z "$tracked" || { printf '%s\n' "$tracked"; exit 1; }
+      - run: |
+          findings=$(grep -RInE --include='*.rs' --exclude-dir=target --exclude-dir=.git \
+            'STUBS FOR|Pretend |pretend |mock of|#!\[allow\(dead_code\)\]|todo!\(|unimplemented!\(' \
+            kernel core libraries userland || true)
+          test -z "$findings" || { printf '%s\n' "$findings"; exit 1; }
+
+  bare-metal:
+    runs-on: ubuntu-latest
+    needs: source-and-host
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+      - run: sudo apt-get update
+      - run: sudo apt-get install -y qemu-system-x86 grub-pc-bin xorriso mtools
+      - run: cargo +nightly user-push
+      - run: cargo +nightly kernel
+      - run: scripts/test-boot.sh

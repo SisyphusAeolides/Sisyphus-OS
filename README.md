@@ -17,22 +17,22 @@ and userland.
 - `userland/corinth`: bounded package DNA, synthesis, integration, and swarm transport.
 - `userland/crest`: display/input contracts and fixed-point semantic rendering.
 
-## Exotic Subsystems
+## Advanced Subsystems
 
-Sisyphus OS embraces chaotic, biological, and quantum-mechanical metaphors for operating system design:
-- **Wormhole IPC**: Causal time-reversal message passing using CTC (Closed Timelike Curve) ring buffers and holographic semantic hashing.
-- **Chronovore**: A time-eating entropy engine that harvests CPU jitter to feed a Rule 30 cellular automaton, searching for temporal crystals to predict optimal preemption windows.
-- **Eigenthread Scheduler**: A workload Hamiltonian scheduler that models processes as quantum states, dynamically recalculating their coupling energy to solve for the optimal ground-state co-schedule.
-- **Fabric Weave**: A causal spacetime execution graph that tracks all kernel events as nodes in a light cone, detecting causal violations and deadlocks via Kahn's topological sort.
-- **Schrödinger Core**: A quantum speculative execution sandbox that physically bifurcates the execution state to evaluate both sides of an uncertain branch simultaneously, collapsing the wave function only when the truth is observed.
-- **VoidFS**: A filesystem modeled as a Kerr rotating black hole. Files orbit an accretion disk and slowly spiral into an event horizon where they are spaghettified into a 2D holographic hash, eventually evaporating as Hawking radiation into the Chronovore engine.
-- **Fractal Page Tables**: An iterated function system (IFS) memory space where virtual addresses are mapped to physical frames via Mandelbrot-like chaotic dynamics on the complex plane, rendering ROP chains mathematically impossible.
-- **Macrophage IPC Firewall**: A biological immune system where patrolling white blood cells inspect IPC channels, phagocytize malicious packets, and broadcast extracted antigens to trigger apoptosis in rogue processes.
-- **Symbiosis Scheduler**: Inspired by mitochondrial evolution, this module forces highly communicative processes into endosymbiosis—quantum-entangling their page tables and permanently collapsing their IPC overhead into a single eukaryotic host.
-- **Prometheus Morphic Transpiler**: Auto-detects foreign C driver ABIs via machine-code prologue analysis and generates live JIT trampolines to seamlessly bridge Windows/Linux/BSD calling conventions to the kernel on the fly.
-- **Golem Behavioral Fingerprinter**: A no_std Naive Bayes classifier that watches a transpiled driver's first 1000 syscalls to deduce its hardware class (GPU, NIC, Storage) without source code, automatically granting exactly the right capability subsets.
-- **Lazarus Membrane**: A self-healing transactional barrier surrounding the driver ABI. If a closed-source driver crashes mid-execution, Lazarus rolls back the kernel state and re-animates the driver from its last known-good checkpoint—literally bringing dead code back to life.
-- **Certified Mathematical Control Kernel**: A proof-carrying actuation loop managed by the Manifold Orchestrator. Models resource congestion as heat diffusion on a Hodge nerve (calculating Čech H¹ obstructions), simplifies driver dependencies via quantum ZX-calculus spider fusion, locates bottlenecks using Tropical max-plus semirings, guarantees fair-queue service mathematically via 64-point exact Number Theoretic Transforms, and strictly validates kernel state mutations against a Symplectic Pauli stabilizer algebra and open quantum density operators.
+Sisyphus OS embraces advanced, state-based, and mathematically rigorous metaphors for operating system design:
+- **Zero-Copy Ring IPC**: Causal time-reversal message passing using CTC (Closed Timelike Curve) ring buffers and holographic semantic hashing.
+- **Temporal Entropy Engine**: An entropy engine that harvests CPU jitter to feed a cellular automaton, searching for temporal patterns to predict optimal preemption windows.
+- **State-Space Scheduler**: A workload scheduler that models processes as vector states, dynamically recalculating their coupling energy to solve for the optimal co-schedule.
+- **Causal Execution Graph**: A spacetime execution graph that tracks all kernel events as nodes in a light cone, detecting causal violations and deadlocks via topological sort.
+- **Speculative Branch Sandbox**: A speculative execution sandbox that physically bifurcates the execution state to evaluate both sides of an uncertain branch simultaneously, collapsing the state only when the truth is observed.
+- **Holographic Hash Filesystem**: A log-structured filesystem where files are hashed into a 2D holographic representation, eventually migrating as compacted data into the entropy engine.
+- **Non-Linear Page Tables**: An iterated function system memory space where virtual addresses are mapped to physical frames via chaotic dynamics, rendering ROP chains mathematically impossible.
+- **Deep-Packet IPC Firewall**: An intrusion detection system where patrolling agents inspect IPC channels, quarantine malicious packets, and broadcast extracted signatures to trigger termination in rogue processes.
+- **Co-Location Scheduler**: Inspired by endosymbiosis, this module forces highly communicative processes into shared execution—entangling their page tables and permanently collapsing their IPC overhead into a single host.
+- **Morphic ABI Transpiler**: Auto-detects foreign C driver ABIs via machine-code prologue analysis and generates live JIT trampolines to seamlessly bridge calling conventions to the kernel on the fly.
+- **Behavioral Fingerprinter**: A no_std Naive Bayes classifier that watches a transpiled driver's first 1000 syscalls to deduce its hardware class (GPU, NIC, Storage) without source code, automatically granting exactly the right capability subsets.
+- **Transactional Driver Membrane**: A self-healing transactional barrier surrounding the driver ABI. If a closed-source driver crashes mid-execution, it rolls back the kernel state and resurrects the driver from its last known-good checkpoint.
+- **Proof-Carrying Control Kernel**: A proof-carrying actuation loop managed by the Manifold Orchestrator. Models resource congestion as heat diffusion, simplifies driver dependencies via graph fusion, locates bottlenecks using Tropical max-plus semirings, guarantees fair-queue service mathematically, and strictly validates kernel state mutations against a stabilizer algebra.
 
 ## C driver contract
 
@@ -326,7 +326,7 @@ preemptive user scheduling, and measured child-process spawn/wait are fully
 integrated and functional, with all mathematical constraint verifications actively 
 enforced in the hardware trace via `MnemosyneLedger`.
 
-**Note:** Sisyphus OS operates with a 100% functional backend. All exotic subsystems, mathematical proofs (KKT/Syndrome), memory thermal models, and hardware brokers are implemented with real, functioning kernel code—there are no fake dummy modules, stubs, or placeholder returns.
+**Functionality status:** production claims are accepted only when the complete workspace, custom targets, source reality gate, and QEMU boot assertions pass for the exact commit. Experimental modules remain explicitly identified until they have real production callers, authority boundaries, rollback behavior, and target evidence.
 
 ```sh
 rustup component add rust-src --toolchain nightly

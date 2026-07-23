@@ -431,66 +431,72 @@ impl<Memory: ProcessFrameMemory> FrameBackedAddressSpace<Memory> {
     pub const CEREBRAL_OBSERVATION_ADDRESS: u64 = 0x600_0000_1000;
     pub const CEREBRAL_CERTIFICATE_ADDRESS: u64 = 0x600_0000_2000;
 
-    /// Maps the statically allocated split Resonance pages into the user's address space.
+    /// Maps the retained split Resonance pages into the user's address space.
     pub fn install_nexus_plane(
         &mut self,
         process: &ProcessImageHandle,
         _authority: &Capability<'_, ProcessInstallControl>,
     ) -> Result<(), FrameBackedError<Memory::Error>> {
-        if self.active || self.process_info(process).is_none() {
+        if self.active
+            || self.process_info(process).is_none()
+            || self.page_count.checked_add(3).is_none_or(
+                |count| count > self.pages.len(),
+            )
+        {
             return Err(FrameBackedError::InvalidState);
         }
 
-        // Ingress Page
-        let ingress_addr = Self::CEREBRAL_INGRESS_ADDRESS;
-        let (table_i, index_i) = self.ensure_leaf_slot(ingress_addr)?;
-        let ingress_ptr = crate::nexus_plane::ingress() as *const _ as u64;
-        let ingress_frame =
-            PhysicalAddress::new(ingress_ptr - crate::mmio::KERNEL_VIRTUAL_BASE as u64 + 0x10_0000);
-        let ingress_entry =
-            ingress_frame.as_u64() | ENTRY_PRESENT | ENTRY_USER | ENTRY_WRITABLE | ENTRY_NO_EXECUTE;
-        self.memory
-            .write_entry(table_i, index_i, ingress_entry)
-            .map_err(FrameBackedError::Memory)?;
-        self.pages[self.page_count] = PageRecord {
-            frame: ingress_frame,
-            virtual_address: ingress_addr,
-        };
-        self.page_count += 1;
+        let mappings = [
+            (
+                Self::CEREBRAL_INGRESS_ADDRESS,
+                crate::nexus_plane::ingress() as *const _ as usize,
+                true,
+            ),
+            (
+                Self::CEREBRAL_OBSERVATION_ADDRESS,
+                crate::nexus_plane::observation() as *const _ as usize,
+                false,
+            ),
+            (
+                Self::CEREBRAL_CERTIFICATE_ADDRESS,
+                crate::nexus_plane::certificate() as *const _ as usize,
+                false,
+            ),
+        ];
 
-        // Observation Page
-        let obs_addr = Self::CEREBRAL_OBSERVATION_ADDRESS;
-        let (table_o, index_o) = self.ensure_leaf_slot(obs_addr)?;
-        let obs_ptr = crate::nexus_plane::observation() as *const _ as u64;
-        let observation_frame =
-            PhysicalAddress::new(obs_ptr - crate::mmio::KERNEL_VIRTUAL_BASE as u64 + 0x10_0000);
-        let observation_entry =
-            observation_frame.as_u64() | ENTRY_PRESENT | ENTRY_USER | ENTRY_NO_EXECUTE;
-        self.memory
-            .write_entry(table_o, index_o, observation_entry)
-            .map_err(FrameBackedError::Memory)?;
-        self.pages[self.page_count] = PageRecord {
-            frame: observation_frame,
-            virtual_address: obs_addr,
-        };
-        self.page_count += 1;
+        for (virtual_address, kernel_pointer, writable) in mappings {
+            if kernel_pointer & (PAGE_SIZE - 1) != 0 {
+                return Err(FrameBackedError::InvalidPhysicalFrame);
+            }
 
-        // Certificate Page
-        let cert_addr = Self::CEREBRAL_CERTIFICATE_ADDRESS;
-        let (table_c, index_c) = self.ensure_leaf_slot(cert_addr)?;
-        let cert_ptr = crate::nexus_plane::certificate() as *const _ as u64;
-        let certificate_frame =
-            PhysicalAddress::new(cert_ptr - crate::mmio::KERNEL_VIRTUAL_BASE as u64 + 0x10_0000);
-        let certificate_entry =
-            certificate_frame.as_u64() | ENTRY_PRESENT | ENTRY_USER | ENTRY_NO_EXECUTE;
-        self.memory
-            .write_entry(table_c, index_c, certificate_entry)
-            .map_err(FrameBackedError::Memory)?;
-        self.pages[self.page_count] = PageRecord {
-            frame: certificate_frame,
-            virtual_address: cert_addr,
-        };
-        self.page_count += 1;
+            let physical = crate::mmio::kernel_virtual_to_physical(
+                kernel_pointer,
+                PAGE_SIZE,
+            )
+            .ok_or(FrameBackedError::InvalidPhysicalFrame)?;
+            if physical & (PAGE_SIZE as u64 - 1) != 0
+                || physical & !PAGE_ADDRESS_MASK != 0
+            {
+                return Err(FrameBackedError::InvalidPhysicalFrame);
+            }
+
+            let (table, index) =
+                self.ensure_leaf_slot(virtual_address)?;
+            let mut entry =
+                physical | ENTRY_PRESENT | ENTRY_USER | ENTRY_NO_EXECUTE;
+            if writable {
+                entry |= ENTRY_WRITABLE;
+            }
+            self.memory
+                .write_entry(table, index, entry)
+                .map_err(FrameBackedError::Memory)?;
+
+            self.pages[self.page_count] = PageRecord {
+                frame: PhysicalAddress::new(physical),
+                virtual_address,
+            };
+            self.page_count += 1;
+        }
 
         self.process_info.owned_frames = self.owned_frame_count;
         Ok(())

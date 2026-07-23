@@ -704,26 +704,9 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
         halt();
     }
 
-    let cerebral_lease =
-        match boulder::nexus_runtime::initialize(&resonance_control) {
-            Ok(token) => token,
-            Err(error) => {
-                let _ = writeln!(
-                    serial,
-                    "Boulder: Nexus runtime initialization failed: {error:?}"
-                );
-                halt();
-            }
-        };
-    if let Err(error) = boulder::nexus_plane::initialize(
-        &learning_control,
-        cerebral_lease,
-    ) {
-        let _ = writeln!(
-            serial,
-            "Boulder: Nexus plane initialization failed: {error:?}"
-        );
-        halt();
+    {
+        let _root_token = boulder::nexus_runtime::initialize(&resonance_control).unwrap();
+        boulder::nexus_plane::initialize(&learning_control).unwrap();
     }
 
     {

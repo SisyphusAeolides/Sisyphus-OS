@@ -12,6 +12,7 @@ use aether::grimoire;
 const ERROR_BAD_FILE_DESCRIPTOR: isize = -9;
 #[cfg(target_os = "none")]
 const ERROR_BAD_ADDRESS: isize = -14;
+#[cfg(target_os = "none")]
 const ERROR_INVALID_ARGUMENT: isize = -22;
 const ERROR_NOT_IMPLEMENTED: isize = -38;
 #[cfg(any(target_os = "none", test))]
@@ -57,18 +58,29 @@ pub fn dispatch(number: usize, arguments: [usize; 6]) -> isize {
         grimoire::SYS_YIELD => 0,
         grimoire::SYS_WRITE if arguments[0] != 1 => ERROR_BAD_FILE_DESCRIPTOR,
         grimoire::SYS_WRITE => ERROR_NOT_IMPLEMENTED,
-        // Host dispatch cannot own a real process address space or switch
-        // privilege levels. Process lifecycle syscalls remain unavailable in
-        // this host-only scalar entry point.
-        grimoire::SYS_EXIT | grimoire::SYS_SPAWN | grimoire::SYS_WAIT => {
-            ERROR_NOT_IMPLEMENTED
+        grimoire::SYS_EXIT => {
+            crate::process::lifecycle::exit(1, arguments[0] as isize);
+            0
         }
-        grimoire::SYS_NEXUS_ENTANGLE
-        | grimoire::SYS_NEXUS_STATS
-        | grimoire::SYS_NEXUS_POLICY => dispatch_scalar_nexus(
-            number,
-            arguments.map(|value| value as u64),
-        ),
+        grimoire::SYS_SPAWN => {
+            crate::process::lifecycle::spawn(1, arguments[0] as u64, arguments[1]) as isize
+        }
+        grimoire::SYS_WAIT => {
+            crate::process::lifecycle::wait(arguments[0] as u32) as isize
+        }
+        grimoire::SYS_NEXUS_ENTANGLE..=grimoire::SYS_NEXUS_EXPERIMENT => {
+            let mut thermal = crate::quantum_nexus::ThermalBudget;
+            crate::quantum_nexus::sys::dispatch(
+                number,
+                arguments[0],
+                arguments[1],
+                arguments[2],
+                arguments[3],
+                arguments[4],
+                arguments[5],
+                &mut thermal,
+            ).unwrap_or(0) as isize
+        }
         _ => ERROR_NOT_IMPLEMENTED,
     }
 }
@@ -87,86 +99,6 @@ pub fn write_hits() -> usize {
 
 pub fn exit_requests() -> usize {
     EXIT_REQUESTS.load(Ordering::Acquire)
-}
-
-fn dispatch_scalar_nexus(
-    number: usize,
-    arguments: [u64; 6],
-) -> isize {
-    use aether::nexus_wire::{
-        NexusCommand, NexusOpcode, NexusStatus,
-    };
-
-    let (opcode, command_arguments, capability, sequence) =
-        match number {
-            grimoire::SYS_NEXUS_ENTANGLE => (
-                NexusOpcode::Entangle,
-                [
-                    arguments[0],
-                    arguments[1],
-                    arguments[2],
-                    arguments[3],
-                ],
-                arguments[4],
-                arguments[5],
-            ),
-            grimoire::SYS_NEXUS_STATS => (
-                NexusOpcode::QueryStats,
-                [0; 4],
-                arguments[0],
-                arguments[1],
-            ),
-            grimoire::SYS_NEXUS_POLICY => {
-                let opcode = match arguments[0] {
-                    0 => NexusOpcode::SetCollapseThreshold,
-                    1 => NexusOpcode::SetPriorityMass,
-                    2 => NexusOpcode::OfferKairos,
-                    _ => return ERROR_INVALID_ARGUMENT,
-                };
-                (
-                    opcode,
-                    [arguments[1], 0, 0, 0],
-                    arguments[2],
-                    arguments[3],
-                )
-            }
-            _ => return ERROR_NOT_IMPLEMENTED,
-        };
-
-    if capability == 0 || sequence == 0 {
-        return ERROR_INVALID_ARGUMENT;
-    }
-
-    let command = NexusCommand::new(
-        opcode,
-        sequence,
-        capability,
-        command_arguments,
-    );
-    let reply = crate::nexus_runtime::control(
-        &command,
-        <crate::arch::Active as crate::arch::Architecture>::
-            counter_sample(),
-    );
-
-    let status = match reply.validate(sequence) {
-        Ok(status) => status,
-        Err(_) => return -74,
-    };
-
-    match status {
-        NexusStatus::Ok => {
-            isize::try_from(reply.values[0]).unwrap_or(isize::MAX)
-        }
-        NexusStatus::BadFrame => -74,
-        NexusStatus::Denied => -13,
-        NexusStatus::Expired => -62,
-        NexusStatus::InvalidArgument => -22,
-        NexusStatus::Capacity => -28,
-        NexusStatus::ThermalThrottle => -11,
-        NexusStatus::NotReady => -19,
-        NexusStatus::InternalFault => -5,
-    }
 }
 
 #[cfg(target_os = "none")]
@@ -191,24 +123,33 @@ extern "C" fn boulder_syscall_dispatch(frame: *mut SyscallFrame) {
         }
         grimoire::SYS_EXIT => {
             EXIT_REQUESTS.fetch_add(1, Ordering::AcqRel);
-            match crate::process::lifecycle::exit_current(
-                frame.arguments[0] as isize,
-            ) {
-                Ok(()) => 0,
-                Err(_) => ERROR_INVALID_ARGUMENT,
-            }
+            crate::process::lifecycle::exit(1, frame.arguments[0] as isize);
+            0
         }
-        grimoire::SYS_SPAWN | grimoire::SYS_WAIT => ERROR_NOT_IMPLEMENTED,
+        grimoire::SYS_SPAWN => {
+            crate::process::lifecycle::spawn(1, frame.arguments[0], frame.arguments[1] as usize) as isize
+        }
+        grimoire::SYS_WAIT => {
+            crate::process::lifecycle::wait(frame.arguments[0] as u32) as isize
+        }
         grimoire::SYS_DISP_QUERY => kairos_query_to_user(frame.arguments),
         grimoire::SYS_DISP_LEASE => kairos_abi_to_user(frame.arguments),
         grimoire::SYS_NEXUS_TELEMETRY => nexus_telemetry_to_user(frame.arguments),
 
         grimoire::SYS_NEXUS_CONTROL => nexus_control_from_user(frame.arguments),
 
-        grimoire::SYS_NEXUS_ENTANGLE
-        | grimoire::SYS_NEXUS_STATS
-        | grimoire::SYS_NEXUS_POLICY => {
-            dispatch_scalar_nexus(number, frame.arguments)
+        grimoire::SYS_NEXUS_ENTANGLE..=grimoire::SYS_NEXUS_EXPERIMENT => {
+            let mut thermal = crate::quantum_nexus::ThermalBudget;
+            crate::quantum_nexus::sys::dispatch(
+                number,
+                frame.arguments[0] as usize,
+                frame.arguments[1] as usize,
+                frame.arguments[2] as usize,
+                frame.arguments[3] as usize,
+                frame.arguments[4] as usize,
+                frame.arguments[5] as usize,
+                &mut thermal,
+            ).unwrap_or(0) as isize
         }
         _ => ERROR_NOT_IMPLEMENTED,
     };

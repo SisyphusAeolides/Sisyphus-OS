@@ -296,7 +296,6 @@ unsafe impl GlobalAlloc for GlobalSlabHeap {
 
 /// Sisyphus binaries call `HEAP.init()` in `_start` before allocating.
 /// Host tests retain their platform allocator.
-#[cfg_attr(target_os = "none", global_allocator)]
 pub static HEAP: GlobalSlabHeap = GlobalSlabHeap::new();
 
 // ─── SLAB TOKEN — capability-safe allocation identity ──────────────────────

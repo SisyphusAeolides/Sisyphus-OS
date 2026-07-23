@@ -1,4 +1,4 @@
-use crate::quantum_nexus::Amplitude;
+use crate::nexus_amplitude::Amplitude;
 
 pub const PHASE_BINS: usize = 64;
 const QUADRANT_BINS: usize = PHASE_BINS / 4;

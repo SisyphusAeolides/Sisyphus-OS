@@ -61,7 +61,7 @@ pub const SYS_CHANNEL: usize = 84;
 
 pub const SYS_NEXUS_ENTANGLE: usize = 90;
 pub const SYS_NEXUS_STATS: usize = 91;
-pub const SYS_NEXUS_EXPERIMENT: usize = 92;
+pub const SYS_NEXUS_POLICY: usize = 92;
 pub const SYS_NEXUS_TELEMETRY: usize = 93;
 pub const SYS_NEXUS_CONTROL: usize = 94;
 

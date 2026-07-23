@@ -1,4 +1,4 @@
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
 use crate::reality_forge::RealityForge;
 use crate::temporal_echo::{EchoVerdict, PendingEcho, TemporalEchoEngine, verify_replay};
@@ -47,7 +47,14 @@ struct RuntimeImage {
     thermal_heat: u64,
 }
 
-static READY: AtomicBool = AtomicBool::new(false);
+const STATE_UNINITIALIZED: u8 = 0;
+const STATE_INITIALIZING: u8 = 1;
+const STATE_READY: u8 = 2;
+const STATE_FAILED: u8 = 3;
+
+static INITIALIZATION_STATE: AtomicU8 =
+    AtomicU8::new(STATE_UNINITIALIZED);
+static CEREBRAL_LEASE_TOKEN: AtomicU64 = AtomicU64::new(0);
 
 static MATRIX: SpinLock<KernelMatrix> = SpinLock::new(KernelMatrix::new(0));
 
@@ -86,18 +93,58 @@ pub enum InitializeError {
 pub fn initialize(
     authority: &Capability<'_, ResonanceRight>,
 ) -> Result<crate::lease_lattice::LeaseToken, InitializeError> {
-    if READY.swap(true, Ordering::AcqRel) {
+    if INITIALIZATION_STATE
+        .compare_exchange(
+            STATE_UNINITIALIZED,
+            STATE_INITIALIZING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_err()
+    {
         return Err(InitializeError::AlreadyInitialized);
     }
 
+    let result = initialize_inner(authority);
+    match result {
+        Ok(token) => {
+            CEREBRAL_LEASE_TOKEN.store(
+                token.raw(),
+                Ordering::Release,
+            );
+            INITIALIZATION_STATE.store(
+                STATE_READY,
+                Ordering::Release,
+            );
+            Ok(token)
+        }
+        Err(error) => {
+            CEREBRAL_LEASE_TOKEN.store(0, Ordering::Release);
+            *THERMAL.lock() = None;
+            INITIALIZATION_STATE.store(
+                STATE_FAILED,
+                Ordering::Release,
+            );
+            Err(error)
+        }
+    }
+}
+
+fn initialize_inner(
+    authority: &Capability<'_, ResonanceRight>,
+) -> Result<crate::lease_lattice::LeaseToken, InitializeError> {
     CERTIFICATE_PAGE.initialize();
 
-    let boot_entropy_word = <crate::arch::Active as crate::arch::Architecture>::counter_sample();
+    let boot_entropy_word =
+        <crate::arch::Active as crate::arch::Architecture>::
+            counter_sample();
     let now_tick = boot_entropy_word;
     let lease_secret = boot_entropy_word;
 
     let leases = crate::nexus_gateway::LEASES
-        .initialize(crate::lease_lattice::LeaseLattice::new(lease_secret))
+        .initialize(crate::lease_lattice::LeaseLattice::new(
+            lease_secret,
+        ))
         .map_err(|_| InitializeError::LeaseInitialization)?;
 
     let root = leases
@@ -108,12 +155,15 @@ pub fn initialize(
             u32::MAX,
             authority,
         )
-        .map_err(|error| InitializeError::Gateway(GatewayError::Lease(error)))?;
+        .map_err(|error| {
+            InitializeError::Gateway(GatewayError::Lease(error))
+        })?;
 
-    let cerebral_rights = crate::lease_lattice::LeaseRights::OBSERVE
-        .union(crate::lease_lattice::LeaseRights::SCHEDULE)
-        .union(crate::lease_lattice::LeaseRights::RESONANCE)
-        .union(crate::lease_lattice::LeaseRights::CONTROL);
+    let cerebral_rights =
+        crate::lease_lattice::LeaseRights::OBSERVE
+            .union(crate::lease_lattice::LeaseRights::SCHEDULE)
+            .union(crate::lease_lattice::LeaseRights::RESONANCE)
+            .union(crate::lease_lattice::LeaseRights::CONTROL);
 
     let cerebral_token = leases
         .attenuate(
@@ -129,12 +179,38 @@ pub fn initialize(
     Ok(cerebral_token)
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RuntimeState {
+    Uninitialized,
+    Initializing,
+    Ready,
+    Failed,
+}
+
+pub fn runtime_state() -> RuntimeState {
+    match INITIALIZATION_STATE.load(Ordering::Acquire) {
+        STATE_INITIALIZING => RuntimeState::Initializing,
+        STATE_READY => RuntimeState::Ready,
+        STATE_FAILED => RuntimeState::Failed,
+        _ => RuntimeState::Uninitialized,
+    }
+}
+
+pub fn cerebral_lease_token(
+) -> Option<crate::lease_lattice::LeaseToken> {
+    if runtime_state() != RuntimeState::Ready {
+        return None;
+    }
+    let raw = CEREBRAL_LEASE_TOKEN.load(Ordering::Acquire);
+    (raw != 0).then(|| crate::lease_lattice::LeaseToken::from_raw(raw))
+}
+
 pub fn certificate_page() -> &'static CertificatePage {
     &CERTIFICATE_PAGE
 }
 
 pub fn control(command: &NexusCommand, wall_tick: u64) -> NexusReply {
-    if !READY.load(Ordering::Acquire) {
+    if runtime_state() != RuntimeState::Ready {
         return NexusReply::new(
             NexusStatus::NotReady,
             command.sequence,
@@ -431,7 +507,7 @@ pub fn service_policy_commit(wall_tick: u64) -> Result<bool, ReactorError> {
 }
 
 pub fn heartbeat_batch(wall_tick: u64, batch_size: u64) {
-    if !READY.load(Ordering::Acquire) {
+    if runtime_state() != RuntimeState::Ready {
         return;
     }
 

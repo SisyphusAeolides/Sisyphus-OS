@@ -1,7 +1,9 @@
 /target/
 *.o
 *.a
+*.rlib
+*.rmeta
 *.iso
 *.img
-*.iso
 compile_commands.json
+kernel/boulder/scratch.rs

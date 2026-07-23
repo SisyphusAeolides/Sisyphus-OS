@@ -128,24 +128,9 @@ impl ResonanceIngressPage {
 
     pub fn initialize(&self, generation: u64) {
         self.core.generation.store(generation, Ordering::Relaxed);
-        self.core.reserved[0].store(0, Ordering::Relaxed);
         self.core
             .signature
             .store(INGRESS_SIGNATURE, Ordering::Release);
-    }
-
-    /// Kernel publisher for the attenuated command capability.
-    pub fn publish_capability(&self, capability: u64) {
-        self.core.reserved[0].store(capability, Ordering::Release);
-    }
-
-    /// Userland reader for the command capability installed at boot.
-    pub fn capability(&self) -> Option<u64> {
-        if !self.compatible() {
-            return None;
-        }
-        let capability = self.core.reserved[0].load(Ordering::Acquire);
-        (capability != 0).then_some(capability)
     }
 
     pub fn compatible(&self) -> bool {

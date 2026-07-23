@@ -6,7 +6,7 @@ use crate::blacklab::ResonanceField;
 use crate::chronovore::{ChronoTick, TickDevourer};
 use crate::kairos::{CriticalMoment, FLAG_KAIROS, KairosScheduler, KairosWindow, MomentPriority};
 use crate::ouroboros::{ConstructiveRing, ExecutorHook, PhaseHint, TaskId};
-use crate::quantum_nexus::Amplitude;
+use crate::nexus_amplitude::Amplitude;
 use crate::tartarus_deep::{DecoherenceEvent, QuarantineLevel, TartarusCage};
 use crate::thermogenesis::ThermalLedger;
 

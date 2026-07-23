@@ -10,8 +10,6 @@ build = "build.rs"
 default = ["reference-driver"]
 reference-driver = []
 kernel-bin = []
-# Quarantined until real scheduler, thermal, resonance, and fault adapters exist.
-unfinished-quantum-nexus = []
 
 [dependencies]
 aether = { path = "../../core/aether" }

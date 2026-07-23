@@ -75,7 +75,7 @@ pub mod predictive_kernel;
 pub mod process;
 pub mod quantum_crest_gateway;
 pub mod quantum_desktop_recovery;
-pub mod quantum_nexus;
+
 pub mod reality_forge;
 pub mod resource_quiver_seed;
 pub mod rev_tape;
@@ -465,3 +465,4 @@ pub fn drain_axiom_reactor(
 
     committed
 }
+pub mod nexus_amplitude;

@@ -9,7 +9,6 @@ use aether::resonance_split::{ResonanceIngressPage, ResonanceObservationPage};
 
 use crate::capability::{Capability, LearningRight};
 use crate::lab_capsule::{CapsuleError, LabCapsule};
-use crate::lease_lattice::LeaseToken;
 use crate::nexus_runtime;
 
 pub const COMMAND_BUDGET_PER_HEARTBEAT: usize = 16;
@@ -29,19 +28,10 @@ static mut PRIVATE_CURSOR: u64 = 0;
 pub enum PlaneDriverInitError {
     Capsule(CapsuleError),
     PolicyCrystal,
-    InvalidLease,
 }
 
-pub fn initialize(
-    authority: &Capability<'_, LearningRight>,
-    command_lease: LeaseToken,
-) -> Result<(), PlaneDriverInitError> {
-    if command_lease == LeaseToken::INVALID {
-        return Err(PlaneDriverInitError::InvalidLease);
-    }
-
+pub fn initialize(authority: &Capability<'_, LearningRight>) -> Result<(), PlaneDriverInitError> {
     INGRESS_PAGE.initialize(1);
-    INGRESS_PAGE.publish_capability(command_lease.raw());
     OBSERVATION_PAGE.initialize(1);
     CERTIFICATE_PAGE.initialize();
 

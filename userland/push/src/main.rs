@@ -12,6 +12,9 @@ use slope::kairos::{WorkloadClass, features};
 use slope::runtime::ProcessRuntime;
 use slope::thermogenesis::{ThermalGuard, ThermalPage, ThermalPolicy, throttled_batch_size};
 
+#[global_allocator]
+static HEAP: slope::memory::GlobalSlabHeap = slope::memory::GlobalSlabHeap::new();
+
 core::arch::global_asm!(
     ".section .text._start,\"ax\"",
     ".global _start",
