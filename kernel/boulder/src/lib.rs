@@ -55,9 +55,9 @@ pub mod temporal_echo;
 pub mod thermogenesis;
 
 use crate::axiom_manifold::{
-    AxiomManifold, ManifoldError, StateCell, CELL_READ_ONLY,
-    AxiomPolicy, Mutation, MutationOp, DraftError, ReadConstraint,
-    TransactionDraft, TransactionId, CommitCertificate, DriveOutcome, RejectReason,
+    AxiomManifold, AxiomPolicy, CELL_READ_ONLY, CommitCertificate, DraftError, DriveOutcome,
+    ManifoldError, Mutation, MutationOp, ReadConstraint, RejectReason, StateCell, TransactionDraft,
+    TransactionId,
 };
 
 pub const CELL_NUMA_ZERO_CREDITS: usize = 0;
@@ -79,37 +79,16 @@ pub const CLASS_EPOCH_FLOOR: u16 = 0x0401;
 // 8 explicit dependencies per transaction
 pub type KernelAxiomManifold = AxiomManifold<256, 128, 32, 16, 16, 8>;
 
-pub static KERNEL_AXIOM_MANIFOLD: KernelAxiomManifold =
-    KernelAxiomManifold::new(0);
+pub static KERNEL_AXIOM_MANIFOLD: KernelAxiomManifold = KernelAxiomManifold::new(0);
 
 pub fn seed_kernel_axioms() -> Result<(), ManifoldError> {
-    KERNEL_AXIOM_MANIFOLD.seed_cell(
-        CELL_NUMA_ZERO_CREDITS,
-        500_000,
-        CLASS_COMPUTE_CREDITS,
-        0,
-    )?;
+    KERNEL_AXIOM_MANIFOLD.seed_cell(CELL_NUMA_ZERO_CREDITS, 500_000, CLASS_COMPUTE_CREDITS, 0)?;
 
-    KERNEL_AXIOM_MANIFOLD.seed_cell(
-        CELL_NUMA_ONE_CREDITS,
-        500_000,
-        CLASS_COMPUTE_CREDITS,
-        0,
-    )?;
+    KERNEL_AXIOM_MANIFOLD.seed_cell(CELL_NUMA_ONE_CREDITS, 500_000, CLASS_COMPUTE_CREDITS, 0)?;
 
-    KERNEL_AXIOM_MANIFOLD.seed_cell(
-        CELL_THERMAL_BUDGET,
-        48 << 16,
-        CLASS_THERMAL_BUDGET,
-        0,
-    )?;
+    KERNEL_AXIOM_MANIFOLD.seed_cell(CELL_THERMAL_BUDGET, 48 << 16, CLASS_THERMAL_BUDGET, 0)?;
 
-    KERNEL_AXIOM_MANIFOLD.seed_cell(
-        CELL_DMA_RESERVE,
-        65_536,
-        CLASS_DMA_RESERVE,
-        0,
-    )?;
+    KERNEL_AXIOM_MANIFOLD.seed_cell(CELL_DMA_RESERVE, 65_536, CLASS_DMA_RESERVE, 0)?;
 
     KERNEL_AXIOM_MANIFOLD.seed_cell(
         CELL_COMMIT_EPOCH_FLOOR,
@@ -203,10 +182,7 @@ impl AxiomPolicy for KernelAxiomPolicy {
         Ok(())
     }
 
-    fn validate_state(
-        &self,
-        cells: &[StateCell],
-    ) -> Result<(), Self::Fault> {
+    fn validate_state(&self, cells: &[StateCell]) -> Result<(), Self::Fault> {
         let numa_zero = cells
             .get(CELL_NUMA_ZERO_CREDITS)
             .ok_or(KernelAxiomFault::GeometryMissing)?
@@ -235,9 +211,7 @@ impl AxiomPolicy for KernelAxiomPolicy {
             return Err(KernelAxiomFault::ComputeConservationBroken);
         }
 
-        if numa_zero > MAX_SINGLE_NUMA_CREDITS
-            || numa_one > MAX_SINGLE_NUMA_CREDITS
-        {
+        if numa_zero > MAX_SINGLE_NUMA_CREDITS || numa_one > MAX_SINGLE_NUMA_CREDITS {
             return Err(KernelAxiomFault::NumaConcentrationExceeded);
         }
 
@@ -245,9 +219,7 @@ impl AxiomPolicy for KernelAxiomPolicy {
             return Err(KernelAxiomFault::DmaReserveExceeded);
         }
 
-        if !(THERMAL_FLOOR_Q16..=THERMAL_CEILING_Q16)
-            .contains(&thermal)
-        {
+        if !(THERMAL_FLOOR_Q16..=THERMAL_CEILING_Q16).contains(&thermal) {
             return Err(KernelAxiomFault::ThermalEnvelopeBroken);
         }
 
@@ -297,8 +269,7 @@ pub fn stage_numa_rebalance(
     nonce: u64,
 ) -> Result<RebalancePlan, RebalanceError> {
     let signed_delta =
-        i64::try_from(credits_from_zero_to_one)
-            .map_err(|_| RebalanceError::DeltaTooLarge)?;
+        i64::try_from(credits_from_zero_to_one).map_err(|_| RebalanceError::DeltaTooLarge)?;
 
     let mut credit_transfer = KernelAxiomDraft::new(
         CLASS_COMPUTE_CREDITS,
@@ -328,11 +299,7 @@ pub fn stage_numa_rebalance(
         signed_delta,
     ))?;
 
-    let credit_transfer_id = KERNEL_AXIOM_MANIFOLD.submit(
-        origin,
-        wall_tick,
-        credit_transfer,
-    )?;
+    let credit_transfer_id = KERNEL_AXIOM_MANIFOLD.submit(origin, wall_tick, credit_transfer)?;
 
     let mut thermal_reconciliation = KernelAxiomDraft::new(
         CLASS_THERMAL_BUDGET,
@@ -357,11 +324,8 @@ pub fn stage_numa_rebalance(
         thermal_after_q16,
     ))?;
 
-    let thermal_reconciliation_id = KERNEL_AXIOM_MANIFOLD.submit(
-        origin,
-        wall_tick,
-        thermal_reconciliation,
-    )?;
+    let thermal_reconciliation_id =
+        KERNEL_AXIOM_MANIFOLD.submit(origin, wall_tick, thermal_reconciliation)?;
 
     Ok(RebalancePlan {
         credit_transfer: credit_transfer_id,
@@ -414,15 +378,10 @@ pub fn attest_from_cpu_mask(
 }
 
 pub fn drive_axiom_reactor(now_tick: u64) -> AxiomReactorStep {
-    match KERNEL_AXIOM_MANIFOLD.drive(
-        now_tick,
-        &KernelAxiomPolicy,
-    ) {
+    match KERNEL_AXIOM_MANIFOLD.drive(now_tick, &KernelAxiomPolicy) {
         DriveOutcome::Idle => AxiomReactorStep::Quiescent,
 
-        DriveOutcome::Blocked { prepared } => {
-            AxiomReactorStep::Waiting { prepared }
-        }
+        DriveOutcome::Blocked { prepared } => AxiomReactorStep::Waiting { prepared },
 
         DriveOutcome::Rejected {
             transaction,
@@ -434,9 +393,7 @@ pub fn drive_axiom_reactor(now_tick: u64) -> AxiomReactorStep {
             fault,
         },
 
-        DriveOutcome::Committed(certificate) => {
-            AxiomReactorStep::Committed { certificate }
-        }
+        DriveOutcome::Committed(certificate) => AxiomReactorStep::Committed { certificate },
     }
 }
 
@@ -459,8 +416,7 @@ pub fn drain_axiom_reactor(
                 continue;
             }
 
-            AxiomReactorStep::Quiescent
-            | AxiomReactorStep::Waiting { .. } => break,
+            AxiomReactorStep::Quiescent | AxiomReactorStep::Waiting { .. } => break,
         }
     }
 

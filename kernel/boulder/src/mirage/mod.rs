@@ -1,5 +1,9 @@
+pub mod hermes_foreign_codec;
+pub mod hermes_morphic_abi;
+pub mod hermes_prometheus;
 pub mod irq_reflector;
 pub mod jit_linker;
+pub mod morphic_x86_64;
 pub mod ntoskrnl;
 pub mod personality;
 pub mod transaction;

@@ -402,7 +402,9 @@ pub trait AxiomPolicy {
 #[derive(Debug, Eq, PartialEq)]
 pub enum DriveOutcome<F> {
     Idle,
-    Blocked { prepared: usize },
+    Blocked {
+        prepared: usize,
+    },
     Rejected {
         transaction: TransactionId,
         reason: RejectReason,
@@ -412,7 +414,12 @@ pub enum DriveOutcome<F> {
 }
 
 #[derive(Clone, Copy)]
-struct TransactionSlot<const NODES: usize, const READS: usize, const WRITES: usize, const DEPS: usize> {
+struct TransactionSlot<
+    const NODES: usize,
+    const READS: usize,
+    const WRITES: usize,
+    const DEPS: usize,
+> {
     generation: u16,
     status: TransactionStatus,
     reason: Option<RejectReason>,
@@ -458,13 +465,13 @@ struct Inner<
 }
 
 impl<
-        const CELLS: usize,
-        const SLOTS: usize,
-        const NODES: usize,
-        const READS: usize,
-        const WRITES: usize,
-        const DEPS: usize,
-    > Inner<CELLS, SLOTS, NODES, READS, WRITES, DEPS>
+    const CELLS: usize,
+    const SLOTS: usize,
+    const NODES: usize,
+    const READS: usize,
+    const WRITES: usize,
+    const DEPS: usize,
+> Inner<CELLS, SLOTS, NODES, READS, WRITES, DEPS>
 {
     const fn new() -> Self {
         Self {
@@ -492,13 +499,13 @@ pub struct AxiomManifold<
 }
 
 impl<
-        const CELLS: usize,
-        const SLOTS: usize,
-        const NODES: usize,
-        const READS: usize,
-        const WRITES: usize,
-        const DEPS: usize,
-    > AxiomManifold<CELLS, SLOTS, NODES, READS, WRITES, DEPS>
+    const CELLS: usize,
+    const SLOTS: usize,
+    const NODES: usize,
+    const READS: usize,
+    const WRITES: usize,
+    const DEPS: usize,
+> AxiomManifold<CELLS, SLOTS, NODES, READS, WRITES, DEPS>
 {
     pub const fn new(clock_node: u16) -> Self {
         Self {
@@ -626,7 +633,8 @@ impl<
     pub fn drive<P: AxiomPolicy>(&self, now_tick: u64, policy: &P) -> DriveOutcome<P::Fault> {
         let mut inner = self.inner.lock();
 
-        if let Some((index, reason)) = terminalize_one_dependency_or_deadline(&mut inner, now_tick) {
+        if let Some((index, reason)) = terminalize_one_dependency_or_deadline(&mut inner, now_tick)
+        {
             let transaction = id_for(index, inner.slots[index].generation);
             return DriveOutcome::Rejected {
                 transaction,
@@ -896,7 +904,9 @@ fn terminalize_one_dependency_or_deadline<
             slot.generation != dependency.generation
                 || matches!(
                     slot.status,
-                    TransactionStatus::Aborted | TransactionStatus::Expired | TransactionStatus::Free
+                    TransactionStatus::Aborted
+                        | TransactionStatus::Expired
+                        | TransactionStatus::Free
                 )
         });
         if dependency_failed {
@@ -928,13 +938,10 @@ fn select_candidate<
         }
         let dependencies_committed = slot.draft.dependencies().iter().all(|dependency| {
             let dependency_index = usize::from(dependency.slot);
-            inner
-                .slots
-                .get(dependency_index)
-                .is_some_and(|candidate| {
-                    candidate.generation == dependency.generation
-                        && candidate.status == TransactionStatus::Committed
-                })
+            inner.slots.get(dependency_index).is_some_and(|candidate| {
+                candidate.generation == dependency.generation
+                    && candidate.status == TransactionStatus::Committed
+            })
         });
         if !dependencies_committed {
             continue;
@@ -942,14 +949,21 @@ fn select_candidate<
 
         match best {
             None => best = Some(index),
-            Some(previous) if candidate_precedes(slot, &inner.slots[previous]) => best = Some(index),
+            Some(previous) if candidate_precedes(slot, &inner.slots[previous]) => {
+                best = Some(index)
+            }
             Some(_) => {}
         }
     }
     best
 }
 
-fn candidate_precedes<const NODES: usize, const READS: usize, const WRITES: usize, const DEPS: usize>(
+fn candidate_precedes<
+    const NODES: usize,
+    const READS: usize,
+    const WRITES: usize,
+    const DEPS: usize,
+>(
     left: &TransactionSlot<NODES, READS, WRITES, DEPS>,
     right: &TransactionSlot<NODES, READS, WRITES, DEPS>,
 ) -> bool {
@@ -965,7 +979,11 @@ fn candidate_precedes<const NODES: usize, const READS: usize, const WRITES: usiz
     };
 
     (left_deadline, u8::MAX - left.draft.priority, left.sequence)
-        < (right_deadline, u8::MAX - right.draft.priority, right.sequence)
+        < (
+            right_deadline,
+            u8::MAX - right.draft.priority,
+            right.sequence,
+        )
 }
 
 fn reads_match(cells: &[StateCell], reads: &[ReadConstraint]) -> bool {
@@ -997,9 +1015,7 @@ fn project_value(before: u64, mutation: Mutation) -> Option<u64> {
         MutationOp::MaskedReplace => {
             Some((before & !mutation.mask) | (mutation.operand & mutation.mask))
         }
-        MutationOp::CompareExchange => {
-            (before == mutation.expected).then_some(mutation.operand)
-        }
+        MutationOp::CompareExchange => (before == mutation.expected).then_some(mutation.operand),
     }
 }
 
@@ -1055,9 +1071,7 @@ fn cell_fingerprint(index: usize, cell: StateCell) -> u64 {
     fold_word(&mut root, cell.value);
     fold_word(
         &mut root,
-        u64::from(cell.version)
-            | (u64::from(cell.class) << 32)
-            | (u64::from(cell.flags) << 48),
+        u64::from(cell.version) | (u64::from(cell.class) << 32) | (u64::from(cell.flags) << 48),
     );
     root
 }
@@ -1143,9 +1157,14 @@ mod tests {
     #[test]
     fn quorum_guarded_transfer_commits() {
         let manifold = seeded();
-        let transaction = manifold.submit(0, 1, transfer(1, 1, 10, 2, 0xA11CE)).unwrap();
+        let transaction = manifold
+            .submit(0, 1, transfer(1, 1, 10, 2, 0xA11CE))
+            .unwrap();
 
-        assert_eq!(manifold.drive(2, &ConservationPolicy), DriveOutcome::Blocked { prepared: 1 });
+        assert_eq!(
+            manifold.drive(2, &ConservationPolicy),
+            DriveOutcome::Blocked { prepared: 1 }
+        );
         assert!(manifold.attest(transaction, 0).unwrap());
         assert!(manifold.attest(transaction, 2).unwrap());
         assert!(!manifold.attest(transaction, 2).unwrap());

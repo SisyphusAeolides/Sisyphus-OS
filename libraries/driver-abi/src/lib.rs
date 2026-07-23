@@ -1,6 +1,7 @@
 #![no_std]
 
 pub mod golem;
+pub mod hermes;
 pub mod lazarus;
 pub mod membrane;
 pub mod prometheus;
