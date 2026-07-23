@@ -27,6 +27,7 @@ pub mod er_epr_memory;
 pub mod fabric;
 pub mod fabric_weave;
 pub mod fs;
+pub mod futamura;
 pub mod ghost_chronicle;
 pub mod hw;
 pub mod ignition;
@@ -53,6 +54,7 @@ pub mod oracular_mesh;
 pub mod ouroboros;
 pub mod paradox;
 pub mod penrose_or;
+pub mod persist_homology;
 pub mod phase_rotor;
 pub mod phononic_irq;
 pub mod policy_chamber;
@@ -61,8 +63,10 @@ pub mod quantum_crest_gateway;
 pub mod quantum_desktop_recovery;
 pub mod quantum_nexus;
 pub mod reality_forge;
+pub mod rev_tape;
 pub mod scheduler;
 pub mod serial;
+pub mod session_pi;
 pub mod sheaf_capability;
 pub mod shim;
 pub mod singularity;
@@ -72,6 +76,7 @@ pub mod syscalls;
 pub mod tartarus_deep;
 pub mod temporal_echo;
 pub mod thermogenesis;
+pub mod tropical_crit;
 
 use crate::axiom_manifold::{
     AxiomManifold, AxiomPolicy, CELL_READ_ONLY, CommitCertificate, DraftError, DriveOutcome,
