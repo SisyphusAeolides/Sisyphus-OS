@@ -498,6 +498,17 @@ static READY: AtomicBool = AtomicBool::new(false);
 static EPOCH: AtomicU64 = AtomicU64::new(0);
 static mut ORCH: ManifoldOrchestrator = ManifoldOrchestrator::new();
 
+pub struct MathState {
+    pub runtime: crate::certified_math::CertifiedMathRuntime,
+    pub secrets: crate::certified_math::MathDomainSecrets,
+    pub sheaf: crate::certified_math::CellularCapabilitySheaf,
+    pub stabilizer: crate::certified_math::SymplecticStabilizer,
+    pub channel: crate::certified_math::KrausChannel,
+    pub rho: crate::certified_math::DensityMatrix,
+}
+
+static CERTIFIED_RUNTIME: crate::sync::SpinLock<Option<MathState>> = crate::sync::SpinLock::new(None);
+
 /// # Safety
 /// Call only from serialized BSP boot / a single tick owner.
 pub unsafe fn global_mut() -> &'static mut ManifoldOrchestrator {
@@ -524,6 +535,51 @@ pub fn boot_after_drivernet(inv: &PciInventory, drive: &DriverNetSummary, serial
                 "Manifold: boot ok fair_class={} energy0={} ceilings={}",
                 act.fair_class, act.energy0, act.n_ceilings
             );
+
+            // --- 8. Initialize the certified runtime ---
+            let secrets = crate::certified_math::MathDomainSecrets {
+                controller: 0x11111111,
+                hodge: 0x22222222,
+                optimization: 0x33333333,
+                sheaf: 0x44444444,
+                stabilizer: 0x55555555,
+                persistence: 0x66666666,
+                spectral: 0x77777777,
+                tropical: 0x88888888,
+                density: 0x99999999,
+            };
+
+            if let Ok(runtime) = crate::certified_math::CertifiedMathRuntime::from_manifold(
+                orch,
+                16,
+                secrets,
+                crate::certified_math::RuntimePolicy::STRICT,
+                crate::certified_math::CertificationPolicy::INVARIANT_PRESERVING,
+            ) {
+                if let Ok(mut sheaf) = crate::certified_math::CellularCapabilitySheaf::new(secrets.sheaf) {
+                    let _ = sheaf.add_open(1, 16, 0).map(|open_id| sheaf.install(1, open_id, 0));
+                    if let Ok(mut stabilizer) = crate::certified_math::SymplecticStabilizer::new(16, secrets.stabilizer) {
+                        let _ = stabilizer.add_generator(crate::certified_math::Pauli { x: 0, z: 0xFFFF, phase: 0 });
+                        let mut channel = crate::certified_math::KrausChannel::EMPTY;
+                        channel.dimension = 4;
+                        if let Ok(id_op) = crate::certified_math::density::Operator::identity(4) {
+                            let _ = channel.push(id_op);
+                            if let Ok(rho) = crate::certified_math::DensityMatrix::from_diagonal(&[1_073_741_824, 0, 0, 0]) {
+                                let state = MathState {
+                                    runtime,
+                                    secrets,
+                                    sheaf,
+                                    stabilizer,
+                                    channel,
+                                    rho,
+                                };
+                                *CERTIFIED_RUNTIME.lock() = Some(state);
+                                let _ = writeln!(serial, "Manifold: CertifiedMathRuntime initialized");
+                            }
+                        }
+                    }
+                }
+            }
         }
         Err(e) => {
             let _ = writeln!(serial, "Manifold: boot failed: {e:?}");
@@ -540,6 +596,28 @@ pub fn tick(now_tsc: u64) -> Option<Actuation> {
     match orch.tick(now_tsc) {
         Ok(act) => {
             EPOCH.store(act.epoch, Ordering::Relaxed);
+
+            // --- 9. Execute one certified step ---
+            let mut guard = CERTIFIED_RUNTIME.lock();
+            if let Some(state) = &mut *guard {
+                if let Ok(glue) = state.sheaf.certify(1) {
+                    let mutation = crate::certified_math::Pauli { x: 0, z: 0, phase: 0 };
+                    let syndrome = state.stabilizer.certify(mutation);
+                    
+                    if let Ok((rho_next, dp)) = state.channel.apply(state.rho, 1000, state.secrets.density) {
+                        state.rho = rho_next;
+                        let external = crate::certified_math::ExternalProofs {
+                            sheaf: &glue,
+                            stabilizer: &syndrome,
+                            density: crate::certified_math::DensityProof::Channel(&dp),
+                        };
+
+                        // 10. Keep capability authorization separate (Verify the step)
+                        let _step_result = state.runtime.step(orch, &act, external);
+                    }
+                }
+            }
+
             Some(act)
         }
         Err(_) => None,
