@@ -20,24 +20,12 @@ use crate::cluster_quiver::{
 use crate::cyclotomic_ntt::CyclotomicFairQ;
 use crate::drivers::drivernet::DrivernetSummary;
 use crate::drivers::drivernet::compat_oracle::DriverStrategy;
-use crate::ghost_chronicle::{GhostChronicle, ghost_kind};
+use crate::ghost_chronicle::{GhostChronicle, ghost_kind as orch_kind};
 use crate::hodge_cech::{FP_ONE as H_ONE, Fp as HFp, HodgeFault, HodgeNerve, MAX_F, MAX_V};
 use crate::hw::pci::{PciDevice, PciInventory};
 use crate::serial::SerialPort;
 use core::fmt::Write;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-
-// ---------------------------------------------------------------------------
-// Ghost kinds (math pipeline) — keep in sync with ghost_chronicle::ghost_kind
-// ---------------------------------------------------------------------------
-pub mod orch_kind {
-    pub const MANIFOLD_BOOT: u16 = 0xA001;
-    pub const HODGE_HEAT: u16 = 0xA002;
-    pub const CLUSTER_MUT: u16 = 0xA003;
-    pub const NTT_PICK: u16 = 0xA004;
-    pub const COMPLEX_ID: u16 = 0xA005;
-    pub const SEED_REPORT: u16 = 0xA006;
-}
 
 const MAX_SEED_DEV: usize = 10;
 const GHOST_CAP: usize = 64;
