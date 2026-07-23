@@ -32,6 +32,7 @@ Sisyphus OS embraces chaotic, biological, and quantum-mechanical metaphors for o
 - **Prometheus Morphic Transpiler**: Auto-detects foreign C driver ABIs via machine-code prologue analysis and generates live JIT trampolines to seamlessly bridge Windows/Linux/BSD calling conventions to the kernel on the fly.
 - **Golem Behavioral Fingerprinter**: A no_std Naive Bayes classifier that watches a transpiled driver's first 1000 syscalls to deduce its hardware class (GPU, NIC, Storage) without source code, automatically granting exactly the right capability subsets.
 - **Lazarus Membrane**: A self-healing transactional barrier surrounding the driver ABI. If a closed-source driver crashes mid-execution, Lazarus rolls back the kernel state and re-animates the driver from its last known-good checkpoint—literally bringing dead code back to life.
+- **Certified Mathematical Control Kernel**: A proof-carrying actuation loop managed by the Manifold Orchestrator. Models resource congestion as heat diffusion on a Hodge nerve (calculating Čech H¹ obstructions), simplifies driver dependencies via quantum ZX-calculus spider fusion, locates bottlenecks using Tropical max-plus semirings, guarantees fair-queue service mathematically via 64-point exact Number Theoretic Transforms, and strictly validates kernel state mutations against a Symplectic Pauli stabilizer algebra and open quantum density operators.
 
 ## C driver contract
 
