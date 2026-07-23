@@ -1,5 +1,5 @@
-// kernel/boulder/src/blacklab_hooks.rs
-//! Black-lab boot/tick hooks — one call site from main.rs
+// kernel/boulder/src/manifold_orchestrator.rs
+//! Manifold Orchestrator boot/tick hooks — one call site from main.rs
 //!
 //! boot_after_drivernet(pci, drivernet, serial)
 //!   1. seed resource quiver from PCI + drivernet
@@ -11,10 +11,10 @@
 
 #![allow(dead_code)]
 
-use crate::cluster_quiver::{ResourceQuiver, FP_ONE, MAX_N};
+use crate::cluster_quiver::{FP_ONE, MAX_N, ResourceQuiver};
 use crate::cyclotomic_ntt::CyclotomicFairQ;
 use crate::drivers::drivernet::DrivernetSummary;
-use crate::hodge_cech::{HodgeNerve, FP_ONE as HFP_ONE};
+use crate::hodge_cech::{FP_ONE as HFP_ONE, HodgeNerve};
 use crate::hw::pci::PciInventory;
 use crate::resource_quiver_seed::{hodge_from_quiver, seed_from_pci_and_drivernet};
 use crate::serial::SerialPort;
@@ -23,7 +23,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 static READY: AtomicBool = AtomicBool::new(false);
 
-pub struct BlackLabState {
+pub struct ManifoldOrchestratorState {
     pub quiver: ResourceQuiver,
     pub hodge: HodgeNerve,
     pub fairq: CyclotomicFairQ,
@@ -32,7 +32,7 @@ pub struct BlackLabState {
     pub faces: u16,
 }
 
-impl BlackLabState {
+impl ManifoldOrchestratorState {
     pub const fn empty() -> Self {
         Self {
             quiver: ResourceQuiver::new(0),
@@ -45,11 +45,11 @@ impl BlackLabState {
     }
 }
 
-static mut STATE: BlackLabState = BlackLabState::empty();
+static mut STATE: ManifoldOrchestratorState = ManifoldOrchestratorState::empty();
 
 /// # Safety
 /// Single-threaded early boot, or caller holds exclusive access.
-pub unsafe fn state_mut() -> &'static mut BlackLabState {
+pub unsafe fn state_mut() -> &'static mut ManifoldOrchestratorState {
     unsafe { &mut *core::ptr::addr_of_mut!(STATE) }
 }
 
@@ -58,26 +58,22 @@ pub fn ready() -> bool {
 }
 
 /// Call once after `drivernet::resolve_all`, before or after Kairos.
-pub fn boot_after_drivernet(
-    inv: &PciInventory,
-    drive: &DrivernetSummary,
-    serial: &mut SerialPort,
-) {
+pub fn boot_after_drivernet(inv: &PciInventory, drive: &DrivernetSummary, serial: &mut SerialPort) {
     // SAFETY: boulder_main is serialized on BSP with interrupts still
     // under explicit control at this phase; only caller of boot hook.
     let st = unsafe { state_mut() };
-    *st = BlackLabState::empty();
+    *st = ManifoldOrchestratorState::empty();
 
     match seed_from_pci_and_drivernet(inv, drive, &mut st.quiver) {
         Ok(rep) => {
             let _ = writeln!(
                 serial,
-                "BlackLab: quiver seed devs={} strat={} arrows={}",
+                "ManifoldOrchestrator: quiver seed devs={} strat={} arrows={}",
                 rep.devices_kept, rep.strategy_nodes, rep.arrows
             );
         }
         Err(e) => {
-            let _ = writeln!(serial, "BlackLab: quiver seed failed: {e:?}");
+            let _ = writeln!(serial, "ManifoldOrchestrator: quiver seed failed: {e:?}");
             return;
         }
     }
@@ -86,7 +82,7 @@ pub fn boot_after_drivernet(
     st.boot_energy = st.hodge.nonharmonic_energy0();
     let _ = writeln!(
         serial,
-        "BlackLab: Hodge nerve V={} E={} F={} energy0={}",
+        "ManifoldOrchestrator: Hodge nerve V={} E={} F={} energy0={}",
         st.hodge.n_v, st.hodge.n_e, st.faces, st.boot_energy
     );
 
@@ -104,7 +100,7 @@ pub fn boot_after_drivernet(
         }
         let _ = writeln!(
             serial,
-            "BlackLab: complex identity δ₁δ₀=0 {}",
+            "ManifoldOrchestrator: complex identity δ₁δ₀=0 {}",
             if ok { "ok" } else { "FAIL" }
         );
     }
@@ -114,7 +110,7 @@ pub fn boot_after_drivernet(
     let e1 = st.hodge.nonharmonic_energy0();
     let _ = writeln!(
         serial,
-        "BlackLab: heat_flow energy0 {} -> {}",
+        "ManifoldOrchestrator: heat_flow energy0 {} -> {}",
         st.boot_energy, e1
     );
 
@@ -124,17 +120,17 @@ pub fn boot_after_drivernet(
             st.last_mutated = Some(k);
             let _ = writeln!(
                 serial,
-                "BlackLab: cluster μ_{} x'={} arrows={}",
+                "ManifoldOrchestrator: cluster μ_{} x'={} arrows={}",
                 k,
                 st.quiver.x[k],
                 st.quiver.live_arrows()
             );
         }
         Ok(None) => {
-            let _ = writeln!(serial, "BlackLab: cluster no mutation (cool)");
+            let _ = writeln!(serial, "ManifoldOrchestrator: cluster no mutation (cool)");
         }
         Err(e) => {
-            let _ = writeln!(serial, "BlackLab: cluster mutate err {e:?}");
+            let _ = writeln!(serial, "ManifoldOrchestrator: cluster mutate err {e:?}");
         }
     }
 
@@ -148,7 +144,7 @@ pub fn boot_after_drivernet(
     let pick = st.fairq.quantum(1);
     let _ = writeln!(
         serial,
-        "BlackLab: NTT64 fairq pick={} picks_total={}",
+        "ManifoldOrchestrator: NTT64 fairq pick={} picks_total={}",
         pick, st.fairq.picks
     );
 
@@ -156,7 +152,7 @@ pub fn boot_after_drivernet(
     st.quiver.ceiling_scales(&mut scales);
     let _ = writeln!(
         serial,
-        "BlackLab: ceiling scales[0..4]= {:#x} {:#x} {:#x} {:#x}",
+        "ManifoldOrchestrator: ceiling scales[0..4]= {:#x} {:#x} {:#x} {:#x}",
         scales.get(0).copied().unwrap_or(0),
         scales.get(1).copied().unwrap_or(0),
         scales.get(2).copied().unwrap_or(0),
@@ -164,7 +160,7 @@ pub fn boot_after_drivernet(
     );
 
     READY.store(true, Ordering::Release);
-    let _ = writeln!(serial, "BlackLab: boot hooks armed");
+    let _ = writeln!(serial, "ManifoldOrchestrator: boot hooks armed");
 }
 
 /// Periodic tick — call from APIC timer softpath when ready.

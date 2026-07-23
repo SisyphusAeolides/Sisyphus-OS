@@ -16,6 +16,7 @@ pub mod capability;
 pub mod cassandra_reactor;
 pub mod causal_lattice;
 pub mod cech_h1;
+pub mod manifold_orchestrator;
 
 pub mod charybdis_dma_firewall;
 pub mod chronovore;
@@ -71,6 +72,7 @@ pub mod quantum_crest_gateway;
 pub mod quantum_desktop_recovery;
 pub mod quantum_nexus;
 pub mod reality_forge;
+pub mod resource_quiver_seed;
 pub mod rev_tape;
 pub mod scheduler;
 pub mod serial;

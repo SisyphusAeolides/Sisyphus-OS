@@ -17,9 +17,9 @@
 
 #![allow(dead_code)]
 
-use crate::cluster_quiver::{ClusterFault, Fp, NodeKind, ResourceQuiver, FP_ONE, MAX_N};
-use crate::drivers::drivernet::compat_oracle::DriverStrategy;
+use crate::cluster_quiver::{ClusterFault, FP_ONE, Fp, MAX_N, NodeKind, ResourceQuiver};
 use crate::drivers::drivernet::DrivernetSummary;
+use crate::drivers::drivernet::compat_oracle::DriverStrategy;
 use crate::hw::pci::{PciDevice, PciInventory};
 
 const MAX_SEED_DEV: usize = 10;
