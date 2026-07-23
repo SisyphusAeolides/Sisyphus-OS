@@ -1,6 +1,7 @@
 #![no_std]
 extern crate alloc;
 
+pub mod ads_boundary;
 pub mod aether;
 pub mod arch;
 pub mod argus_sentinel;
@@ -43,10 +44,13 @@ pub mod nexus_gateway;
 pub mod nexus_matrix;
 pub mod nexus_plane;
 pub mod nexus_runtime;
+pub mod noether_guard;
 pub mod oracular_mesh;
 pub mod ouroboros;
 pub mod paradox;
+pub mod penrose_or;
 pub mod phase_rotor;
+pub mod phononic_irq;
 pub mod policy_chamber;
 pub mod process;
 pub mod quantum_crest_gateway;
