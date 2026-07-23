@@ -1,4 +1,8 @@
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+use crate::reality_forge::RealityForge;
+use aether::certificate_page::CertificatePage;
+use aether::transition_certificate::{CertificateOutcome, TransitionCertificate};
 
 use crate::nexus_commit::{CommitError, NexusCommitEngine, apply_prepared};
 use aether::effect_program::{EffectIntent, EffectKind, EffectProgram};
@@ -12,7 +16,6 @@ use aether::temporal_contract::{
 use crate::capability::{Capability, ResonanceRight};
 use crate::commit_reactor::{CausalCommitReactor, ReactorError, ReactorPoll};
 use crate::continuity_vault::{CheckpointId, ContinuityVault};
-use crate::counterfactual::CounterfactualUniverse;
 use crate::lease_lattice::LeaseError;
 use crate::nexus_gateway::{GatewayError, NexusGateway};
 use crate::nexus_matrix::{
@@ -57,6 +60,12 @@ static GATEWAY: KernelGateway = KernelGateway::new(0, 0x51_4e_45_58_55_53_21);
 static POLICY_REACTOR: CausalCommitReactor<1, 16, 4> =
     CausalCommitReactor::new(0x4341_5553_414c_5f31);
 
+static REALITY_FORGE: RealityForge<32> = RealityForge::new(0x5245_414c_4954_5933);
+
+static CERTIFICATE_PAGE: CertificatePage = CertificatePage::new();
+
+static CERTIFICATE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum InitializeError {
     AlreadyInitialized,
@@ -70,6 +79,8 @@ pub fn initialize(
     if READY.swap(true, Ordering::AcqRel) {
         return Err(InitializeError::AlreadyInitialized);
     }
+
+    CERTIFICATE_PAGE.initialize();
 
     let boot_entropy_word = <crate::arch::Active as crate::arch::Architecture>::counter_sample();
     let now_tick = boot_entropy_word;
@@ -106,6 +117,10 @@ pub fn initialize(
 
     *THERMAL.lock() = Some(Thermogenesis::new(4));
     Ok(cerebral_token)
+}
+
+pub fn certificate_page() -> &'static CertificatePage {
+    &CERTIFICATE_PAGE
 }
 
 pub fn control(command: &NexusCommand, wall_tick: u64) -> NexusReply {
@@ -320,37 +335,68 @@ pub fn service_policy_commit(wall_tick: u64) -> Result<bool, ReactorError> {
 
             let live_root = matrix.refresh_hologram(&mut hologram).unwrap_or(0);
 
-            let universe = CounterfactualUniverse::simulate(
-                &matrix,
+            let forge = match REALITY_FORGE.forge_and_commit(
+                &mut matrix,
                 thermal,
                 &pending.prepared,
                 pending.contract,
                 wall_tick,
                 live_root,
-            )
-            .map_err(|_| ReactorError::Commit(CommitError::Thermal))?;
+            ) {
+                Ok(receipt) => receipt,
 
-            let before = universe.before();
-            let predicted_after = universe.after();
+                Err(_) => {
+                    let _ = POLICY_REACTOR.finalize_abort(
+                        pending,
+                        pending.contract.expected_state_root,
+                        pending.contract.expected_generation,
+                        wall_tick,
+                        false,
+                    );
 
-            let receipt = universe
-                .commit(&mut matrix, thermal, live_root)
-                .map_err(|_| ReactorError::Commit(CommitError::Thermal))?;
+                    return Ok(false);
+                }
+            };
 
             let committed_root = matrix
                 .refresh_hologram(&mut hologram)
-                .unwrap_or(receipt.after.state_root);
-
-            debug_assert_eq!(committed_root, predicted_after.state_root,);
+                .unwrap_or(forge.transition.after.state_root);
 
             let commit = POLICY_REACTOR.finalize_success(
                 pending,
-                before.state_root,
+                forge.transition.before.state_root,
                 committed_root,
-                before.generation,
-                receipt.after.generation,
+                forge.transition.before.generation,
+                forge.transition.after.generation,
                 wall_tick,
             )?;
+
+            let sequence = CERTIFICATE_SEQUENCE.fetch_add(1, Ordering::AcqRel).max(1);
+
+            let certificate = TransitionCertificate::new(
+                CertificateOutcome::Committed,
+                forge.reality_mask,
+                sequence,
+                forge.transition.effect_digest,
+                pending.contract.digest(),
+                forge.transition.before.state_root,
+                committed_root,
+                commit.witness_root,
+                forge.invariants.digest,
+                wall_tick,
+                forge.transition.before.heat,
+                forge.transition.after.heat,
+                forge.transition.before.generation,
+                forge.transition.after.generation,
+                commit.participants.min(u16::MAX as u32) as u16,
+                pending.prepared.effects().len().min(u16::MAX as usize) as u16,
+                forge.transition.before.phase_bin,
+                forge.transition.after.phase_bin,
+                forge.invariants.passed,
+                forge.invariants.failed,
+            );
+
+            CERTIFICATE_PAGE.publish(&certificate);
 
             crate::nexus_plane::observation().publish_witness_root(commit.witness_root);
 
