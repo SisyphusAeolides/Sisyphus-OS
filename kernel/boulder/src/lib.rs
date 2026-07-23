@@ -50,4 +50,5 @@ pub mod singularity;
 pub mod sync;
 pub mod syscalls;
 pub mod tartarus_deep;
+pub mod temporal_echo;
 pub mod thermogenesis;
