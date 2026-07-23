@@ -1,7 +1,9 @@
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use crate::reality_forge::RealityForge;
+use crate::temporal_echo::{EchoVerdict, PendingEcho, TemporalEchoEngine, verify_replay};
 use aether::certificate_page::CertificatePage;
+use aether::replay_capsule::ReplayCapsule;
 use aether::transition_certificate::{CertificateOutcome, TransitionCertificate};
 
 use crate::nexus_commit::{CommitError, NexusCommitEngine, apply_prepared};
@@ -62,6 +64,13 @@ static POLICY_REACTOR: CausalCommitReactor<1, 16, 4> =
     CausalCommitReactor::new(0x4341_5553_414c_5f31);
 
 static REALITY_FORGE: RealityForge<32> = RealityForge::new(0x5245_414c_4954_5933);
+
+const ECHO_DELAY_TICKS: u64 = 2048;
+
+static TEMPORAL_ECHO: TemporalEchoEngine<4, 8, 64> = TemporalEchoEngine::new(0x4348_524f_4e4f_5f45);
+
+static ECHO_HOLOGRAM: SpinLock<HolographicTree<MATRIX_HOLOGRAM_LEAVES, MATRIX_HOLOGRAM_NODES>> =
+    SpinLock::new(HolographicTree::new());
 
 static CERTIFICATE_PAGE: CertificatePage = CertificatePage::new();
 
@@ -336,6 +345,8 @@ pub fn service_policy_commit(wall_tick: u64) -> Result<bool, ReactorError> {
 
             let live_root = matrix.refresh_hologram(&mut hologram).unwrap_or(0);
 
+            let echo_checkpoint = checkpoint_runtime(&matrix, thermal, wall_tick);
+
             let forge = match REALITY_FORGE.forge_and_commit(
                 &mut matrix,
                 thermal,
@@ -362,6 +373,9 @@ pub fn service_policy_commit(wall_tick: u64) -> Result<bool, ReactorError> {
             let committed_root = matrix
                 .refresh_hologram(&mut hologram)
                 .unwrap_or(forge.transition.after.state_root);
+
+            let replay_prepared = pending.prepared;
+            let replay_contract = pending.contract;
 
             let commit = POLICY_REACTOR.finalize_success(
                 pending,
@@ -398,6 +412,16 @@ pub fn service_policy_commit(wall_tick: u64) -> Result<bool, ReactorError> {
             );
 
             CERTIFICATE_PAGE.publish(&certificate);
+
+            if let Some(checkpoint) = echo_checkpoint {
+                let capsule = ReplayCapsule::new(replay_prepared, replay_contract, certificate);
+
+                let _ = TEMPORAL_ECHO.schedule(PendingEcho {
+                    due_tick: wall_tick.saturating_add(ECHO_DELAY_TICKS),
+                    checkpoint,
+                    capsule,
+                });
+            }
 
             crate::nexus_plane::observation().publish_witness_root(commit.witness_root);
 
