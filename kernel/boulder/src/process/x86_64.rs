@@ -432,6 +432,7 @@ impl<Memory: ProcessFrameMemory> FrameBackedAddressSpace<Memory> {
     pub const CEREBRAL_CERTIFICATE_ADDRESS: u64 = 0x600_0000_2000;
 
     /// Maps the statically allocated split Resonance pages into the user's address space.
+    #[cfg(feature = "unfinished-quantum-nexus")]
     pub fn install_nexus_plane(
         &mut self,
         process: &ProcessImageHandle,

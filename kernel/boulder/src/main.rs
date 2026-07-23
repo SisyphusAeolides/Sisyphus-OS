@@ -704,15 +704,21 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
         halt();
     }
 
-    let _root_token = boulder::nexus_runtime::initialize(&resonance_control).unwrap();
-    boulder::nexus_plane::initialize(&learning_control).unwrap();
+    #[cfg(feature = "unfinished-quantum-nexus")]
+    {
+        let _root_token = boulder::nexus_runtime::initialize(&resonance_control).unwrap();
+        boulder::nexus_plane::initialize(&learning_control).unwrap();
+    }
 
-    if let Err(error) = process_backend.install_nexus_plane(&pid1, &process_install) {
-        let _ = writeln!(
-            serial,
-            "Boulder: PID1 nexus plane mapping failed: {error:?}"
-        );
-        halt();
+    #[cfg(feature = "unfinished-quantum-nexus")]
+    {
+        if let Err(error) = process_backend.install_nexus_plane(&pid1, &process_install) {
+            let _ = writeln!(
+                serial,
+                "Boulder: PID1 nexus plane mapping failed: {error:?}"
+            );
+            halt();
+        }
     }
 
     let pid1_stack = match process_backend.prepare_initial_stack(

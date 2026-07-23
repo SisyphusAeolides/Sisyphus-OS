@@ -82,6 +82,7 @@ pub fn run_deferred(maximum_passes: u32) -> DeferredReport {
         let wall_tick = LATEST_WALL_TICK.load(Ordering::Acquire);
 
         // One matrix evolution absorbs all causally equivalent timer requests.
+        #[cfg(feature = "unfinished-quantum-nexus")]
         crate::nexus_plane::drive_once(wall_tick, pending);
 
         let _ = crate::manifold_orchestrator::run_tensor_online_update_deferred();

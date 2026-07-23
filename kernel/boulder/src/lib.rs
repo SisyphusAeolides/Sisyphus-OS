@@ -20,8 +20,10 @@ pub mod cech_h1;
 pub mod charybdis_dma_firewall;
 pub mod chronovore;
 pub mod cluster_quiver;
+#[cfg(feature = "unfinished-quantum-nexus")]
 pub mod commit_reactor;
 pub mod continuity_vault;
+#[cfg(feature = "unfinished-quantum-nexus")]
 pub mod counterfactual;
 pub mod cpu;
 pub mod cyclotomic_ntt;
@@ -52,14 +54,18 @@ pub mod mirage;
 pub mod mmio;
 pub mod mnemosyne_ledger;
 pub mod module;
+#[cfg(feature = "unfinished-quantum-nexus")]
 pub mod nexus_commit;
 pub mod nexus_deferred;
 pub mod nexus_gateway;
+#[cfg(feature = "unfinished-quantum-nexus")]
 pub mod nexus_matrix;
 
 pub mod certified_math;
 pub mod manifold_topo;
+#[cfg(feature = "unfinished-quantum-nexus")]
 pub mod nexus_plane;
+#[cfg(feature = "unfinished-quantum-nexus")]
 pub mod nexus_runtime;
 pub mod noether_guard;
 pub mod oracular_mesh;
@@ -67,6 +73,7 @@ pub mod ouroboros;
 pub mod paradox;
 pub mod penrose_or;
 pub mod persist_homology;
+#[cfg(feature = "unfinished-quantum-nexus")]
 pub mod phase_rotor;
 pub mod phononic_irq;
 pub mod policy_chamber;
@@ -75,7 +82,9 @@ pub mod predictive_kernel;
 pub mod process;
 pub mod quantum_crest_gateway;
 pub mod quantum_desktop_recovery;
+#[cfg(feature = "unfinished-quantum-nexus")]
 pub mod quantum_nexus;
+#[cfg(feature = "unfinished-quantum-nexus")]
 pub mod reality_forge;
 pub mod resource_quiver_seed;
 pub mod rev_tape;
@@ -90,6 +99,7 @@ pub mod sync;
 pub mod syntropic_ecc;
 pub mod syscalls;
 pub mod tartarus_deep;
+#[cfg(feature = "unfinished-quantum-nexus")]
 pub mod temporal_echo;
 pub mod tensor_decomp;
 pub mod tensor_kernel;

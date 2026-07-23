@@ -8,6 +8,7 @@ members = [
     "kernel/boulder",
     "libraries/driver-abi",
     "libraries/slope",
+    "tools/reality-gate",
     "userland/push",
     "userland/corinth",
     "userland/crest", "userland/cerebral",

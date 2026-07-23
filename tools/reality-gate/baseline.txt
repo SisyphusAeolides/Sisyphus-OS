@@ -1,0 +1,8 @@
+# Generate the initial debt inventory once:
+#
+# cargo run -p sisyphus-reality-gate -- \
+#   --root . \
+#   --write-baseline tools/reality-gate/baseline.txt
+#
+# Commit the generated file. Delete entries as their modules are repaired.
+# The workflow rejects every finding not present in this baseline.
