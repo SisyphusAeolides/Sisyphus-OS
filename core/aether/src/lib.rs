@@ -16,6 +16,7 @@ pub mod lockfree;
 pub mod nexus_wire;
 pub mod policy;
 pub mod policy_crystal;
+pub mod replay_capsule;
 pub mod resonance_plane;
 pub mod resonance_policy;
 pub mod resonance_split;
