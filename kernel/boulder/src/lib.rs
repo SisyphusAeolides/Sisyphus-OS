@@ -9,6 +9,7 @@ pub mod capability;
 pub mod causal_lattice;
 pub mod chronovore;
 pub mod continuity_vault;
+pub mod counterfactual;
 pub mod cpu;
 pub mod drivers;
 pub mod fabric;
