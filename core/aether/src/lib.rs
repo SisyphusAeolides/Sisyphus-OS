@@ -3,6 +3,7 @@
 pub mod blacklab_vm;
 pub mod boot_cell;
 pub mod causal_policy;
+pub mod certificate_page;
 pub mod constellation;
 pub mod effect;
 pub mod epoch_crystal;

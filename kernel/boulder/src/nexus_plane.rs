@@ -1,6 +1,7 @@
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use aether::blacklab_vm::LabMetrics;
+use aether::certificate_page::CertificatePage;
 use aether::event_horizon::EVENT_HORIZON_PROGRAM;
 use aether::policy_crystal::PolicyCrystal;
 use aether::resonance_policy::ResonancePolicy;
@@ -14,6 +15,7 @@ pub const COMMAND_BUDGET_PER_HEARTBEAT: usize = 16;
 
 static INGRESS_PAGE: ResonanceIngressPage = ResonanceIngressPage::new();
 static OBSERVATION_PAGE: ResonanceObservationPage = ResonanceObservationPage::new();
+static CERTIFICATE_PAGE: CertificatePage = CertificatePage::new();
 
 static LAB_CAPSULE: LabCapsule = LabCapsule::new();
 static POLICY_CRYSTAL: PolicyCrystal = PolicyCrystal::new();
@@ -31,6 +33,7 @@ pub enum PlaneDriverInitError {
 pub fn initialize(authority: &Capability<'_, LearningRight>) -> Result<(), PlaneDriverInitError> {
     INGRESS_PAGE.initialize(1);
     OBSERVATION_PAGE.initialize(1);
+    CERTIFICATE_PAGE.initialize();
 
     LAB_CAPSULE
         .initialize(EVENT_HORIZON_PROGRAM, ResonancePolicy::DEFAULT, authority)
@@ -111,6 +114,10 @@ pub fn ingress() -> &'static ResonanceIngressPage {
 
 pub fn observation() -> &'static ResonanceObservationPage {
     &OBSERVATION_PAGE
+}
+
+pub fn certificate() -> &'static CertificatePage {
+    &CERTIFICATE_PAGE
 }
 
 fn drain_commands(wall_tick: u64) {

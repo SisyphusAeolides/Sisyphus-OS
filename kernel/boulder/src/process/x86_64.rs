@@ -429,6 +429,7 @@ impl<Memory: ProcessFrameMemory> FrameBackedAddressSpace<Memory> {
 
     pub const CEREBRAL_INGRESS_ADDRESS: u64 = 0x600_0000_0000;
     pub const CEREBRAL_OBSERVATION_ADDRESS: u64 = 0x600_0000_1000;
+    pub const CEREBRAL_CERTIFICATE_ADDRESS: u64 = 0x600_0000_2000;
 
     /// Maps the statically allocated split Resonance pages into the user's address space.
     pub fn install_nexus_plane(
@@ -471,6 +472,23 @@ impl<Memory: ProcessFrameMemory> FrameBackedAddressSpace<Memory> {
         self.pages[self.page_count] = PageRecord {
             frame: observation_frame,
             virtual_address: obs_addr,
+        };
+        self.page_count += 1;
+
+        // Certificate Page
+        let cert_addr = Self::CEREBRAL_CERTIFICATE_ADDRESS;
+        let (table_c, index_c) = self.ensure_leaf_slot(cert_addr)?;
+        let cert_ptr = crate::nexus_plane::certificate() as *const _ as u64;
+        let certificate_frame =
+            PhysicalAddress::new(cert_ptr - crate::mmio::KERNEL_VIRTUAL_BASE as u64 + 0x10_0000);
+        let certificate_entry =
+            certificate_frame.as_u64() | ENTRY_PRESENT | ENTRY_USER | ENTRY_NO_EXECUTE;
+        self.memory
+            .write_entry(table_c, index_c, certificate_entry)
+            .map_err(FrameBackedError::Memory)?;
+        self.pages[self.page_count] = PageRecord {
+            frame: certificate_frame,
+            virtual_address: cert_addr,
         };
         self.page_count += 1;
 
