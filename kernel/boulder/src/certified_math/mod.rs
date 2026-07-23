@@ -27,4 +27,6 @@ pub use sheaf::{BinaryLinearMap, CellularCapabilitySheaf, GlueCertificate};
 pub use symplectic::{Pauli, SymplecticStabilizer, SyndromeCertificate};
 pub use tropical::{TropicalCluster, TropicalMutationCertificate};
 
-pub use runtime::{CertifiedMathRuntime, CertifiedRuntimeStep, ExternalProofs, RuntimePolicy};
+pub use runtime::{
+    CertifiedMathRuntime, CertifiedRuntimeStep, ExternalProofs, RuntimeError, RuntimePolicy,
+};

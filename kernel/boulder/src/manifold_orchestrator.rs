@@ -507,7 +507,36 @@ pub struct MathState {
     pub rho: crate::certified_math::DensityMatrix,
 }
 
-static CERTIFIED_RUNTIME: crate::sync::SpinLock<Option<MathState>> = crate::sync::SpinLock::new(None);
+static CERTIFIED_RUNTIME: crate::sync::SpinLock<Option<MathState>> =
+    crate::sync::SpinLock::new(None);
+
+#[derive(Debug, Eq, PartialEq)]
+pub enum TensorDeferredError {
+    Tensor(crate::tensor_kernel::TensorKernelError),
+    Math(crate::certified_math::RuntimeError),
+    CertifiedRuntimeUnavailable,
+}
+
+impl From<crate::tensor_kernel::TensorKernelError> for TensorDeferredError {
+    fn from(error: crate::tensor_kernel::TensorKernelError) -> Self {
+        Self::Tensor(error)
+    }
+}
+
+impl From<crate::certified_math::RuntimeError> for TensorDeferredError {
+    fn from(error: crate::certified_math::RuntimeError) -> Self {
+        Self::Math(error)
+    }
+}
+
+pub fn initialize_tensor_runtime(
+    secret: u64,
+) -> Result<(), crate::tensor_kernel::TensorKernelError> {
+    crate::tensor_kernel::initialize(
+        secret,
+        crate::tensor_decomp::MultilinearPolicy::KERNEL_DEFAULT,
+    )
+}
 
 /// # Safety
 /// Call only from serialized BSP boot / a single tick owner.
@@ -535,6 +564,10 @@ pub fn boot_after_drivernet(inv: &PciInventory, drive: &DriverNetSummary, serial
                 "Manifold: boot ok fair_class={} energy0={} ceilings={}",
                 act.fair_class, act.energy0, act.n_ceilings
             );
+            let tensor_secret = 0xAAAAAAAA; // Domain-separated secret
+            if let Err(e) = crate::manifold_orchestrator::initialize_tensor_runtime(tensor_secret) {
+                let _ = writeln!(serial, "Manifold: Tensor runtime init failed: {:?}", e);
+            }
 
             // --- 8. Initialize the certified runtime ---
             let secrets = crate::certified_math::MathDomainSecrets {
@@ -556,15 +589,30 @@ pub fn boot_after_drivernet(inv: &PciInventory, drive: &DriverNetSummary, serial
                 crate::certified_math::RuntimePolicy::STRICT,
                 crate::certified_math::CertificationPolicy::INVARIANT_PRESERVING,
             ) {
-                if let Ok(mut sheaf) = crate::certified_math::CellularCapabilitySheaf::new(secrets.sheaf) {
-                    let _ = sheaf.add_open(1, 16, 0).map(|open_id| sheaf.install(1, open_id, 0));
-                    if let Ok(mut stabilizer) = crate::certified_math::SymplecticStabilizer::new(16, secrets.stabilizer) {
-                        let _ = stabilizer.add_generator(crate::certified_math::Pauli { x: 0, z: 0xFFFF, phase: 0 });
+                if let Ok(mut sheaf) =
+                    crate::certified_math::CellularCapabilitySheaf::new(secrets.sheaf)
+                {
+                    let _ = sheaf
+                        .add_open(1, 16, 0)
+                        .map(|open_id| sheaf.install(1, open_id, 0));
+                    if let Ok(mut stabilizer) =
+                        crate::certified_math::SymplecticStabilizer::new(16, secrets.stabilizer)
+                    {
+                        let _ = stabilizer.add_generator(crate::certified_math::Pauli {
+                            x: 0,
+                            z: 0xFFFF,
+                            phase: 0,
+                        });
                         let mut channel = crate::certified_math::KrausChannel::EMPTY;
                         channel.dimension = 4;
                         if let Ok(id_op) = crate::certified_math::density::Operator::identity(4) {
                             let _ = channel.push(id_op);
-                            if let Ok(rho) = crate::certified_math::DensityMatrix::from_diagonal(&[1_073_741_824, 0, 0, 0]) {
+                            if let Ok(rho) = crate::certified_math::DensityMatrix::from_diagonal(&[
+                                1_073_741_824,
+                                0,
+                                0,
+                                0,
+                            ]) {
                                 let state = MathState {
                                     runtime,
                                     secrets,
@@ -574,7 +622,8 @@ pub fn boot_after_drivernet(inv: &PciInventory, drive: &DriverNetSummary, serial
                                     rho,
                                 };
                                 *CERTIFIED_RUNTIME.lock() = Some(state);
-                                let _ = writeln!(serial, "Manifold: CertifiedMathRuntime initialized");
+                                let _ =
+                                    writeln!(serial, "Manifold: CertifiedMathRuntime initialized");
                             }
                         }
                     }
@@ -596,15 +645,22 @@ pub fn tick(now_tsc: u64) -> Option<Actuation> {
     match orch.tick(now_tsc) {
         Ok(act) => {
             EPOCH.store(act.epoch, Ordering::Relaxed);
+            let _ = crate::tensor_kernel::observe(&act);
 
             // --- 9. Execute one certified step ---
             let mut guard = CERTIFIED_RUNTIME.lock();
             if let Some(state) = &mut *guard {
                 if let Ok(glue) = state.sheaf.certify(1) {
-                    let mutation = crate::certified_math::Pauli { x: 0, z: 0, phase: 0 };
+                    let mutation = crate::certified_math::Pauli {
+                        x: 0,
+                        z: 0,
+                        phase: 0,
+                    };
                     let syndrome = state.stabilizer.certify(mutation);
-                    
-                    if let Ok((rho_next, dp)) = state.channel.apply(state.rho, 1000, state.secrets.density) {
+
+                    if let Ok((rho_next, dp)) =
+                        state.channel.apply(state.rho, 1000, state.secrets.density)
+                    {
                         state.rho = rho_next;
                         let external = crate::certified_math::ExternalProofs {
                             sheaf: &glue,
@@ -622,6 +678,32 @@ pub fn tick(now_tsc: u64) -> Option<Actuation> {
         }
         Err(_) => None,
     }
+}
+
+pub fn run_tensor_online_update_deferred()
+-> Result<Option<crate::tensor_decomp::SgdCertificate>, TensorDeferredError> {
+    crate::tensor_kernel::update_online_deferred().map_err(Into::into)
+}
+
+pub fn run_tensor_analysis_deferred()
+-> Result<Option<crate::tensor_decomp::MultilinearDirective>, TensorDeferredError> {
+    let Some(directive) = crate::tensor_kernel::analyze_deferred()? else {
+        return Ok(None);
+    };
+
+    let mut guard = CERTIFIED_RUNTIME.lock();
+    let state = guard
+        .as_mut()
+        .ok_or(TensorDeferredError::CertifiedRuntimeUnavailable)?;
+
+    if directive.queue_charge != 0 {
+        state.runtime.charge_external_class(
+            directive.queue_class as usize,
+            u64::from(directive.queue_charge),
+        )?;
+    }
+
+    Ok(Some(directive))
 }
 
 // ---------------------------------------------------------------------------

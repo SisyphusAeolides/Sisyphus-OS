@@ -260,6 +260,11 @@ impl CertifiedMathRuntime {
         &self.queue
     }
 
+    pub fn charge_external_class(&mut self, class: usize, amount: u64) -> Result<(), RuntimeError> {
+        self.queue.charge(class, amount)?;
+        Ok(())
+    }
+
     pub fn tropical(&self) -> &TropicalCluster {
         &self.tropical
     }

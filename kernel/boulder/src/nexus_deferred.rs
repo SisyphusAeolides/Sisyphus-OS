@@ -84,6 +84,9 @@ pub fn run_deferred(maximum_passes: u32) -> DeferredReport {
         // One matrix evolution absorbs all causally equivalent timer requests.
         crate::nexus_plane::drive_once(wall_tick, pending);
 
+        let _ = crate::manifold_orchestrator::run_tensor_online_update_deferred();
+        let _ = crate::manifold_orchestrator::run_tensor_analysis_deferred();
+
         ticks_absorbed = ticks_absorbed.saturating_add(pending);
         passes += 1;
         TOTAL_RUNS.fetch_add(1, Ordering::Relaxed);

@@ -89,6 +89,8 @@ pub mod syntropic_ecc;
 pub mod syscalls;
 pub mod tartarus_deep;
 pub mod temporal_echo;
+pub mod tensor_decomp;
+pub mod tensor_kernel;
 pub mod thermogenesis;
 pub mod tropical_crit;
 pub mod zx_rewrite;
