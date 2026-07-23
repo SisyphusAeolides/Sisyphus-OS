@@ -24,6 +24,7 @@ dependencies = [
  "kairos",
  "libm",
  "sisyphus-driver-abi",
+ "slope",
 ]
 
 [[package]]

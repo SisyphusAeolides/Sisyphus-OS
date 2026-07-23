@@ -14,6 +14,7 @@ pub mod memory;
 pub mod net;
 pub mod nexus;
 pub mod process;
+pub mod quantum_crest;
 pub mod resonance_plane;
 pub mod runtime;
 pub mod scheduler;
