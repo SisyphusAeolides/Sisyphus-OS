@@ -2,6 +2,7 @@
 
 pub mod bridge;
 pub mod capability;
+pub mod certificate;
 pub mod env;
 pub mod executor;
 pub mod fabric;
