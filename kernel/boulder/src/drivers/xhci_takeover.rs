@@ -30,7 +30,10 @@ const COMMAND_RUN_STOP: u32 = 1 << 0;
 const COMMAND_HOST_CONTROLLER_RESET: u32 = 1 << 1;
 const STATUS_HOST_CONTROLLER_HALTED: u32 = 1 << 0;
 const STATUS_CONTROLLER_NOT_READY: u32 = 1 << 11;
-const STATUS_HOST_CONTROLLER_ERROR: u32 = 1 << 12;
+// USBSTS.HSE is bit 2. Bit 12 is reserved by xHCI and must never be used as
+// a host-error witness, otherwise a genuinely faulted controller can pass
+// takeover's initial-ready gate.
+const STATUS_HOST_CONTROLLER_ERROR: u32 = 1 << 2;
 const PORT_RESET: u32 = 1 << 4;
 
 // These are the only writable SMI-enable fields defined by USBLEGCTLSTS.

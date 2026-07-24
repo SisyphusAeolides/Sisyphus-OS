@@ -55,12 +55,18 @@ register-programming bridge are covered by focused Rust tests. The Q35 lane
 also freshly re-proves that the routed VT-d unit is disabled, allocates the
 real arena, enables its single-requester domain, maps every present controller
 DMA region (requiring a complete scratchpad pair when scratchpads exist),
-programs and scrubs the halted controller, then revokes and releases the
-domain, tables, and every frame. It remains a reversible preparation epoch: a
-persistent DMA domain, Run/Stop, interrupts, and USB enumeration are still
-absent. The same lane also performs the real PCI bus-master
+programs and scrubs the halted controller, completes a bounded reset and
+re-observes ready, halted, HSE-free state, then revokes and releases the
+domain, tables, and every frame. It also requires one observed Run-to-Halted
+transition while bus mastering remains disabled. It remains a reversible
+preparation epoch: a persistent DMA domain, a bus-master-owned Run/Stop
+transaction, interrupts, and USB enumeration are still absent. The same lane
+also performs the real PCI bus-master
 enable/readback/revoke transaction, then revalidates and restores the exact
 reset-ready controller before the port census.
+The translated-DMA backend separately proves the maximum xHCI scratchpad
+profile: 1,029 mapped pages in six spans, including a 1,023-page scratchpad
+buffer span, followed by exact reverse-order revocation and backend shutdown.
 Before that transition, the QEMU boot lane performs a read-only halted-port
 census and currently observes two connected root ports; this is evidence only,
 not USB child enumeration or input-driver support.

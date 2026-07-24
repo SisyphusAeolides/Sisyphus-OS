@@ -16,8 +16,12 @@ use crate::hw::pci::PciAddress;
 use crate::memory::frame_pool::PhysicalFramePool;
 
 pub const XHCI_BASE_REGION_COUNT: usize = 4;
-const FIXED_REGION_CAPACITY: usize = XHCI_BASE_REGION_COUNT + 2;
-const MAXIMUM_SCRATCHPAD_BUFFERS: u16 = 1_023;
+pub const XHCI_MAXIMUM_REGION_COUNT: usize = XHCI_BASE_REGION_COUNT + 2;
+pub const XHCI_MAXIMUM_SCRATCHPAD_BUFFERS: usize = 1_023;
+pub const XHCI_MAXIMUM_DMA_PAGES: usize =
+    XHCI_BASE_REGION_COUNT + 2 + XHCI_MAXIMUM_SCRATCHPAD_BUFFERS;
+const FIXED_REGION_CAPACITY: usize = XHCI_MAXIMUM_REGION_COUNT;
+const MAXIMUM_SCRATCHPAD_BUFFERS: u16 = XHCI_MAXIMUM_SCRATCHPAD_BUFFERS as u16;
 const IDENTITY_ROOT_DOMAIN: u64 = 0x5848_4349_4944_4d41;
 const ARENA_ROOT_DOMAIN: u64 = 0x5848_4349_4152_454e;
 
@@ -316,20 +320,18 @@ impl XhciDmaQuiescence {
     ///
     /// The caller must have stopped the exact controller, disabled bus
     /// mastering, and drained every DMA transaction for this generation.
-    pub const unsafe fn establish(
+    /// `generation` and `evidence_root` must be nonzero retained evidence for
+    /// that same controller instance.
+    pub(crate) const unsafe fn establish(
         device: PciAddress,
         generation: u32,
         evidence_root: u64,
-    ) -> Option<Self> {
-        if generation == 0 || evidence_root == 0 {
-            None
-        } else {
-            Some(Self {
-                device,
-                generation,
-                evidence_root,
-                _not_send_or_sync: PhantomData,
-            })
+    ) -> Self {
+        Self {
+            device,
+            generation,
+            evidence_root,
+            _not_send_or_sync: PhantomData,
         }
     }
 }
@@ -903,7 +905,6 @@ mod tests {
 
     fn quiescence() -> XhciDmaQuiescence {
         unsafe { XhciDmaQuiescence::establish(PciAddress::new(0, 5, 0).unwrap(), 7, 0x5678) }
-            .unwrap()
     }
 
     #[test]

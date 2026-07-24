@@ -30,7 +30,8 @@ use boulder::drivers::xhci::{
     containment_root as xhci_containment_root, probe_bootstrap, publish_boot_xhci,
 };
 use boulder::drivers::xhci_dma::{
-    IdentityDmaObservation, IdentityDmaWindow, XhciDmaArena, XhciDmaQuiescence,
+    IdentityDmaObservation, IdentityDmaWindow, XHCI_MAXIMUM_DMA_PAGES, XHCI_MAXIMUM_REGION_COUNT,
+    XHCI_MAXIMUM_SCRATCHPAD_BUFFERS, XhciDmaArena,
 };
 use boulder::drivers::xhci_ports::survey_halted_ports;
 use boulder::drivers::xhci_runtime::prepare_halted_from_evidence;
@@ -1241,7 +1242,6 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
                             .usb3_protocols()
                             .map(|protocol| usize::from(protocol.port_count))
                             .sum::<usize>();
-                        let mut scoped_vtd_epoch_completed = false;
                         if let Some(scope) = vtd_scope {
                             let unit = scope.unit();
                             let unit_disabled = match boulder::hw::vtd::VtdMmioRegisters::map(
@@ -1431,25 +1431,31 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
                                                     halt();
                                                 }
                                             };
-                                        let backend =
-                                            match VtdDmaBackend::<_, _, _, 16, 4, 8>::build(
-                                                scope,
-                                                vtd_registers,
-                                                slpt_memory,
-                                                tables,
-                                                slpt_root,
-                                                1,
-                                                1_000_000,
-                                            ) {
-                                                Ok(backend) => backend,
-                                                Err(failure) => {
-                                                    let _ = writeln!(
-                                                        serial,
-                                                        "Boulder: xHCI VT-d backend activation failed; retaining resources: {failure:?}"
-                                                    );
-                                                    halt();
-                                                }
-                                            };
+                                        let backend = match VtdDmaBackend::<
+                                            _,
+                                            _,
+                                            _,
+                                            XHCI_MAXIMUM_DMA_PAGES,
+                                            XHCI_MAXIMUM_REGION_COUNT,
+                                            XHCI_MAXIMUM_SCRATCHPAD_BUFFERS,
+                                        >::build(
+                                            scope,
+                                            vtd_registers,
+                                            slpt_memory,
+                                            tables,
+                                            slpt_root,
+                                            1,
+                                            1_000_000,
+                                        ) {
+                                            Ok(backend) => backend,
+                                            Err(failure) => {
+                                                let _ = writeln!(
+                                                    serial,
+                                                    "Boulder: xHCI VT-d backend activation failed; retaining resources: {failure:?}"
+                                                );
+                                                halt();
+                                            }
+                                        };
                                         let iova_aperture = match IovaRange::new(
                                             0,
                                             EARLY_MAPPED_PHYSICAL_LIMIT,
@@ -1478,17 +1484,24 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
                                                 halt();
                                             }
                                         };
+                                        let expected_mapping_count = arena.region_count();
                                         let binding = match prepared.bind_translated_dma(
                                             &mut domain,
                                             &arena,
                                             xhci_secret,
                                         ) {
-                                            Ok(binding) if binding.mapping_count() == 4 => binding,
+                                            Ok(binding)
+                                                if binding.mapping_count()
+                                                    == expected_mapping_count =>
+                                            {
+                                                binding
+                                            }
                                             Ok(binding) => {
                                                 let _ = writeln!(
                                                     serial,
-                                                    "Boulder: xHCI VT-d binding count invalid; retaining mapping authority: {}",
+                                                    "Boulder: xHCI VT-d binding count invalid; retaining mapping authority: observed={} expected={}",
                                                     binding.mapping_count(),
+                                                    expected_mapping_count,
                                                 );
                                                 halt();
                                             }
@@ -1502,13 +1515,69 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
                                         };
                                         let binding_root = binding.root();
                                         let domain_handle = domain.handle();
-                                        if let Err(error) = prepared.scrub_halted(&mut registers) {
-                                            let _ = writeln!(
-                                                serial,
-                                                "Boulder: xHCI reversible DMA scrub failed; retaining DMA and VT-d authority: {error:?}"
-                                            );
-                                            halt();
-                                        }
+                                        let runtime_root = prepared.runtime_root();
+                                        let halted_runtime = match prepared
+                                            .start_session(&mut registers, 1_000_000)
+                                        {
+                                            Ok(runtime) => {
+                                                match runtime.halt(&mut registers, 1_000_000) {
+                                                    Ok(halted) => halted,
+                                                    Err(failure) => {
+                                                        let _ = writeln!(
+                                                            serial,
+                                                            "Boulder: xHCI reversible Run/Stop halt failed; retaining runtime authority: {:?}",
+                                                            failure.cause(),
+                                                        );
+                                                        halt();
+                                                    }
+                                                }
+                                            }
+                                            Err(failure) => {
+                                                let _ = writeln!(
+                                                    serial,
+                                                    "Boulder: xHCI reversible Run/Stop start failed; retaining runtime authority: {:?}",
+                                                    failure.cause(),
+                                                );
+                                                halt();
+                                            }
+                                        };
+                                        let run_stop = halted_runtime.halt_receipt();
+                                        let scrubbed_runtime = match halted_runtime
+                                            .scrub(&mut registers)
+                                        {
+                                            Ok(runtime) => runtime,
+                                            Err(failure) => {
+                                                let _ = writeln!(
+                                                    serial,
+                                                    "Boulder: xHCI reversible DMA scrub failed; retaining DMA and VT-d authority: {:?}",
+                                                    failure.cause(),
+                                                );
+                                                halt();
+                                            }
+                                        };
+                                        let reset_recovered_runtime = match scrubbed_runtime
+                                            .reset_controller(&mut registers, 1_000_000)
+                                        {
+                                            Ok(runtime) => runtime,
+                                            Err(failure) => {
+                                                let _ = writeln!(
+                                                    serial,
+                                                    "Boulder: xHCI post-runtime controller reset failed; retaining DMA and VT-d authority: {:?}",
+                                                    failure.cause(),
+                                                );
+                                                halt();
+                                            }
+                                        };
+                                        let reset_receipt = reset_recovered_runtime.reset_receipt();
+                                        let _ = writeln!(
+                                            serial,
+                                            "Boulder: xHCI reversible Run/Stop/reset epoch started/halted/reset-ready start-polls={} halt-polls={} reset-polls={} ready-polls={} root={:#x}",
+                                            run_stop.start_polls,
+                                            run_stop.halt_polls,
+                                            reset_receipt.reset_polls,
+                                            reset_receipt.ready_polls,
+                                            reset_receipt.root,
+                                        );
                                         if let Err(debt) = binding.revoke(&mut domain) {
                                             let _ = writeln!(
                                                 serial,
@@ -1577,27 +1646,10 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
                                         }
                                         let _ = writeln!(
                                             serial,
-                                            "Boulder: xHCI scoped VT-d epoch enabled/mapped/revoked/released domain={} mappings=4 binding-root={:#x}",
-                                            domain_handle, binding_root,
+                                            "Boulder: xHCI scoped VT-d epoch enabled/mapped/revoked/released domain={} mappings={} binding-root={:#x}",
+                                            domain_handle, expected_mapping_count, binding_root,
                                         );
-                                        scoped_vtd_epoch_completed = true;
-                                        // SAFETY: scrub_halted re-proved HCHalted after
-                                        // clearing every programmed address, and PCI bus
-                                        // mastering has not been enabled in this epoch.
-                                        let quiescence = unsafe {
-                                            XhciDmaQuiescence::establish(
-                                                runtime_evidence.address,
-                                                runtime_evidence.generation,
-                                                runtime_evidence.reset_ready_root,
-                                            )
-                                        };
-                                        let Some(quiescence) = quiescence else {
-                                            let _ = writeln!(
-                                                serial,
-                                                "Boulder: xHCI DMA quiescence receipt rejected"
-                                            );
-                                            halt();
-                                        };
+                                        let quiescence = reset_recovered_runtime.into_dma_quiescence();
                                         match arena.release(quiescence) {
                                             Ok(release) => {
                                                 let _ = writeln!(
@@ -1607,7 +1659,7 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
                                                         snapshot.maximum_scratchpad_buffers != 0
                                                     ) * 2,
                                                     release.released_pages,
-                                                    prepared.runtime_root(),
+                                                    runtime_root,
                                                     arena_root,
                                                     release.release_root,
                                                 );
@@ -1631,7 +1683,7 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
                                 }
                             }
                         }
-                        let controller = if scoped_vtd_epoch_completed {
+                        let controller = if vtd_scope.is_some() {
                             let seed = match controller.into_runtime_seed(xhci_secret) {
                                 Ok(seed) => seed,
                                 Err(error) => {

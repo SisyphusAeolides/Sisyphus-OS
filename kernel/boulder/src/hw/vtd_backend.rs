@@ -439,7 +439,7 @@ enum BatchPhase {
 }
 
 #[derive(Clone, Copy)]
-struct BatchSlot<const MAX_BATCH_PAGES: usize> {
+struct BatchSlot {
     generation: u32,
     retired: bool,
     domain_generation: u32,
@@ -447,12 +447,12 @@ struct BatchSlot<const MAX_BATCH_PAGES: usize> {
     device_address: u64,
     physical_address: u64,
     length: usize,
+    page_start: usize,
     page_count: usize,
     was_active: bool,
-    pages: [PageRecord; MAX_BATCH_PAGES],
 }
 
-impl<const MAX_BATCH_PAGES: usize> BatchSlot<MAX_BATCH_PAGES> {
+impl BatchSlot {
     const EMPTY: Self = Self {
         generation: 1,
         retired: false,
@@ -461,9 +461,9 @@ impl<const MAX_BATCH_PAGES: usize> BatchSlot<MAX_BATCH_PAGES> {
         device_address: 0,
         physical_address: 0,
         length: 0,
+        page_start: 0,
         page_count: 0,
         was_active: false,
-        pages: [PageRecord::Empty; MAX_BATCH_PAGES],
     };
 }
 
@@ -509,7 +509,8 @@ struct VtdBackendCore<
     authority_released: bool,
     poisoned: bool,
     last_engine_fault: Option<VtdEngineFault>,
-    batches: [BatchSlot<MAX_BATCH_PAGES>; BATCHES],
+    batches: [BatchSlot; BATCHES],
+    page_records: [PageRecord; PAGES],
 }
 
 /// Fixed-capacity VT-d backend for one explicitly scoped requester and domain.
@@ -731,6 +732,7 @@ impl<
                 poisoned: false,
                 last_engine_fault: None,
                 batches: [BatchSlot::EMPTY; BATCHES],
+                page_records: [PageRecord::Empty; PAGES],
             })),
         })
     }
@@ -972,6 +974,9 @@ impl<
         else {
             return STATUS_BUSY;
         };
+        let Some(page_start) = self.find_free_page_run(page_count) else {
+            return STATUS_BUSY;
+        };
 
         let generation = self.batches[index].generation;
         self.batches[index] = BatchSlot {
@@ -982,9 +987,9 @@ impl<
             device_address,
             physical_address,
             length,
+            page_start,
             page_count,
             was_active: false,
-            pages: [PageRecord::Empty; MAX_BATCH_PAGES],
         };
 
         let permissions = DmaPermissions {
@@ -1008,12 +1013,13 @@ impl<
                     permissions,
                 )
             };
+            let page_slot = page_start + page;
             match outcome {
                 Ok(MapOutcome::Active(handle)) => {
-                    self.batches[index].pages[page] = PageRecord::Active(handle);
+                    self.page_records[page_slot] = PageRecord::Active(handle);
                 }
                 Ok(MapOutcome::Pending { receipt, .. }) => {
-                    self.batches[index].pages[page] = PageRecord::MapPending(receipt);
+                    self.page_records[page_slot] = PageRecord::MapPending(receipt);
                     if self.engine.state() == VtdEngineState::Poisoned {
                         self.poisoned = true;
                     }
@@ -1064,8 +1070,10 @@ impl<
     /// Returns `Ok(true)` only after every page receipt has been discharged.
     fn cleanup_batch(&mut self, index: usize) -> Result<bool, ()> {
         let page_count = self.batches[index].page_count;
+        let page_start = self.batches[index].page_start;
         for page in 0..page_count {
-            let record = self.batches[index].pages[page];
+            let page_slot = page_start + page;
+            let record = self.page_records[page_slot];
             let outcome = match record {
                 PageRecord::Empty => continue,
                 PageRecord::Active(handle) => {
@@ -1098,10 +1106,10 @@ impl<
             };
             match outcome {
                 Ok(UnmapOutcome::Complete) => {
-                    self.batches[index].pages[page] = PageRecord::Empty;
+                    self.page_records[page_slot] = PageRecord::Empty;
                 }
                 Ok(UnmapOutcome::Pending { receipt, .. }) => {
-                    self.batches[index].pages[page] = PageRecord::UnmapPending(receipt);
+                    self.page_records[page_slot] = PageRecord::UnmapPending(receipt);
                     if self.engine.state() == VtdEngineState::Poisoned {
                         self.poisoned = true;
                     }
@@ -1133,6 +1141,17 @@ impl<
         } else {
             self.batches[index].generation = generation + 1;
         }
+    }
+
+    fn find_free_page_run(&self, page_count: usize) -> Option<usize> {
+        if page_count == 0 || page_count > PAGES {
+            return None;
+        }
+        self.page_records.windows(page_count).position(|records| {
+            records
+                .iter()
+                .all(|record| matches!(record, PageRecord::Empty))
+        })
     }
 }
 
@@ -1263,6 +1282,10 @@ fn slpt_status(fault: SlptFault) -> Status {
 
 #[cfg(test)]
 mod tests {
+    extern crate std;
+
+    use std::thread;
+
     use super::super::vtd::{VtdOperation, VtdRegisterError};
     use super::*;
 
@@ -1544,6 +1567,8 @@ mod tests {
     }
 
     type Backend = VtdDmaBackend<TestRegisters, TestMemory, TestTables, 16, 4, 4>;
+    type MaximumScratchpadBackend =
+        VtdDmaBackend<TestRegisters, TestMemory, TestTables, 1029, 6, 1023>;
 
     fn unit() -> DmarRemappingUnit {
         // All fields are integers, so the all-zero value is valid; private
@@ -1582,6 +1607,21 @@ mod tests {
         let memory = TestMemory::new();
         let root = memory.root();
         Backend::build(
+            scope(),
+            TestRegisters::new(),
+            memory,
+            TestTables::new(),
+            root,
+            7,
+            4,
+        )
+        .unwrap()
+    }
+
+    fn maximum_scratchpad_backend() -> MaximumScratchpadBackend {
+        let memory = TestMemory::new();
+        let root = memory.root();
+        MaximumScratchpadBackend::build(
             scope(),
             TestRegisters::new(),
             memory,
@@ -1761,6 +1801,59 @@ mod tests {
         );
         let guard = backend.core.lock();
         assert_eq!(guard.as_ref().unwrap().memory.allocated_count(), 1);
+    }
+
+    #[test]
+    fn maximum_xhci_scratchpad_profile_maps_and_revokes_six_exact_spans() {
+        thread::Builder::new()
+            // The production bootstrap stack is 8 MiB. Exercise the maximum
+            // xHCI profile at that same bound instead of making this host test
+            // depend on a runner-specific default worker stack.
+            .stack_size(8 * 1024 * 1024)
+            .spawn(maximum_xhci_scratchpad_profile)
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    fn maximum_xhci_scratchpad_profile() {
+        let backend = maximum_scratchpad_backend();
+        let domain = backend.isolate_device(scope().requester).unwrap();
+        let spans = [
+            (0x0020_0000, 0x0020_0000, PAGE_SIZE as usize),
+            (0x0020_1000, 0x0020_1000, PAGE_SIZE as usize),
+            (0x0020_2000, 0x0020_2000, PAGE_SIZE as usize),
+            (0x0020_3000, 0x0020_3000, PAGE_SIZE as usize),
+            (0x0020_4000, 0x0020_4000, 2 * PAGE_SIZE as usize),
+            (0x0040_0000, 0x0040_0000, 1023 * PAGE_SIZE as usize),
+        ];
+        for (device_address, physical_address, length) in spans {
+            assert_eq!(
+                backend.map(
+                    domain,
+                    device_address,
+                    physical_address,
+                    length,
+                    DmaAccess::READ_WRITE,
+                ),
+                STATUS_OK
+            );
+        }
+        {
+            let guard = backend.core.lock();
+            let core = guard.as_ref().unwrap();
+            assert_eq!(
+                core.batches.iter().filter(|batch| batch.was_active).count(),
+                6
+            );
+            assert_eq!(core.memory.allocated_count(), 6);
+        }
+        for (device_address, _, length) in spans.into_iter().rev() {
+            assert_eq!(backend.unmap(domain, device_address, length), STATUS_OK);
+        }
+        assert_eq!(backend.release_domain(domain), STATUS_OK);
+        let released = backend.shutdown().unwrap();
+        assert_eq!(released.memory.allocated_count(), 1);
     }
 
     #[test]

@@ -6,7 +6,7 @@
 //! Run/Stop, and teardown remain separate transactions with their own debt.
 
 use super::xhci::{XhciRuntimeEvidence, XhciRuntimeSeed};
-use super::xhci_dma::{XhciDmaPurpose, XhciDmaRegionPhase, XhciDmaRegionRecord};
+use super::xhci_dma::{XhciDmaPurpose, XhciDmaQuiescence, XhciDmaRegionPhase, XhciDmaRegionRecord};
 use super::xhci_iommu::{XhciIommuBindFailure, XhciIommuBinding, bind_core_regions};
 use super::xhci_ring::{
     XhciCommandCompletionEvidence, XhciNoOpCommandReceipt, XhciRingError, XhciRingMachine,
@@ -14,8 +14,10 @@ use super::xhci_ring::{
 };
 
 const USBCMD_RUN_STOP: u32 = 1 << 0;
+const USBCMD_HOST_CONTROLLER_RESET: u32 = 1 << 1;
 const USBSTS_HCHALTED: u32 = 1 << 0;
 const USBSTS_HOST_CONTROLLER_ERROR: u32 = 1 << 2;
+const USBSTS_CONTROLLER_NOT_READY: u32 = 1 << 11;
 const EVENT_HANDLER_BUSY: u64 = 1 << 3;
 const OP_CRCR: u32 = 0x18;
 const OP_DCBAAP: u32 = 0x30;
@@ -40,8 +42,17 @@ pub trait XhciRuntimeRegisters {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum XhciRuntimeInvariant {
     InvalidSecret,
+    InvalidPollLimit,
     ControllerNotHalted,
+    ControllerNotRunning,
     ControllerError,
+    ControllerStartTimeout,
+    ControllerHaltTimeout,
+    ControllerResetTimeout,
+    ControllerReadyTimeout,
+    ControllerResetNotEligible,
+    ControllerResetFailed,
+    RunningReceiptMismatch,
     MissingDmaRegion(XhciDmaPurpose),
     DmaRegionNotReady(XhciDmaPurpose),
     DmaGenerationMismatch(XhciDmaPurpose),
@@ -57,12 +68,149 @@ pub enum XhciRuntimeError<StorageError, RegisterError> {
     Register(RegisterError),
 }
 
+/// Evidence that a controller left the halted state while its caller retained
+/// the DMA and bus-master authorities needed for the epoch.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct XhciRunningReceipt {
+    runtime_root: u64,
+    start_polls: u32,
+    root: u64,
+}
+
+impl XhciRunningReceipt {
+    pub const fn start_polls(&self) -> u32 {
+        self.start_polls
+    }
+
+    pub const fn root(&self) -> u64 {
+        self.root
+    }
+}
+
+/// Evidence that one exact running controller returned to HCHalted.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct XhciRunStopReceipt {
+    pub start_polls: u32,
+    pub halt_polls: u32,
+    pub root: u64,
+}
+
+/// Evidence that a stopped, scrubbed controller completed one host-controller
+/// reset and returned to the ready, halted state.  Reset is deliberately a
+/// separate linear state: no pre-reset DMA quiescence proof can release an
+/// arena until the controller has stopped referring to its former runtime.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct XhciControllerResetReceipt {
+    pub reset_polls: u32,
+    pub ready_polls: u32,
+    pub root: u64,
+}
+
+/// A prepared controller whose Run/Stop transition has been observed live.
+///
+/// The running receipt remains private so command publication cannot be
+/// detached from the exact prepared runtime that produced it.
+pub struct XhciRunningRuntime {
+    prepared: XhciPreparedRuntime,
+    running: XhciRunningReceipt,
+}
+
+/// A controller that has returned to HCHalted after one owned runtime epoch.
+pub struct XhciHaltedRuntime {
+    prepared: XhciPreparedRuntime,
+    receipt: XhciRunStopReceipt,
+}
+
+/// A halted runtime whose address-bearing registers have been cleared and
+/// revalidated. This is the sole runtime path that may mint DMA quiescence.
+pub struct XhciScrubbedRuntime {
+    prepared: XhciPreparedRuntime,
+    receipt: XhciRunStopReceipt,
+}
+
+/// A scrubbed runtime after its controller has been reset and re-observed
+/// ready and halted. This is the strongest terminal controller state and may
+/// mint the DMA-release proof.
+pub struct XhciResetRecoveredRuntime {
+    prepared: XhciPreparedRuntime,
+    run_stop: XhciRunStopReceipt,
+    reset: XhciControllerResetReceipt,
+}
+
+/// Start failure retaining the prepared controller for explicit containment.
+pub struct XhciRuntimeStartFailure<RegisterError> {
+    runtime: XhciPreparedRuntime,
+    cause: XhciRuntimeError<(), RegisterError>,
+}
+
+impl<RegisterError> XhciRuntimeStartFailure<RegisterError> {
+    pub fn cause(&self) -> &XhciRuntimeError<(), RegisterError> {
+        &self.cause
+    }
+
+    pub fn into_runtime(self) -> XhciPreparedRuntime {
+        self.runtime
+    }
+}
+
+/// Halt failure retaining the still-running controller and its receipt.
+pub struct XhciRuntimeHaltFailure<RegisterError> {
+    runtime: XhciRunningRuntime,
+    cause: XhciRuntimeError<(), RegisterError>,
+}
+
+impl<RegisterError> XhciRuntimeHaltFailure<RegisterError> {
+    pub fn cause(&self) -> &XhciRuntimeError<(), RegisterError> {
+        &self.cause
+    }
+
+    pub fn into_runtime(self) -> XhciRunningRuntime {
+        self.runtime
+    }
+}
+
+/// Scrub failure retaining halted register provenance and the halt receipt.
+pub struct XhciRuntimeScrubFailure<RegisterError> {
+    runtime: XhciHaltedRuntime,
+    cause: XhciRuntimeError<(), RegisterError>,
+}
+
+/// Reset failure retaining the already-scrubbed runtime.  The caller still
+/// owns all DMA and PCI authorities and must not release either underneath an
+/// unobserved controller state.
+pub struct XhciRuntimeResetFailure<RegisterError> {
+    runtime: XhciScrubbedRuntime,
+    cause: XhciRuntimeError<(), RegisterError>,
+}
+
+impl<RegisterError> XhciRuntimeResetFailure<RegisterError> {
+    pub fn cause(&self) -> &XhciRuntimeError<(), RegisterError> {
+        &self.cause
+    }
+
+    pub fn into_runtime(self) -> XhciScrubbedRuntime {
+        self.runtime
+    }
+}
+
+impl<RegisterError> XhciRuntimeScrubFailure<RegisterError> {
+    pub fn cause(&self) -> &XhciRuntimeError<(), RegisterError> {
+        &self.cause
+    }
+
+    pub fn into_runtime(self) -> XhciHaltedRuntime {
+        self.runtime
+    }
+}
+
 /// The result of programming the controller's address-bearing ring registers
 /// while it is still halted. No command has been submitted and no bus-master
 /// bit has been enabled by this object.
 pub struct XhciPreparedRuntime {
     rings: XhciRingMachine,
+    device: crate::hw::pci::PciAddress,
     generation: u32,
+    reset_ready_root: u64,
     operational_offset: u32,
     runtime_offset: u32,
     doorbell_offset: u32,
@@ -104,6 +252,7 @@ impl XhciPreparedRuntime {
 
     pub fn submit_no_op<S, R>(
         &mut self,
+        running: &XhciRunningReceipt,
         storage: &S,
         registers: &mut R,
     ) -> Result<XhciNoOpCommandReceipt, XhciRuntimeError<S::Error, R::Error>>
@@ -111,6 +260,7 @@ impl XhciPreparedRuntime {
         S: XhciRingStorage,
         R: XhciRuntimeRegisters,
     {
+        self.validate_running_receipt(running)?;
         let receipt = self
             .rings
             .submit_no_op(storage)
@@ -123,6 +273,7 @@ impl XhciPreparedRuntime {
 
     pub fn poll_no_op_completion<S, R>(
         &mut self,
+        running: &XhciRunningReceipt,
         storage: &S,
         registers: &mut R,
         receipt: &XhciNoOpCommandReceipt,
@@ -131,6 +282,7 @@ impl XhciPreparedRuntime {
         S: XhciRingStorage,
         R: XhciRuntimeRegisters,
     {
+        self.validate_running_receipt(running)?;
         let completion = self
             .rings
             .poll_no_op_completion(storage, receipt)
@@ -156,8 +308,272 @@ impl XhciPreparedRuntime {
         scrub_halted_registers(registers, self.operational_offset, self.runtime_offset)
     }
 
+    /// Starts the controller after translated DMA and PCI bus-master authority
+    /// have both been installed by the caller.
+    pub fn start<R>(
+        &self,
+        registers: &mut R,
+        poll_limit: u32,
+    ) -> Result<XhciRunningReceipt, XhciRuntimeError<(), R::Error>>
+    where
+        R: XhciRuntimeRegisters,
+    {
+        start_registers(
+            registers,
+            self.operational_offset,
+            self.runtime_root,
+            poll_limit,
+        )
+    }
+
+    /// Consumes halted preparation into the only state that may publish
+    /// polled commands. If start is not observed, the prepared runtime is
+    /// returned to the caller rather than silently discarded.
+    pub fn start_session<R>(
+        self,
+        registers: &mut R,
+        poll_limit: u32,
+    ) -> Result<XhciRunningRuntime, XhciRuntimeStartFailure<R::Error>>
+    where
+        R: XhciRuntimeRegisters,
+    {
+        match self.start(registers, poll_limit) {
+            Ok(running) => Ok(XhciRunningRuntime {
+                prepared: self,
+                running,
+            }),
+            Err(cause) => Err(XhciRuntimeStartFailure {
+                runtime: self,
+                cause,
+            }),
+        }
+    }
+
+    /// Stops the exact controller named by a running receipt. The caller must
+    /// retain DMA and bus-master authority until this returns successfully.
+    pub fn halt<R>(
+        &self,
+        running: XhciRunningReceipt,
+        registers: &mut R,
+        poll_limit: u32,
+    ) -> Result<XhciRunStopReceipt, XhciRuntimeError<(), R::Error>>
+    where
+        R: XhciRuntimeRegisters,
+    {
+        if running.runtime_root != self.runtime_root {
+            return Err(XhciRuntimeError::Invariant(
+                XhciRuntimeInvariant::RunningReceiptMismatch,
+            ));
+        }
+        halt_registers(
+            registers,
+            self.operational_offset,
+            self.runtime_root,
+            running,
+            poll_limit,
+        )
+    }
+
+    /// Performs one bounded Run/Stop transition without publishing commands.
+    /// It is a reversible controller transition probe for the future session
+    /// owner; it neither enables bus mastering nor releases DMA receipts.
+    pub fn run_then_halt<R>(
+        &self,
+        registers: &mut R,
+        poll_limit: u32,
+    ) -> Result<XhciRunStopReceipt, XhciRuntimeError<(), R::Error>>
+    where
+        R: XhciRuntimeRegisters,
+    {
+        let running = self.start(registers, poll_limit)?;
+        self.halt(running, registers, poll_limit)
+    }
+
     fn event_dequeue_pointer_offset(&self) -> u32 {
         self.runtime_offset + RUNTIME_INTERRUPTER + RT_ERDP
+    }
+
+    fn validate_running_receipt<StorageError, RegisterError>(
+        &self,
+        running: &XhciRunningReceipt,
+    ) -> Result<(), XhciRuntimeError<StorageError, RegisterError>> {
+        if running.runtime_root != self.runtime_root {
+            return Err(XhciRuntimeError::Invariant(
+                XhciRuntimeInvariant::RunningReceiptMismatch,
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl XhciRunningRuntime {
+    pub const fn runtime_root(&self) -> u64 {
+        self.prepared.runtime_root()
+    }
+
+    pub const fn running_root(&self) -> u64 {
+        self.running.root()
+    }
+
+    pub fn submit_no_op<S, R>(
+        &mut self,
+        storage: &S,
+        registers: &mut R,
+    ) -> Result<XhciNoOpCommandReceipt, XhciRuntimeError<S::Error, R::Error>>
+    where
+        S: XhciRingStorage,
+        R: XhciRuntimeRegisters,
+    {
+        self.prepared
+            .submit_no_op(&self.running, storage, registers)
+    }
+
+    pub fn poll_no_op_completion<S, R>(
+        &mut self,
+        storage: &S,
+        registers: &mut R,
+        receipt: &XhciNoOpCommandReceipt,
+    ) -> Result<Option<XhciCommandCompletionEvidence>, XhciRuntimeError<S::Error, R::Error>>
+    where
+        S: XhciRingStorage,
+        R: XhciRuntimeRegisters,
+    {
+        self.prepared
+            .poll_no_op_completion(&self.running, storage, registers, receipt)
+    }
+
+    /// Stops this exact session. A failure retains the entire running state,
+    /// so DMA and bus-master owners cannot continue teardown by accident.
+    pub fn halt<R>(
+        self,
+        registers: &mut R,
+        poll_limit: u32,
+    ) -> Result<XhciHaltedRuntime, XhciRuntimeHaltFailure<R::Error>>
+    where
+        R: XhciRuntimeRegisters,
+    {
+        let Self { prepared, running } = self;
+        match prepared.halt(running, registers, poll_limit) {
+            Ok(receipt) => Ok(XhciHaltedRuntime { prepared, receipt }),
+            Err(cause) => Err(XhciRuntimeHaltFailure {
+                runtime: Self { prepared, running },
+                cause,
+            }),
+        }
+    }
+}
+
+impl XhciHaltedRuntime {
+    pub const fn halt_receipt(&self) -> XhciRunStopReceipt {
+        self.receipt
+    }
+
+    pub const fn runtime_root(&self) -> u64 {
+        self.prepared.runtime_root()
+    }
+
+    /// Scrubs all DMA-bearing registers and returns a state that can mint an
+    /// arena-release proof only after HCHalted is re-observed.
+    pub fn scrub<R>(
+        self,
+        registers: &mut R,
+    ) -> Result<XhciScrubbedRuntime, XhciRuntimeScrubFailure<R::Error>>
+    where
+        R: XhciRuntimeRegisters,
+    {
+        let Self { prepared, receipt } = self;
+        match prepared.scrub_halted(registers) {
+            Ok(()) => Ok(XhciScrubbedRuntime { prepared, receipt }),
+            Err(cause) => Err(XhciRuntimeScrubFailure {
+                runtime: Self { prepared, receipt },
+                cause,
+            }),
+        }
+    }
+}
+
+impl XhciScrubbedRuntime {
+    pub const fn runtime_root(&self) -> u64 {
+        self.prepared.runtime_root()
+    }
+
+    pub const fn halt_receipt(&self) -> XhciRunStopReceipt {
+        self.receipt
+    }
+
+    /// Resets a stopped controller after its runtime registers are scrubbed.
+    /// The initial state may carry Host System Error: a reset is precisely the
+    /// recovery action for that state. Completion still requires HSE clear,
+    /// CNR clear, and HCHalted set before DMA can be reclaimed.
+    pub fn reset_controller<R>(
+        self,
+        registers: &mut R,
+        poll_limit: u32,
+    ) -> Result<XhciResetRecoveredRuntime, XhciRuntimeResetFailure<R::Error>>
+    where
+        R: XhciRuntimeRegisters,
+    {
+        let Self { prepared, receipt } = self;
+        match reset_halted_controller(
+            registers,
+            prepared.operational_offset,
+            prepared.runtime_root,
+            receipt,
+            poll_limit,
+        ) {
+            Ok(reset) => Ok(XhciResetRecoveredRuntime {
+                prepared,
+                run_stop: receipt,
+                reset,
+            }),
+            Err(cause) => Err(XhciRuntimeResetFailure {
+                runtime: Self { prepared, receipt },
+                cause,
+            }),
+        }
+    }
+
+    fn into_dma_quiescence_inner(self) -> XhciDmaQuiescence {
+        // SAFETY: construction requires an observed HCHalted receipt, and
+        // `scrub` re-observes HCHalted only after clearing every address-
+        // bearing xHCI runtime register. The caller retains PCI bus-master
+        // ownership until this value is consumed by arena release.
+        unsafe {
+            XhciDmaQuiescence::establish(
+                self.prepared.device,
+                self.prepared.generation,
+                self.prepared.reset_ready_root,
+            )
+        }
+    }
+
+    /// Converts mechanical Run/Stop plus scrub evidence into the exact arena
+    /// quiescence proof. No caller can forge this through a public unsafe API.
+    pub fn into_dma_quiescence(self) -> XhciDmaQuiescence {
+        self.into_dma_quiescence_inner()
+    }
+}
+
+impl XhciResetRecoveredRuntime {
+    pub const fn runtime_root(&self) -> u64 {
+        self.prepared.runtime_root()
+    }
+
+    pub const fn run_stop_receipt(&self) -> XhciRunStopReceipt {
+        self.run_stop
+    }
+
+    pub const fn reset_receipt(&self) -> XhciControllerResetReceipt {
+        self.reset
+    }
+
+    /// Converts reset-completion evidence into the sole DMA-release proof.
+    /// This consumes the stronger post-reset state, so a caller cannot claim
+    /// that a reset succeeded while releasing a pre-reset runtime instead.
+    pub fn into_dma_quiescence(self) -> XhciDmaQuiescence {
+        let Self { prepared, run_stop, reset } = self;
+        let _ = (run_stop, reset);
+        XhciScrubbedRuntime { prepared, receipt: run_stop }.into_dma_quiescence_inner()
     }
 }
 
@@ -306,7 +722,9 @@ where
     root = mix(root, u64::from(doorbell));
     Ok(XhciPreparedRuntime {
         rings,
+        device: evidence.address,
         generation: evidence.generation,
+        reset_ready_root: evidence.reset_ready_root,
         operational_offset,
         runtime_offset,
         doorbell_offset: doorbell,
@@ -389,6 +807,229 @@ where
         .write32(config, 0)
         .map_err(XhciRuntimeError::Register)?;
     verify_halted(registers, operational_offset)
+}
+
+fn start_registers<R>(
+    registers: &mut R,
+    operational_offset: u32,
+    runtime_root: u64,
+    poll_limit: u32,
+) -> Result<XhciRunningReceipt, XhciRuntimeError<(), R::Error>>
+where
+    R: XhciRuntimeRegisters,
+{
+    if poll_limit == 0 {
+        return Err(XhciRuntimeError::Invariant(
+            XhciRuntimeInvariant::InvalidPollLimit,
+        ));
+    }
+    verify_halted(registers, operational_offset)?;
+    let command = registers
+        .read32(operational_offset)
+        .map_err(XhciRuntimeError::Register)?;
+    let status_offset = checked_offset(operational_offset, 4)?;
+    registers
+        .write32(operational_offset, command | USBCMD_RUN_STOP)
+        .map_err(XhciRuntimeError::Register)?;
+
+    let start_polls = match wait_for_halted(registers, status_offset, false, poll_limit) {
+        Ok(polls) => polls,
+        Err(error) => {
+            // A rejected start must still receive an explicit stop request.
+            // The caller retains all authority if containment cannot be
+            // observed, preventing arena or domain release underneath DMA.
+            let _ = registers.write32(operational_offset, command & !USBCMD_RUN_STOP);
+            let _ = wait_for_halted(registers, status_offset, true, poll_limit);
+            return Err(error);
+        }
+    };
+    let mut root = mix(runtime_root, u64::from(start_polls));
+    root = mix(root, u64::from(command));
+    Ok(XhciRunningReceipt {
+        runtime_root,
+        start_polls,
+        root: canonical_root(root),
+    })
+}
+
+fn halt_registers<R>(
+    registers: &mut R,
+    operational_offset: u32,
+    runtime_root: u64,
+    running: XhciRunningReceipt,
+    poll_limit: u32,
+) -> Result<XhciRunStopReceipt, XhciRuntimeError<(), R::Error>>
+where
+    R: XhciRuntimeRegisters,
+{
+    if poll_limit == 0 {
+        return Err(XhciRuntimeError::Invariant(
+            XhciRuntimeInvariant::InvalidPollLimit,
+        ));
+    }
+    let command = registers
+        .read32(operational_offset)
+        .map_err(XhciRuntimeError::Register)?;
+    if command & USBCMD_RUN_STOP == 0 {
+        return Err(XhciRuntimeError::Invariant(
+            XhciRuntimeInvariant::ControllerNotRunning,
+        ));
+    }
+    let status_offset = checked_offset(operational_offset, 4)?;
+    registers
+        .write32(operational_offset, command & !USBCMD_RUN_STOP)
+        .map_err(XhciRuntimeError::Register)?;
+    let halt_polls = wait_for_halted(registers, status_offset, true, poll_limit)?;
+    let mut root = mix(runtime_root, u64::from(running.start_polls));
+    root = mix(root, u64::from(halt_polls));
+    root = mix(root, u64::from(command));
+    Ok(XhciRunStopReceipt {
+        start_polls: running.start_polls,
+        halt_polls,
+        root: canonical_root(root),
+    })
+}
+
+fn reset_halted_controller<R>(
+    registers: &mut R,
+    operational_offset: u32,
+    runtime_root: u64,
+    run_stop: XhciRunStopReceipt,
+    poll_limit: u32,
+) -> Result<XhciControllerResetReceipt, XhciRuntimeError<(), R::Error>>
+where
+    R: XhciRuntimeRegisters,
+{
+    if poll_limit == 0 {
+        return Err(XhciRuntimeError::Invariant(
+            XhciRuntimeInvariant::InvalidPollLimit,
+        ));
+    }
+    let status_offset = checked_offset(operational_offset, 4)?;
+    let command = registers
+        .read32(operational_offset)
+        .map_err(XhciRuntimeError::Register)?;
+    let status = registers
+        .read32(status_offset)
+        .map_err(XhciRuntimeError::Register)?;
+    if command & (USBCMD_RUN_STOP | USBCMD_HOST_CONTROLLER_RESET) != 0
+        || status & (USBSTS_HCHALTED | USBSTS_CONTROLLER_NOT_READY)
+            != USBSTS_HCHALTED
+    {
+        return Err(XhciRuntimeError::Invariant(
+            XhciRuntimeInvariant::ControllerResetNotEligible,
+        ));
+    }
+
+    registers
+        .write32(operational_offset, command | USBCMD_HOST_CONTROLLER_RESET)
+        .map_err(XhciRuntimeError::Register)?;
+    let reset_polls = wait_for_command_bit(
+        registers,
+        operational_offset,
+        USBCMD_HOST_CONTROLLER_RESET,
+        false,
+        poll_limit,
+        XhciRuntimeInvariant::ControllerResetTimeout,
+    )?;
+    let ready_polls = wait_for_status_ready(registers, status_offset, poll_limit)?;
+
+    let settled_command = registers
+        .read32(operational_offset)
+        .map_err(XhciRuntimeError::Register)?;
+    let settled_status = registers
+        .read32(status_offset)
+        .map_err(XhciRuntimeError::Register)?;
+    if settled_command & (USBCMD_RUN_STOP | USBCMD_HOST_CONTROLLER_RESET) != 0
+        || settled_status & (USBSTS_HCHALTED | USBSTS_CONTROLLER_NOT_READY)
+            != USBSTS_HCHALTED
+        || settled_status & USBSTS_HOST_CONTROLLER_ERROR != 0
+    {
+        return Err(XhciRuntimeError::Invariant(
+            XhciRuntimeInvariant::ControllerResetFailed,
+        ));
+    }
+
+    let mut root = mix(runtime_root, run_stop.root);
+    root = mix(root, u64::from(reset_polls));
+    root = mix(root, u64::from(ready_polls));
+    Ok(XhciControllerResetReceipt {
+        reset_polls,
+        ready_polls,
+        root: canonical_root(root),
+    })
+}
+
+fn wait_for_command_bit<R>(
+    registers: &mut R,
+    offset: u32,
+    bit: u32,
+    expected_set: bool,
+    poll_limit: u32,
+    timeout: XhciRuntimeInvariant,
+) -> Result<u32, XhciRuntimeError<(), R::Error>>
+where
+    R: XhciRuntimeRegisters,
+{
+    for polls in 1..=poll_limit {
+        let command = registers
+            .read32(offset)
+            .map_err(XhciRuntimeError::Register)?;
+        if (command & bit != 0) == expected_set {
+            return Ok(polls);
+        }
+    }
+    Err(XhciRuntimeError::Invariant(timeout))
+}
+
+fn wait_for_status_ready<R>(
+    registers: &mut R,
+    status_offset: u32,
+    poll_limit: u32,
+) -> Result<u32, XhciRuntimeError<(), R::Error>>
+where
+    R: XhciRuntimeRegisters,
+{
+    for polls in 1..=poll_limit {
+        let status = registers
+            .read32(status_offset)
+            .map_err(XhciRuntimeError::Register)?;
+        if status & USBSTS_CONTROLLER_NOT_READY == 0 {
+            return Ok(polls);
+        }
+    }
+    Err(XhciRuntimeError::Invariant(
+        XhciRuntimeInvariant::ControllerReadyTimeout,
+    ))
+}
+
+fn wait_for_halted<R>(
+    registers: &mut R,
+    status_offset: u32,
+    expected_halted: bool,
+    poll_limit: u32,
+) -> Result<u32, XhciRuntimeError<(), R::Error>>
+where
+    R: XhciRuntimeRegisters,
+{
+    for polls in 1..=poll_limit {
+        let status = registers
+            .read32(status_offset)
+            .map_err(XhciRuntimeError::Register)?;
+        if status & USBSTS_HOST_CONTROLLER_ERROR != 0 {
+            return Err(XhciRuntimeError::Invariant(
+                XhciRuntimeInvariant::ControllerError,
+            ));
+        }
+        if (status & USBSTS_HCHALTED != 0) == expected_halted {
+            return Ok(polls);
+        }
+    }
+    Err(XhciRuntimeError::Invariant(if expected_halted {
+        XhciRuntimeInvariant::ControllerHaltTimeout
+    } else {
+        XhciRuntimeInvariant::ControllerStartTimeout
+    }))
 }
 
 fn ready_region<S: XhciRingStorage, R>(
@@ -545,5 +1186,149 @@ mod tests {
         assert_eq!(probe.writes, 6);
         assert_eq!(probe.last_offset, 0x58);
         assert_eq!(probe.last_value, 0);
+    }
+
+    struct RunStopProbe {
+        command: u32,
+        status_offset: u32,
+        host_error: bool,
+        controller_not_ready: bool,
+        reset_stuck: bool,
+        clear_error_on_reset: bool,
+        clear_ready_on_reset: bool,
+    }
+
+    impl XhciRuntimeRegisters for RunStopProbe {
+        type Error = ();
+
+        fn read32(&mut self, offset: u32) -> Result<u32, Self::Error> {
+            if offset == self.status_offset {
+                let halted = (self.command & USBCMD_RUN_STOP == 0) as u32 * USBSTS_HCHALTED;
+                return Ok(
+                    halted
+                        | (self.host_error as u32 * USBSTS_HOST_CONTROLLER_ERROR)
+                        | (self.controller_not_ready as u32 * USBSTS_CONTROLLER_NOT_READY),
+                );
+            }
+            Ok(self.command)
+        }
+
+        fn write32(&mut self, _offset: u32, value: u32) -> Result<(), Self::Error> {
+            self.command = if value & USBCMD_HOST_CONTROLLER_RESET != 0 && !self.reset_stuck {
+                if self.clear_error_on_reset {
+                    self.host_error = false;
+                }
+                if self.clear_ready_on_reset {
+                    self.controller_not_ready = false;
+                }
+                value & !USBCMD_HOST_CONTROLLER_RESET
+            } else {
+                value
+            };
+            Ok(())
+        }
+
+        fn write64(&mut self, _offset: u32, _value: u64) -> Result<(), Self::Error> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn bounded_run_stop_receipt_requires_observed_start_and_halt() {
+        let mut probe = RunStopProbe {
+            command: 0,
+            status_offset: 0x24,
+            host_error: false,
+            controller_not_ready: false,
+            reset_stuck: false,
+            clear_error_on_reset: false,
+            clear_ready_on_reset: false,
+        };
+        let running = start_registers(&mut probe, 0x20, 0x5eed, 4).unwrap();
+        assert_eq!(running.start_polls(), 1);
+        let receipt = halt_registers(&mut probe, 0x20, 0x5eed, running, 4).unwrap();
+        assert_eq!(receipt.start_polls, 1);
+        assert_eq!(receipt.halt_polls, 1);
+        assert_ne!(receipt.root, 0);
+        assert_eq!(probe.command & USBCMD_RUN_STOP, 0);
+    }
+
+    #[test]
+    fn run_stop_rejects_host_error_before_start() {
+        let mut probe = RunStopProbe {
+            command: 0,
+            status_offset: 0x24,
+            host_error: true,
+            controller_not_ready: false,
+            reset_stuck: false,
+            clear_error_on_reset: false,
+            clear_ready_on_reset: false,
+        };
+        assert_eq!(
+            start_registers(&mut probe, 0x20, 0x5eed, 4),
+            Err(XhciRuntimeError::Invariant(
+                XhciRuntimeInvariant::ControllerError
+            ))
+        );
+        assert_eq!(probe.command & USBCMD_RUN_STOP, 0);
+    }
+
+    #[test]
+    fn reset_recovery_accepts_halted_host_error_and_requires_it_to_clear() {
+        let mut probe = RunStopProbe {
+            command: 0,
+            status_offset: 0x24,
+            host_error: true,
+            controller_not_ready: false,
+            reset_stuck: false,
+            clear_error_on_reset: true,
+            clear_ready_on_reset: true,
+        };
+        let receipt = reset_halted_controller(
+            &mut probe,
+            0x20,
+            0x5eed,
+            XhciRunStopReceipt {
+                start_polls: 1,
+                halt_polls: 1,
+                root: 0x1234,
+            },
+            4,
+        )
+        .unwrap();
+        assert_eq!(receipt.reset_polls, 1);
+        assert_eq!(receipt.ready_polls, 1);
+        assert_ne!(receipt.root, 0);
+        assert!(!probe.host_error);
+        assert_eq!(probe.command & USBCMD_HOST_CONTROLLER_RESET, 0);
+    }
+
+    #[test]
+    fn reset_recovery_retains_failure_when_reset_bit_never_clears() {
+        let mut probe = RunStopProbe {
+            command: 0,
+            status_offset: 0x24,
+            host_error: true,
+            controller_not_ready: false,
+            reset_stuck: true,
+            clear_error_on_reset: false,
+            clear_ready_on_reset: false,
+        };
+        assert_eq!(
+            reset_halted_controller(
+                &mut probe,
+                0x20,
+                0x5eed,
+                XhciRunStopReceipt {
+                    start_polls: 1,
+                    halt_polls: 1,
+                    root: 0x1234,
+                },
+                2,
+            ),
+            Err(XhciRuntimeError::Invariant(
+                XhciRuntimeInvariant::ControllerResetTimeout
+            ))
+        );
     }
 }
