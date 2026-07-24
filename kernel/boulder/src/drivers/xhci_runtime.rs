@@ -546,12 +546,6 @@ impl XhciScrubbedRuntime {
             )
         }
     }
-
-    /// Converts mechanical Run/Stop plus scrub evidence into the exact arena
-    /// quiescence proof. No caller can forge this through a public unsafe API.
-    pub fn into_dma_quiescence(self) -> XhciDmaQuiescence {
-        self.into_dma_quiescence_inner()
-    }
 }
 
 impl XhciResetRecoveredRuntime {
@@ -571,9 +565,16 @@ impl XhciResetRecoveredRuntime {
     /// This consumes the stronger post-reset state, so a caller cannot claim
     /// that a reset succeeded while releasing a pre-reset runtime instead.
     pub fn into_dma_quiescence(self) -> XhciDmaQuiescence {
-        let Self { prepared, run_stop, reset } = self;
-        let _ = (run_stop, reset);
-        XhciScrubbedRuntime { prepared, receipt: run_stop }.into_dma_quiescence_inner()
+        let Self {
+            prepared,
+            run_stop,
+            reset: _,
+        } = self;
+        XhciScrubbedRuntime {
+            prepared,
+            receipt: run_stop,
+        }
+        .into_dma_quiescence_inner()
     }
 }
 
@@ -740,6 +741,29 @@ fn verify_halted<StorageError, R>(
 where
     R: XhciRuntimeRegisters,
 {
+    verify_stopped(registers, operational_offset)?;
+    let status_offset = checked_offset(operational_offset, 4)?;
+    let status = registers
+        .read32(status_offset)
+        .map_err(XhciRuntimeError::Register)?;
+    if status & USBSTS_HOST_CONTROLLER_ERROR != 0 {
+        return Err(XhciRuntimeError::Invariant(
+            XhciRuntimeInvariant::ControllerError,
+        ));
+    }
+    Ok(())
+}
+
+/// HCHalted is sufficient to clear stale runtime register references even
+/// when USBSTS.HSE is set. The following reset transaction is responsible for
+/// clearing HSE before an arena-release proof is minted.
+fn verify_stopped<StorageError, R>(
+    registers: &mut R,
+    operational_offset: u32,
+) -> Result<(), XhciRuntimeError<StorageError, R::Error>>
+where
+    R: XhciRuntimeRegisters,
+{
     let status_offset = checked_offset(operational_offset, 4)?;
     let command = registers
         .read32(operational_offset)
@@ -750,11 +774,6 @@ where
     if command & USBCMD_RUN_STOP != 0 || status & USBSTS_HCHALTED == 0 {
         return Err(XhciRuntimeError::Invariant(
             XhciRuntimeInvariant::ControllerNotHalted,
-        ));
-    }
-    if status & USBSTS_HOST_CONTROLLER_ERROR != 0 {
-        return Err(XhciRuntimeError::Invariant(
-            XhciRuntimeInvariant::ControllerError,
         ));
     }
     Ok(())
@@ -768,7 +787,7 @@ fn scrub_halted_registers<R>(
 where
     R: XhciRuntimeRegisters,
 {
-    verify_halted(registers, operational_offset)?;
+    verify_stopped(registers, operational_offset)?;
     let crcr = checked_offset(operational_offset, OP_CRCR)?;
     let dcbaap = checked_offset(operational_offset, OP_DCBAAP)?;
     let config = checked_offset(operational_offset, OP_CONFIG)?;
@@ -806,7 +825,7 @@ where
     registers
         .write32(config, 0)
         .map_err(XhciRuntimeError::Register)?;
-    verify_halted(registers, operational_offset)
+    verify_stopped(registers, operational_offset)
 }
 
 fn start_registers<R>(
@@ -913,8 +932,7 @@ where
         .read32(status_offset)
         .map_err(XhciRuntimeError::Register)?;
     if command & (USBCMD_RUN_STOP | USBCMD_HOST_CONTROLLER_RESET) != 0
-        || status & (USBSTS_HCHALTED | USBSTS_CONTROLLER_NOT_READY)
-            != USBSTS_HCHALTED
+        || status & (USBSTS_HCHALTED | USBSTS_CONTROLLER_NOT_READY) != USBSTS_HCHALTED
     {
         return Err(XhciRuntimeError::Invariant(
             XhciRuntimeInvariant::ControllerResetNotEligible,
@@ -941,8 +959,7 @@ where
         .read32(status_offset)
         .map_err(XhciRuntimeError::Register)?;
     if settled_command & (USBCMD_RUN_STOP | USBCMD_HOST_CONTROLLER_RESET) != 0
-        || settled_status & (USBSTS_HCHALTED | USBSTS_CONTROLLER_NOT_READY)
-            != USBSTS_HCHALTED
+        || settled_status & (USBSTS_HCHALTED | USBSTS_CONTROLLER_NOT_READY) != USBSTS_HCHALTED
         || settled_status & USBSTS_HOST_CONTROLLER_ERROR != 0
     {
         return Err(XhciRuntimeError::Invariant(
@@ -1204,11 +1221,9 @@ mod tests {
         fn read32(&mut self, offset: u32) -> Result<u32, Self::Error> {
             if offset == self.status_offset {
                 let halted = (self.command & USBCMD_RUN_STOP == 0) as u32 * USBSTS_HCHALTED;
-                return Ok(
-                    halted
-                        | (self.host_error as u32 * USBSTS_HOST_CONTROLLER_ERROR)
-                        | (self.controller_not_ready as u32 * USBSTS_CONTROLLER_NOT_READY),
-                );
+                return Ok(halted
+                    | (self.host_error as u32 * USBSTS_HOST_CONTROLLER_ERROR)
+                    | (self.controller_not_ready as u32 * USBSTS_CONTROLLER_NOT_READY));
             }
             Ok(self.command)
         }
@@ -1301,6 +1316,22 @@ mod tests {
         assert_ne!(receipt.root, 0);
         assert!(!probe.host_error);
         assert_eq!(probe.command & USBCMD_HOST_CONTROLLER_RESET, 0);
+    }
+
+    #[test]
+    fn scrub_retains_halted_containment_when_host_error_requires_reset() {
+        let mut probe = RunStopProbe {
+            command: 0,
+            status_offset: 0x24,
+            host_error: true,
+            controller_not_ready: false,
+            reset_stuck: false,
+            clear_error_on_reset: false,
+            clear_ready_on_reset: false,
+        };
+        scrub_halted_registers(&mut probe, 0x20, 0x100).unwrap();
+        assert!(probe.host_error);
+        assert_eq!(probe.command & USBCMD_RUN_STOP, 0);
     }
 
     #[test]

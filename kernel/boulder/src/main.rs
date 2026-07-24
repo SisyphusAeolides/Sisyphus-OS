@@ -118,6 +118,7 @@ impl LogService for BootDriverLogger<'_> {
     }
 }
 
+#[cfg(target_os = "none")]
 const fn parse_sha256(encoded: &str) -> [u8; 32] {
     assert!(encoded.len() == 64, "invalid embedded Push digest");
     let bytes = encoded.as_bytes();
@@ -130,6 +131,7 @@ const fn parse_sha256(encoded: &str) -> [u8; 32] {
     digest
 }
 
+#[cfg(target_os = "none")]
 const fn hex_nibble(value: u8) -> u8 {
     match value {
         b'0'..=b'9' => value - b'0',
@@ -138,6 +140,7 @@ const fn hex_nibble(value: u8) -> u8 {
     }
 }
 
+#[cfg(target_os = "none")]
 const fn parse_decimal(encoded: &str) -> usize {
     assert!(!encoded.is_empty(), "invalid embedded Push size");
     let bytes = encoded.as_bytes();
@@ -1649,7 +1652,8 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
                                             "Boulder: xHCI scoped VT-d epoch enabled/mapped/revoked/released domain={} mappings={} binding-root={:#x}",
                                             domain_handle, expected_mapping_count, binding_root,
                                         );
-                                        let quiescence = reset_recovered_runtime.into_dma_quiescence();
+                                        let quiescence =
+                                            reset_recovered_runtime.into_dma_quiescence();
                                         match arena.release(quiescence) {
                                             Ok(release) => {
                                                 let _ = writeln!(

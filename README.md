@@ -288,7 +288,7 @@ body is available), and proves HCHalted. Only at that quiescent point may a
 serialized PCI transaction disable decode and bus mastering, size all BAR
 words, restore them with readback checks, and issue an exact BAR0 aperture
 lease. Every later register access is derived from that lease. Reset completion
-must re-establish CNR clear, HCHalted, and HCE clear before Boulder retains a
+must re-establish CNR clear, HCHalted, and HSE clear before Boulder retains a
 reset-ready controller root; any post-mutation failure instead retains explicit
 mutation debt. QEMU currently proves a 16 KiB aperture and bus mastering off.
 After reset, a second walk may read complete Supported Protocol bodies only
