@@ -1,9 +1,9 @@
 use core::ptr::NonNull;
-use core::sync::atomic::{Ordering, compiler_fence};
+use core::sync::atomic::{compiler_fence, Ordering};
 
 use sisyphus_driver_abi::{
-    Handle, STATUS_BUSY, STATUS_INVALID_ARGUMENT, STATUS_NOT_FOUND, STATUS_OK, STATUS_UNSUPPORTED,
-    Status,
+    Handle, Status, STATUS_BUSY, STATUS_INVALID_ARGUMENT, STATUS_NOT_FOUND, STATUS_OK,
+    STATUS_UNSUPPORTED,
 };
 
 use crate::arch::x86_64::invalidate_page;
@@ -50,7 +50,6 @@ impl MappingRecord {
 struct EarlyMmioMapper {
     occupied: [u64; SLOT_WORDS],
     records: [MappingRecord; MAXIMUM_MAPPINGS],
-    next_generation: u32,
 }
 
 impl EarlyMmioMapper {
@@ -58,7 +57,6 @@ impl EarlyMmioMapper {
         Self {
             occupied: [0; SLOT_WORDS],
             records: [MappingRecord::EMPTY; MAXIMUM_MAPPINGS],
-            next_generation: 1,
         }
     }
 
@@ -93,11 +91,10 @@ impl EarlyMmioMapper {
         let record_index = self
             .records
             .iter()
-            .position(|record| !record.active)
+            .position(|record| !record.active && record.generation != u32::MAX)
             .ok_or(STATUS_BUSY)?;
         let first_slot = self.find_slots(page_count).ok_or(STATUS_BUSY)?;
-        let generation = self.next_generation.max(1);
-        self.next_generation = self.next_generation.wrapping_add(1).max(1);
+        let generation = self.records[record_index].generation + 1;
 
         for offset in 0..page_count {
             self.set_slot(first_slot + offset, true);
@@ -151,7 +148,10 @@ impl EarlyMmioMapper {
             unsafe { invalidate_page(virtual_address) };
             self.set_slot(slot, false);
         }
-        self.records[record_index] = MappingRecord::EMPTY;
+        let record = &mut self.records[record_index];
+        record.first_slot = 0;
+        record.page_count = 0;
+        record.active = false;
         STATUS_OK
     }
 
@@ -239,16 +239,12 @@ unsafe extern "C" {
 /// The complete span must lie inside one established linear mapping. This
 /// function never guesses a load offset from a pointer.
 #[cfg(target_os = "none")]
-pub fn kernel_virtual_to_physical(
-    virtual_address: usize,
-    length: usize,
-) -> Option<u64> {
+pub fn kernel_virtual_to_physical(virtual_address: usize, length: usize) -> Option<u64> {
     let end = virtual_address.checked_add(length)?;
 
     let direct_start = HIGHER_HALF_DIRECT_MAP_BASE;
-    let direct_end = direct_start.checked_add(
-        usize::try_from(EARLY_MAPPED_PHYSICAL_LIMIT).ok()?,
-    )?;
+    let direct_end =
+        direct_start.checked_add(usize::try_from(EARLY_MAPPED_PHYSICAL_LIMIT).ok()?)?;
     if virtual_address >= direct_start && end <= direct_end {
         return u64::try_from(virtual_address - direct_start).ok();
     }
@@ -256,20 +252,14 @@ pub fn kernel_virtual_to_physical(
     let kernel_start = core::ptr::addr_of!(__kernel_start) as usize;
     let kernel_end = core::ptr::addr_of!(__kernel_end) as usize;
     if virtual_address >= kernel_start && end <= kernel_end {
-        return u64::try_from(
-            virtual_address.checked_sub(KERNEL_VIRTUAL_BASE)?,
-        )
-        .ok();
+        return u64::try_from(virtual_address.checked_sub(KERNEL_VIRTUAL_BASE)?).ok();
     }
 
     None
 }
 
 #[cfg(not(target_os = "none"))]
-pub fn kernel_virtual_to_physical(
-    virtual_address: usize,
-    length: usize,
-) -> Option<u64> {
+pub fn kernel_virtual_to_physical(virtual_address: usize, length: usize) -> Option<u64> {
     let _ = virtual_address.checked_add(length);
     None
 }

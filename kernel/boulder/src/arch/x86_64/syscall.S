@@ -8,31 +8,52 @@ boulder_syscall_entry:
     # stack; RCX and R11 already contain the user return RIP and RFLAGS.
     movq %rsp, boulder_syscall_user_rsp(%rip)
     leaq boulder_syscall_stack_top(%rip), %rsp
-    subq $80, %rsp
+    subq $144, %rsp
 
-    # struct SyscallFrame, in Slope ABI register order.
-    movq %rax, 0(%rsp)
-    movq %rdi, 8(%rsp)
-    movq %rsi, 16(%rsp)
-    movq %rdx, 24(%rsp)
-    movq %r10, 32(%rsp)
-    movq %r8, 40(%rsp)
+    # struct SavedUserContext. The register prefix has the same offsets as
+    # InterruptFrame, followed by the SYSRET control triple.
+    movq %r15, 0(%rsp)
+    movq %r14, 8(%rsp)
+    movq %r13, 16(%rsp)
+    movq %r12, 24(%rsp)
+    movq %r11, 32(%rsp)
+    movq %r10, 40(%rsp)
     movq %r9, 48(%rsp)
-    movq %rcx, 56(%rsp)
-    movq %r11, 64(%rsp)
+    movq %r8, 56(%rsp)
+    movq %rbp, 64(%rsp)
+    movq %rdi, 72(%rsp)
+    movq %rsi, 80(%rsp)
+    movq %rdx, 88(%rsp)
+    movq %rcx, 96(%rsp)
+    movq %rbx, 104(%rsp)
+    movq %rax, 112(%rsp)
+    movq %rcx, 120(%rsp)
+    movq %r11, 128(%rsp)
     movq boulder_syscall_user_rsp(%rip), %rax
-    movq %rax, 72(%rsp)
+    movq %rax, 136(%rsp)
 
     cld
     movq %rsp, %rdi
     call boulder_syscall_dispatch
 
-    # Rust stores the signed result over the syscall number. SYSRET restores
-    # only RIP/RFLAGS; the explicit RSP load completes the user frame.
-    movq 0(%rsp), %rax
-    movq 56(%rsp), %rcx
-    movq 64(%rsp), %r11
-    movq 72(%rsp), %rsp
+    # Rust may replace the complete frame with another process context.
+    # SYSRET consumes RCX/R11; the other registers and RSP are explicit.
+    movq 0(%rsp), %r15
+    movq 8(%rsp), %r14
+    movq 16(%rsp), %r13
+    movq 24(%rsp), %r12
+    movq 40(%rsp), %r10
+    movq 48(%rsp), %r9
+    movq 56(%rsp), %r8
+    movq 64(%rsp), %rbp
+    movq 72(%rsp), %rdi
+    movq 80(%rsp), %rsi
+    movq 88(%rsp), %rdx
+    movq 104(%rsp), %rbx
+    movq 112(%rsp), %rax
+    movq 120(%rsp), %rcx
+    movq 128(%rsp), %r11
+    movq 136(%rsp), %rsp
     sysretq
 .size boulder_syscall_entry, . - boulder_syscall_entry
 

@@ -31,6 +31,9 @@ drivers. The matching Rust layouts live in the `sisyphus-driver-abi` crate.
 10. A driver must pass the exact `kernel_context` value from its API table back
     to every kernel callback. Flags not defined by the negotiated ABI revision
     must be zero.
+11. A successful probe creates one live driver instance. A successful remove
+    consumes that instance. If remove fails, the instance remains live so the
+    kernel can retry teardown; the driver must not partially invalidate it.
 
 ## Porting other kernels' drivers
 

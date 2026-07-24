@@ -1,3 +1,6 @@
+use alloc::vec::Vec;
+use core::mem::size_of;
+
 use crate::module::elf_headers::{RelocationEntry, SymbolEntry};
 
 const R_X86_64_64: u32 = 1;
@@ -8,6 +11,7 @@ const SECTION_UNDEFINED: u16 = 0;
 const SECTION_ABSOLUTE: u16 = 0xfff1;
 
 pub trait ExternalSymbolResolver {
+    /// Resolves one symbol binding for a relocation transaction.
     fn resolve(&self, name: &[u8]) -> Option<u64>;
 }
 
@@ -19,6 +23,7 @@ pub enum RelocationError {
     UnresolvedSymbol,
     PatchOutsideImage,
     ValueOutOfRange,
+    PlanAllocationFailed,
     UnsupportedRelocation(u32),
 }
 
@@ -36,40 +41,83 @@ pub fn apply_relocations(
     relocations: &[RelocationEntry],
     context: &RelocationContext<'_>,
 ) -> Result<(), RelocationError> {
+    // Retain the proven values so a stateful resolver is consulted only once
+    // per relocation and no fallible work remains after mutation begins.
+    let mut patches = Vec::new();
+    patches
+        .try_reserve_exact(relocations.len())
+        .map_err(|_| RelocationError::PlanAllocationFailed)?;
     for relocation in relocations {
-        let symbol_index = (relocation.information >> 32) as usize;
-        let relocation_type = relocation.information as u32;
-        let symbol = context
-            .symbols
-            .get(symbol_index)
-            .copied()
-            .ok_or(RelocationError::InvalidSymbolIndex)?;
-        let symbol_address = resolve_symbol(symbol, context)?;
-        let relocation_offset = usize::try_from(relocation.offset)
-            .ok()
-            .and_then(|offset| context.target_image_offset.checked_add(offset))
-            .ok_or(RelocationError::PatchOutsideImage)?;
-        let place = context
-            .image_virtual_address
-            .checked_add(relocation_offset as u64)
-            .ok_or(RelocationError::ValueOutOfRange)?;
-        let value = i128::from(symbol_address) + i128::from(relocation.addend);
+        patches.push(evaluate_relocation(image.len(), relocation, context)?);
+    }
 
-        match relocation_type {
-            R_X86_64_64 | R_X86_64_GLOB_DAT => {
-                let value = u64::try_from(value).map_err(|_| RelocationError::ValueOutOfRange)?;
-                write_bytes(image, relocation_offset, &value.to_le_bytes())?;
+    for patch in patches {
+        match patch.value {
+            RelocationValue::Absolute(value) => {
+                write_bytes(image, patch.offset, &value.to_le_bytes())?;
             }
-            R_X86_64_PC32 | R_X86_64_PLT32 => {
-                let relative = value - i128::from(place);
-                let relative =
-                    i32::try_from(relative).map_err(|_| RelocationError::ValueOutOfRange)?;
-                write_bytes(image, relocation_offset, &relative.to_le_bytes())?;
+            RelocationValue::Relative(value) => {
+                write_bytes(image, patch.offset, &value.to_le_bytes())?;
             }
-            unsupported => return Err(RelocationError::UnsupportedRelocation(unsupported)),
         }
     }
     Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum RelocationValue {
+    Absolute(u64),
+    Relative(i32),
+}
+
+#[derive(Clone, Copy)]
+struct RelocationPatch {
+    offset: usize,
+    value: RelocationValue,
+}
+
+fn evaluate_relocation(
+    image_length: usize,
+    relocation: &RelocationEntry,
+    context: &RelocationContext<'_>,
+) -> Result<RelocationPatch, RelocationError> {
+    let symbol_index = (relocation.information >> 32) as usize;
+    let relocation_type = relocation.information as u32;
+    let symbol = context
+        .symbols
+        .get(symbol_index)
+        .copied()
+        .ok_or(RelocationError::InvalidSymbolIndex)?;
+    let symbol_address = resolve_symbol(symbol, context)?;
+    let relocation_offset = usize::try_from(relocation.offset)
+        .ok()
+        .and_then(|offset| context.target_image_offset.checked_add(offset))
+        .ok_or(RelocationError::PatchOutsideImage)?;
+    let place = context
+        .image_virtual_address
+        .checked_add(relocation_offset as u64)
+        .ok_or(RelocationError::ValueOutOfRange)?;
+    let value = i128::from(symbol_address) + i128::from(relocation.addend);
+
+    let value = match relocation_type {
+        R_X86_64_64 | R_X86_64_GLOB_DAT => {
+            let value = u64::try_from(value).map_err(|_| RelocationError::ValueOutOfRange)?;
+            validate_patch_range(image_length, relocation_offset, size_of::<u64>())?;
+            RelocationValue::Absolute(value)
+        }
+        R_X86_64_PC32 | R_X86_64_PLT32 => {
+            let relative = value - i128::from(place);
+            let relative = i32::try_from(relative).map_err(|_| RelocationError::ValueOutOfRange)?;
+            validate_patch_range(image_length, relocation_offset, size_of::<i32>())?;
+            RelocationValue::Relative(relative)
+        }
+        unsupported => return Err(RelocationError::UnsupportedRelocation(unsupported)),
+    };
+
+    Ok(RelocationPatch {
+        offset: relocation_offset,
+        value,
+    })
 }
 
 fn resolve_symbol(
@@ -114,8 +162,25 @@ fn write_bytes(image: &mut [u8], offset: usize, value: &[u8]) -> Result<(), Relo
     Ok(())
 }
 
+fn validate_patch_range(
+    image_length: usize,
+    offset: usize,
+    width: usize,
+) -> Result<(), RelocationError> {
+    if offset
+        .checked_add(width)
+        .is_none_or(|end| end > image_length)
+    {
+        Err(RelocationError::PatchOutsideImage)
+    } else {
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use core::cell::Cell;
+
     use super::*;
 
     struct TestResolver;
@@ -123,6 +188,18 @@ mod tests {
     impl ExternalSymbolResolver for TestResolver {
         fn resolve(&self, name: &[u8]) -> Option<u64> {
             (name == b"external").then_some(0x1020)
+        }
+    }
+
+    struct OneShotResolver {
+        calls: Cell<usize>,
+    }
+
+    impl ExternalSymbolResolver for OneShotResolver {
+        fn resolve(&self, name: &[u8]) -> Option<u64> {
+            let calls = self.calls.get();
+            self.calls.set(calls + 1);
+            (calls == 0 && name == b"external").then_some(0x1020)
         }
     }
 
@@ -187,5 +264,65 @@ mod tests {
             apply_relocations(&mut [0; 8], &[relocation], &context),
             Err(RelocationError::UnresolvedSymbol)
         );
+    }
+
+    #[test]
+    fn rejects_the_complete_batch_before_patching_the_image() {
+        let symbols = [symbol(SECTION_UNDEFINED, 0)];
+        let context = RelocationContext {
+            image_virtual_address: 0x1000,
+            target_image_offset: 0,
+            section_addresses: &[],
+            symbols: &symbols,
+            strings: b"\0external\0",
+            external_symbols: &TestResolver,
+        };
+        let relocations = [
+            RelocationEntry {
+                offset: 0,
+                information: R_X86_64_64 as u64,
+                addend: 0,
+            },
+            RelocationEntry {
+                offset: 8,
+                information: 0xffff,
+                addend: 0,
+            },
+        ];
+        let mut image = [0x5a_u8; 16];
+        let original = image;
+
+        assert_eq!(
+            apply_relocations(&mut image, &relocations, &context),
+            Err(RelocationError::UnsupportedRelocation(0xffff))
+        );
+        assert_eq!(image, original);
+    }
+
+    #[test]
+    fn resolves_each_external_binding_once_before_committing() {
+        let symbols = [symbol(SECTION_UNDEFINED, 0)];
+        let resolver = OneShotResolver {
+            calls: Cell::new(0),
+        };
+        let context = RelocationContext {
+            image_virtual_address: 0,
+            target_image_offset: 0,
+            section_addresses: &[],
+            symbols: &symbols,
+            strings: b"\0external\0",
+            external_symbols: &resolver,
+        };
+        let relocation = RelocationEntry {
+            offset: 0,
+            information: R_X86_64_64 as u64,
+            addend: 0,
+        };
+        let mut image = [0_u8; 8];
+
+        apply_relocations(&mut image, &[relocation], &context).unwrap();
+
+        assert_eq!(resolver.calls.get(), 1);
+        assert_eq!(u64::from_le_bytes(image), 0x1020);
     }
 }

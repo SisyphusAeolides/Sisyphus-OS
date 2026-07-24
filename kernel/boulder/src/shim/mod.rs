@@ -6,7 +6,7 @@ pub mod polymorphic_vtable;
 mod services;
 
 pub use abyss_allocator::AbyssAllocator;
-pub use host::{DriverHost, kernel_api};
+pub use host::DriverHost;
 pub use module::{DriverInstance, DriverLoadError, DriverModule};
 pub use services::{
     AllocationService, ClockService, DeviceService, DmaAllocation, DmaService, DriverServices,
@@ -14,7 +14,9 @@ pub use services::{
 };
 
 #[cfg(feature = "reference-driver")]
-pub fn linked_reference_driver() -> Result<DriverModule, DriverLoadError> {
+pub fn linked_reference_driver(
+    api: &sisyphus_driver_abi::KernelApi,
+) -> Result<DriverModule, DriverLoadError> {
     unsafe extern "C" {
         fn sisyphus_driver_entry(
             api: *const sisyphus_driver_abi::KernelApi,
@@ -25,7 +27,7 @@ pub fn linked_reference_driver() -> Result<DriverModule, DriverLoadError> {
 
     // SAFETY: The symbol is compiled from the bundled driver against the
     // canonical header and remains linked for the lifetime of the kernel.
-    unsafe { DriverModule::load(sisyphus_driver_entry) }
+    unsafe { DriverModule::load_with_api(sisyphus_driver_entry, api) }
 }
 
 #[cfg(all(test, feature = "reference-driver"))]
@@ -35,10 +37,10 @@ mod tests {
     use core::ffi::c_void;
     use core::ptr::NonNull;
     use core::sync::atomic::{AtomicUsize, Ordering};
-    use sisyphus_driver_abi::{BUS_PLATFORM, DeviceInfo, DriverDescriptor, KernelApi, STATUS_OK};
     use sisyphus_driver_abi::gpu::{
         GpuCompatibilityManifest, GpuCompatibilityProof, GpuDeviceEvidence,
     };
+    use sisyphus_driver_abi::{DeviceInfo, DriverDescriptor, KernelApi, BUS_PLATFORM, STATUS_OK};
 
     use super::{
         AbyssAllocator, ClockService, DeviceService, DmaAllocation, DmaService, DriverHost,
@@ -249,7 +251,10 @@ mod tests {
     #[test]
     fn linked_c_driver_loads_probes_and_removes() {
         LOG_CALLS.store(0, Ordering::Relaxed);
-        let mut api = *super::kernel_api();
+        let services = DriverServices::new();
+        let host = DriverHost::new(&services);
+        let mut api = *host.api();
+        api.capabilities |= sisyphus_driver_abi::CAP_LOG;
         api.log = Some(count_log);
 
         unsafe extern "C" {
@@ -279,12 +284,12 @@ mod tests {
             address_len: address.len(),
         };
 
-        let instance = module
+        let mut instance = module
             .probe_with_api(&api, &device)
             .expect("probe should succeed");
         assert_eq!(LOG_CALLS.load(Ordering::Relaxed), 1);
         module
-            .remove_with_api(&api, &device, instance)
+            .remove_with_api(&api, &device, &mut instance)
             .expect("remove should succeed");
     }
 

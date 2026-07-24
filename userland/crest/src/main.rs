@@ -4,7 +4,6 @@
 use core::cell::UnsafeCell;
 use core::panic::PanicInfo;
 
-#[cfg(not(target_os = "none"))]
 #[global_allocator]
 static ALLOC: slope::memory::GlobalSlabHeap = slope::memory::GlobalSlabHeap::new();
 
@@ -100,8 +99,7 @@ fn run_first_light() -> Result<FirstLightReport, FirstLightError> {
         .map_err(|_| FirstLightError::Scene)?;
 
     let mut pipeline = CompositorPipeline::new(mode);
-    let mut tile_field =
-        QuantumTileField::new(mode).map_err(|_| FirstLightError::DamageOracle)?;
+    let mut tile_field = QuantumTileField::new(mode).map_err(|_| FirstLightError::DamageOracle)?;
     tile_field.mark_rectangle(
         Rectangle {
             x: 0,
@@ -118,8 +116,7 @@ fn run_first_light() -> Result<FirstLightReport, FirstLightError> {
         .map_err(|_| FirstLightError::DamageOracle)?;
 
     let mut oracle =
-        QuantumFrameOracle::new(0x4652_414d_455f_4f52)
-            .map_err(|_| FirstLightError::FrameOracle)?;
+        QuantumFrameOracle::new(0x4652_414d_455f_4f52).map_err(|_| FirstLightError::FrameOracle)?;
     let mut snapshot = QuantumSystemSnapshot::empty();
     snapshot.sequence = 1;
     snapshot.epoch = 1;
@@ -166,9 +163,7 @@ fn run_first_light() -> Result<FirstLightReport, FirstLightError> {
         })
         .map_err(|_| FirstLightError::FrameOracle)?;
     let expected_tiles = WIDTH.div_ceil(TILE_SIZE) * HEIGHT.div_ceil(TILE_SIZE);
-    if first_plan.tile_budget != expected_tiles as usize
-        || first_tiles != expected_tiles
-    {
+    if first_plan.tile_budget != expected_tiles as usize || first_tiles != expected_tiles {
         return Err(FirstLightError::EmptyFrame);
     }
 
@@ -189,11 +184,7 @@ fn run_first_light() -> Result<FirstLightReport, FirstLightError> {
         partial.x as u32 + partial.width,
         partial.y as u32 + partial.height,
     );
-    tile_field.complete_prefix(
-        &first_schedule,
-        first_plan.tile_budget,
-        first_end,
-    );
+    tile_field.complete_prefix(&first_schedule, first_plan.tile_budget, first_end);
     tile_field.mark_rectangle(partial, first_end, 2, false);
     let second_schedule = tile_field
         .compile_schedule(tile_field.total_tiles(), 0, 0x5449_4c45_5f52_4f4f)
@@ -223,11 +214,7 @@ fn run_first_light() -> Result<FirstLightReport, FirstLightError> {
             present_tick: second_end,
         })
         .map_err(|_| FirstLightError::FrameOracle)?;
-    tile_field.complete_prefix(
-        &second_schedule,
-        second_plan.tile_budget,
-        second_end,
-    );
+    tile_field.complete_prefix(&second_schedule, second_plan.tile_budget, second_end);
     if second_tiles == 0 || second_tiles >= first_tiles {
         return Err(FirstLightError::DamagePath);
     }

@@ -7,30 +7,34 @@ use abyss::memory::MemoryRegionKind;
 use abyss::paging::PhysicalAddress;
 use abyss::reservation::{Reservation, ReservationKind, ReservationTable};
 use boulder::arch::x86_64::{active_page_table_root, enable_execute_disable, halt, privilege};
-use boulder::boot::acpi::discover_madt;
+use boulder::boot::acpi::{discover_dmar, discover_madt};
 use boulder::boot::multiboot2::BootInformation;
 use boulder::capability::{
     ArtifactSynthesisControl, Authority, DeviceMemoryControl, FabricControl, FaultPolicyControl,
-    LearningControl, MachineProfileControl, MemorySharingControl, PhysicalMemoryControl, PolicyControl,
-    ProcessInstallControl, ResonanceControl, UserlandImageControl,
+    LearningControl, MachineProfileControl, MemorySharingControl, PhysicalMemoryControl,
+    PolicyControl, ProcessInstallControl, ResonanceControl, UserlandImageControl,
 };
 use boulder::cpu::topology::{self, ExecutionClass, TopologyPolicy};
 use boulder::fabric::{
-    Completion, KERNEL_FABRIC, NodeCapabilities, NodeClass, WorkDescriptor, opcode,
+    opcode, Completion, NodeCapabilities, NodeClass, WorkDescriptor, KERNEL_FABRIC,
 };
 use boulder::hw::pci;
 use boulder::ignition::{BootProtocol, IgnitionSequence};
 use boulder::interrupts;
+use boulder::memory::frame_pool::PhysicalFramePool;
 use boulder::mmio::{
-    EARLY_MAPPED_PHYSICAL_LIMIT, HIGHER_HALF_DIRECT_MAP_BASE, KERNEL_VIRTUAL_BASE,
-    direct_map_address, kernel_mmio,
+    direct_map_address, kernel_mmio, EARLY_MAPPED_PHYSICAL_LIMIT, HIGHER_HALF_DIRECT_MAP_BASE,
+    KERNEL_VIRTUAL_BASE,
 };
 use boulder::process::install::UserAddressSpaceBackend;
 use boulder::process::x86_64::{
     DirectMapFrameMemory, FrameBackedAddressSpace, INITIAL_USER_STACK_PAGES,
 };
 use boulder::serial::SerialPort;
-use boulder::shim::{AbyssAllocator, DriverHost, DriverServices, IrqService, MmioService};
+use boulder::shim::{
+    AbyssAllocator, DriverHost, DriverServices, IrqService, LogService, MmioService,
+};
+use boulder::sync::SpinLock;
 use core::alloc::{GlobalAlloc, Layout};
 use core::ffi::c_void;
 use core::fmt::Write;
@@ -61,6 +65,28 @@ const PUSH_ENTRY_FILE_OFFSET: usize = 0;
 #[global_allocator]
 static KERNEL_HEAP: BumpAllocator = BumpAllocator::empty();
 static IRQ_TEST_HITS: AtomicUsize = AtomicUsize::new(0);
+
+struct BootDriverLogger<'a> {
+    serial: SpinLock<&'a mut SerialPort>,
+}
+
+impl<'a> BootDriverLogger<'a> {
+    fn new(serial: &'a mut SerialPort) -> Self {
+        Self {
+            serial: SpinLock::new(serial),
+        }
+    }
+}
+
+impl LogService for BootDriverLogger<'_> {
+    fn log(&self, level: u32, message: &[u8]) -> sisyphus_driver_abi::Status {
+        let mut serial = self.serial.lock();
+        let _ = write!(serial, "Boulder: C driver log level {level}: ");
+        serial.write_bytes(message);
+        serial.write_bytes(b"\n");
+        sisyphus_driver_abi::STATUS_OK
+    }
+}
 
 const fn parse_sha256(encoded: &str) -> [u8; 32] {
     assert!(encoded.len() == 64, "invalid embedded Push digest");
@@ -420,10 +446,7 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
                     PhysicalAddress::new(end),
                     ReservationKind::DeviceMemory,
                 )) {
-                    let _ = writeln!(
-                        serial,
-                        "Abyss: framebuffer reservation failed: {error:?}"
-                    );
+                    let _ = writeln!(serial, "Abyss: framebuffer reservation failed: {error:?}");
                     halt();
                 }
             }
@@ -457,6 +480,7 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
         "Abyss: reclaimed test frame at {:#x}",
         test_frame.as_u64()
     );
+    let frame_pool = PhysicalFramePool::new(frames);
 
     let Some(direct_kernel) = direct_map_address(kernel_physical_start as u64) else {
         let _ = writeln!(serial, "Abyss: kernel is outside the direct map");
@@ -472,7 +496,8 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
         halt();
     }
     let _ = writeln!(serial, "Abyss: higher-half direct map verified");
-    if let Err(error) = ignition.memory_ready(frames.managed_frames(), frames.free_frames()) {
+    if let Err(error) = ignition.memory_ready(frame_pool.managed_frames(), frame_pool.free_frames())
+    {
         let _ = writeln!(serial, "Boulder: ignition memory phase failed: {error:?}");
         halt();
     }
@@ -501,6 +526,27 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
         madt.io_apics().len(),
         madt.interrupt_source_overrides().len()
     );
+    // SAFETY: Uses the same bounded, stable ACPI mapping as MADT discovery.
+    // A malformed optional table disables remapping evidence instead of
+    // manufacturing isolation or preventing a firmware-only boot.
+    let dmar = match unsafe { discover_dmar(rsdp, map_acpi_region) } {
+        Ok(dmar) => dmar,
+        Err(error) => {
+            let _ = writeln!(
+                serial,
+                "Boulder: ACPI DMAR rejected; native DMA remains disabled: {error:?}"
+            );
+            None
+        }
+    };
+    if let Some(dmar) = dmar.as_ref() {
+        let _ = writeln!(
+            serial,
+            "Boulder: DMAR host-width={} units={}, presence-only",
+            dmar.host_address_width,
+            dmar.remapping_units().len(),
+        );
+    }
 
     let mmio = kernel_mmio();
     let mapping = match mmio.map(0xb8000, 2, 0) {
@@ -598,6 +644,60 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
     // SAFETY: This is the single trusted bootstrap path. Subsystems receive
     // scoped rights from this root instead of constructing authority directly.
     let authority = unsafe { Authority::assume_root() };
+    if let Some(dmar) = dmar.as_ref() {
+        let device_memory = authority.grant::<DeviceMemoryControl>();
+        for unit in dmar.remapping_units().iter().copied() {
+            let registers = match boulder::hw::vtd::VtdMmioRegisters::map(unit, &device_memory) {
+                Ok(registers) => registers,
+                Err(error) => {
+                    let _ = writeln!(
+                        serial,
+                        "Boulder: VT-d unit {:#x} MMIO rejected: {error:?}",
+                        unit.register_base
+                    );
+                    continue;
+                }
+            };
+            let engine = match registers.into_engine() {
+                Ok(engine) => engine,
+                Err(failure) => {
+                    let fault = failure.fault();
+                    let registers = failure.into_registers();
+                    let close = registers.close(&device_memory);
+                    let _ = writeln!(
+                        serial,
+                        "Boulder: VT-d unit {:#x} probe rejected: {fault:?}, close={close:?}",
+                        unit.register_base
+                    );
+                    continue;
+                }
+            };
+            let version = engine.version();
+            let capabilities = engine.capabilities();
+            let state = engine.state();
+            let registers = match engine.into_registers() {
+                Ok(registers) => registers,
+                Err(_) => {
+                    let _ = writeln!(
+                        serial,
+                        "Boulder: VT-d unit {:#x} retained unexpected live authority",
+                        unit.register_base
+                    );
+                    continue;
+                }
+            };
+            let close = registers.close(&device_memory);
+            let _ = writeln!(
+                serial,
+                "Boulder: VT-d unit {:#x} v{}.{} state={state:?} sagaw={:#x} mgaw={} close={close:?}",
+                unit.register_base,
+                version.major,
+                version.minor,
+                capabilities.supported_adjusted_guest_widths,
+                capabilities.maximum_guest_address_width,
+            );
+        }
+    }
     let fabric_control = authority.grant::<FabricControl>();
     let cpu_node = match KERNEL_FABRIC.register_node(
         NodeClass::Cpu,
@@ -694,7 +794,7 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
     // bootstrap maps at this stable writable higher-half direct-map base.
     let frame_memory = unsafe {
         DirectMapFrameMemory::new(
-            &mut frames,
+            &frame_pool,
             HIGHER_HALF_DIRECT_MAP_BASE,
             EARLY_MAPPED_PHYSICAL_LIMIT,
             &physical_memory,
@@ -754,21 +854,17 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
         halt();
     }
 
-    let cerebral_lease =
-        match boulder::nexus_runtime::initialize(&resonance_control) {
-            Ok(token) => token,
-            Err(error) => {
-                let _ = writeln!(
-                    serial,
-                    "Boulder: Nexus runtime initialization failed: {error:?}"
-                );
-                halt();
-            }
-        };
-    if let Err(error) = boulder::nexus_plane::initialize(
-        &learning_control,
-        cerebral_lease,
-    ) {
+    let cerebral_lease = match boulder::nexus_runtime::initialize(&resonance_control) {
+        Ok(token) => token,
+        Err(error) => {
+            let _ = writeln!(
+                serial,
+                "Boulder: Nexus runtime initialization failed: {error:?}"
+            );
+            halt();
+        }
+    };
+    if let Err(error) = boulder::nexus_plane::initialize(&learning_control, cerebral_lease) {
         let _ = writeln!(
             serial,
             "Boulder: Nexus plane initialization failed: {error:?}"
@@ -868,8 +964,7 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
 
     // Drivernet: derive a per-boot, measurement-bound control domain before
     // collapsing the GPU strategy set. No driver key is a repeated literal.
-    let gpu_boot_counter =
-        <boulder::arch::Active as boulder::arch::Architecture>::counter_sample();
+    let gpu_boot_counter = <boulder::arch::Active as boulder::arch::Architecture>::counter_sample();
     let gpu_domains = match boulder::drivernet_host::derive_gpu_boot_domains(
         PUSH_EXPECTED_SHA256,
         gpu_boot_counter,
@@ -885,17 +980,14 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
             halt();
         }
     };
-    let mut blacklab_complex = match
-        boulder::blacklab_bootstrap::KernelBlackLabComplex::new(
-            gpu_domains.blacklab,
-        )
-    {
-        Ok(complex) => complex,
-        Err(error) => {
-            let _ = writeln!(serial, "Boulder: Blacklab bootstrap failed: {error:?}");
-            halt();
-        }
-    };
+    let mut blacklab_complex =
+        match boulder::blacklab_bootstrap::KernelBlackLabComplex::new(gpu_domains.blacklab) {
+            Ok(complex) => complex,
+            Err(error) => {
+                let _ = writeln!(serial, "Boulder: Blacklab bootstrap failed: {error:?}");
+                halt();
+            }
+        };
     let blacklab_policy = authority.grant::<boulder::capability::PolicyControl>();
     if let Err(error) = blacklab_complex.install_default_rules(&blacklab_policy) {
         let _ = writeln!(serial, "Boulder: Blacklab rule install failed: {error:?}");
@@ -903,6 +995,7 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
     }
     let drivernet = match boulder::drivernet_host::resolve_drivernet(
         &pci_inventory,
+        dmar.as_ref(),
         boot_framebuffer,
         gpu_domains.drivernet,
         &authority,
@@ -917,8 +1010,7 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
     let _ = writeln!(
         serial,
         "Boulder: drivernet resolved {} GPU slot(s), {} display function(s)",
-        drivernet.length,
-        drivernet.fingerprint_summary.display_functions
+        drivernet.length, drivernet.fingerprint_summary.display_functions
     );
 
     if let Some(primary) = drivernet.primary().filter(|resolution| {
@@ -1047,16 +1139,63 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
     }
     let _ = writeln!(serial, "Boulder: IRQ 5 gate and stale handle verified");
 
-    let driver_services = DriverServices::new()
-        .with_allocator(&driver_allocator)
-        .with_mmio(mmio)
-        .with_irq(irq);
-    let driver_host = DriverHost::new(&driver_services);
+    let driver_capabilities;
+    #[cfg(feature = "reference-driver")]
+    let reference_driver_result;
+    {
+        let driver_logger = BootDriverLogger::new(&mut serial);
+        let driver_services = DriverServices::new()
+            .with_logger(&driver_logger)
+            .with_allocator(&driver_allocator)
+            .with_mmio(mmio)
+            .with_irq(irq);
+        let driver_host = DriverHost::new(&driver_services);
+        driver_capabilities = driver_host.api().capabilities;
+
+        #[cfg(feature = "reference-driver")]
+        {
+            reference_driver_result = (|| {
+                let module = boulder::shim::linked_reference_driver(driver_host.api())?;
+                let address = b"platform:reference0";
+                let device = sisyphus_driver_abi::DeviceInfo {
+                    struct_size: core::mem::size_of::<sisyphus_driver_abi::DeviceInfo>() as u32,
+                    bus_type: sisyphus_driver_abi::BUS_PLATFORM,
+                    kernel_handle: 1,
+                    vendor_id: 0,
+                    device_id: 0,
+                    subsystem_vendor_id: 0,
+                    subsystem_device_id: 0,
+                    class_code: 0,
+                    revision: 0,
+                    address: address.as_ptr(),
+                    address_len: address.len(),
+                };
+                let mut instance = module.probe_with_api(driver_host.api(), &device)?;
+                if module
+                    .remove_with_api(driver_host.api(), &device, &mut instance)
+                    .is_err()
+                {
+                    module.remove_with_api(driver_host.api(), &device, &mut instance)?;
+                }
+                Ok::<(), boulder::shim::DriverLoadError>(())
+            })();
+        }
+    }
     let _ = writeln!(
         serial,
-        "Boulder: driver memory capabilities {:#x}",
-        driver_host.api().capabilities
+        "Boulder: driver host capabilities {:#x}",
+        driver_capabilities
     );
+    #[cfg(feature = "reference-driver")]
+    match reference_driver_result {
+        Ok(()) => {
+            let _ = writeln!(serial, "Boulder: linked C driver lifecycle verified");
+        }
+        Err(error) => {
+            let _ = writeln!(serial, "Boulder: linked C driver failed: {error:?}");
+            halt();
+        }
+    }
     if let Err(error) = ignition.interrupts_ready() {
         let _ = writeln!(
             serial,

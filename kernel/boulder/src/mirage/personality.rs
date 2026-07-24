@@ -3,6 +3,19 @@ use crate::module::relocator::ExternalSymbolResolver;
 use crate::shim::linux_kpi;
 
 const MAXIMUM_SYMBOLS: usize = 64;
+// This is the entire version-labelled Linux contract: nine x86-64 bindings,
+// with printk restricted to the literal-only behavior documented by linux_kpi.
+const LINUX_6_1_KPI_SYMBOLS: [&[u8]; 9] = [
+    b"kmalloc",
+    b"__kmalloc",
+    b"kfree",
+    b"printk",
+    b"krealloc",
+    b"ksize",
+    b"kmemdup",
+    b"kmemdup_nul",
+    b"kfree_sensitive",
+];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OsPersonality {
@@ -135,7 +148,13 @@ impl MirageEnclave {
         &self.symbols[..self.symbol_count]
     }
 
-    fn materialize_linux(&mut self, _version: LinuxVersion) -> Result<(), PersonalityError> {
+    fn materialize_linux(&mut self, version: LinuxVersion) -> Result<(), PersonalityError> {
+        if version != LinuxVersion::V6_1 {
+            return Err(PersonalityError::UnsupportedVersion);
+        }
+        if !linux_kpi::is_ready() {
+            return Err(PersonalityError::RuntimeUnavailable);
+        }
         let allocate = linux_kpi::kmalloc as *const () as usize as u64;
         let deallocate = linux_kpi::kfree as *const () as usize as u64;
         let log = linux_kpi::printk as *const () as usize as u64;
@@ -145,10 +164,30 @@ impl MirageEnclave {
             log: Some(log),
             device_control: None,
         };
-        self.insert_symbol(b"kmalloc", allocate)?;
-        self.insert_symbol(b"__kmalloc", allocate)?;
-        self.insert_symbol(b"kfree", deallocate)?;
-        self.insert_symbol(b"printk", log)?;
+        self.insert_symbol(LINUX_6_1_KPI_SYMBOLS[0], allocate)?;
+        self.insert_symbol(LINUX_6_1_KPI_SYMBOLS[1], allocate)?;
+        self.insert_symbol(LINUX_6_1_KPI_SYMBOLS[2], deallocate)?;
+        self.insert_symbol(LINUX_6_1_KPI_SYMBOLS[3], log)?;
+        self.insert_symbol(
+            LINUX_6_1_KPI_SYMBOLS[4],
+            linux_kpi::krealloc as *const () as usize as u64,
+        )?;
+        self.insert_symbol(
+            LINUX_6_1_KPI_SYMBOLS[5],
+            linux_kpi::ksize as *const () as usize as u64,
+        )?;
+        self.insert_symbol(
+            LINUX_6_1_KPI_SYMBOLS[6],
+            linux_kpi::kmemdup as *const () as usize as u64,
+        )?;
+        self.insert_symbol(
+            LINUX_6_1_KPI_SYMBOLS[7],
+            linux_kpi::kmemdup_nul as *const () as usize as u64,
+        )?;
+        self.insert_symbol(
+            LINUX_6_1_KPI_SYMBOLS[8],
+            linux_kpi::kfree_sensitive as *const () as usize as u64,
+        )?;
         Ok(())
     }
 
@@ -197,6 +236,8 @@ impl ExternalSymbolResolver for MirageEnclave {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PersonalityError {
     UnavailablePersonality,
+    UnsupportedVersion,
+    RuntimeUnavailable,
     InvalidSymbol,
     DuplicateSymbol,
     SymbolCapacityExceeded,
@@ -206,8 +247,28 @@ pub enum PersonalityError {
 mod tests {
     use super::*;
 
+    struct InstalledApi;
+
+    impl Drop for InstalledApi {
+        fn drop(&mut self) {
+            let _ = unsafe { linux_kpi::uninstall() };
+        }
+    }
+
     #[test]
-    fn materializes_the_versioned_linux_symbol_subset() {
+    fn linux_6_1_materialization_requires_the_exact_live_subset() {
+        let _lock = linux_kpi::TEST_INSTALL_LOCK.lock();
+        let _ = unsafe { linux_kpi::uninstall() };
+        assert!(matches!(
+            MirageEnclave::materialize(OsPersonality::Linux(LinuxVersion::V6_1)),
+            Err(PersonalityError::RuntimeUnavailable)
+        ));
+
+        assert_eq!(
+            unsafe { linux_kpi::install(&linux_kpi::TEST_KERNEL_API) },
+            Ok(())
+        );
+        let _installed = InstalledApi;
         let enclave = MirageEnclave::materialize(OsPersonality::Linux(LinuxVersion::V6_1)).unwrap();
 
         assert_eq!(enclave.object_format(), ObjectFormat::ElfRelocatable);
@@ -218,7 +279,34 @@ mod tests {
         );
         assert_eq!(enclave.resolve(b"kmalloc"), enclave.resolve(b"__kmalloc"));
         assert!(enclave.resolve(b"schedule_work").is_none());
-        assert_eq!(enclave.symbols().len(), 4);
+        assert_eq!(enclave.symbols().len(), LINUX_6_1_KPI_SYMBOLS.len());
+        for (binding, expected_name) in enclave.symbols().iter().zip(LINUX_6_1_KPI_SYMBOLS) {
+            assert_eq!(binding.name, expected_name);
+        }
+
+        let _ = unsafe { linux_kpi::uninstall() };
+        assert!(matches!(
+            MirageEnclave::materialize(OsPersonality::Linux(LinuxVersion::V6_1)),
+            Err(PersonalityError::RuntimeUnavailable)
+        ));
+    }
+
+    #[test]
+    fn rejects_linux_versions_without_an_explicit_subset_contract() {
+        let _lock = linux_kpi::TEST_INSTALL_LOCK.lock();
+        let _ = unsafe { linux_kpi::uninstall() };
+        assert_eq!(
+            unsafe { linux_kpi::install(&linux_kpi::TEST_KERNEL_API) },
+            Ok(())
+        );
+        let _installed = InstalledApi;
+
+        for version in [LinuxVersion::V5_15, LinuxVersion::V6_6] {
+            assert!(matches!(
+                MirageEnclave::materialize(OsPersonality::Linux(version)),
+                Err(PersonalityError::UnsupportedVersion)
+            ));
+        }
     }
 
     #[test]

@@ -2,12 +2,12 @@ use core::alloc::Layout;
 use core::ffi::c_void;
 use core::ptr::NonNull;
 use sisyphus_driver_abi::{
-    ABI_VERSION, CAP_ALLOC, CAP_CLOCK, CAP_DEVICE_PUBLISH, CAP_DMA, CAP_IRQ, CAP_LOG, CAP_MMIO,
-    CAP_SLEEP, DeviceInfo, Handle, IrqHandler, KernelApi, STATUS_INVALID_ARGUMENT, STATUS_OK,
-    STATUS_UNSUPPORTED, Status,
+    DeviceInfo, Handle, IrqHandler, KernelApi, Status, ABI_VERSION, CAP_ALLOC, CAP_CLOCK,
+    CAP_DEVICE_PUBLISH, CAP_DMA, CAP_IRQ, CAP_LOG, CAP_MMIO, CAP_SLEEP, STATUS_INVALID_ARGUMENT,
+    STATUS_OK, STATUS_UNSUPPORTED,
 };
 
-use super::services::{DriverServices, LogService};
+use super::services::DriverServices;
 
 pub struct DriverHost<'a> {
     api: KernelApi,
@@ -334,21 +334,4 @@ unsafe extern "C" fn device_remove(context: *mut c_void, device: Handle) -> Stat
     services(context)
         .and_then(|value| value.devices)
         .map_or(STATUS_UNSUPPORTED, |devices| devices.remove(device))
-}
-
-struct SilentLogger;
-
-impl LogService for SilentLogger {
-    fn log(&self, _level: u32, _message: &[u8]) -> Status {
-        STATUS_OK
-    }
-}
-
-static DEFAULT_LOGGER: SilentLogger = SilentLogger;
-static DEFAULT_SERVICES: DriverServices<'static> =
-    DriverServices::new().with_logger(&DEFAULT_LOGGER);
-static DEFAULT_HOST: DriverHost<'static> = DriverHost::new(&DEFAULT_SERVICES);
-
-pub fn kernel_api() -> &'static KernelApi {
-    DEFAULT_HOST.api()
 }

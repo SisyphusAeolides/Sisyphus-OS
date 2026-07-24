@@ -1,4 +1,5 @@
 pub mod cellular_spawn;
+pub mod context;
 pub mod image;
 pub mod install;
 pub mod lifecycle;

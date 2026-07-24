@@ -6,8 +6,10 @@ const ELF_VERSION_CURRENT: u8 = 1;
 const ELF_TYPE_RELOCATABLE: u16 = 1;
 const MACHINE_X86_64: u16 = 62;
 const SECTION_TYPE_NULL: u32 = 0;
+const SECTION_TYPE_STRING_TABLE: u32 = 3;
 const SECTION_TYPE_NOBITS: u32 = 8;
 const UNDEFINED_SECTION: u16 = 0;
+const MAXIMUM_SECTIONS: usize = 96;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ElfError {
@@ -79,7 +81,10 @@ impl<'a> ElfModule<'a> {
         let section_header_size = read_u16(bytes, 58).ok_or(ElfError::Truncated)? as usize;
         let section_count = read_u16(bytes, 60).ok_or(ElfError::Truncated)? as usize;
         let section_name_table = read_u16(bytes, 62).ok_or(ElfError::Truncated)? as usize;
-        if section_header_size != SECTION_HEADER_LENGTH || section_count == 0 {
+        if section_header_size != SECTION_HEADER_LENGTH
+            || section_count == 0
+            || section_count > MAXIMUM_SECTIONS
+        {
             return Err(ElfError::InvalidSectionTable);
         }
         let table_length = section_count
@@ -117,9 +122,16 @@ impl<'a> ElfModule<'a> {
             let names = module
                 .section(section_name_table)
                 .ok_or(ElfError::InvalidStringTable)?;
-            module
+            let names_data = module
                 .section_data(names)
                 .map_err(|_| ElfError::InvalidStringTable)?;
+            if names.section_type != SECTION_TYPE_STRING_TABLE || names_data.first() != Some(&0) {
+                return Err(ElfError::InvalidStringTable);
+            }
+            for index in 0..section_count {
+                let section = module.section(index).ok_or(ElfError::InvalidSection)?;
+                module.section_name(section)?;
+            }
         }
         Ok(module)
     }

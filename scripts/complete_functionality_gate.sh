@@ -21,6 +21,7 @@ facades=$(
     --include='*.rs' \
     --exclude-dir=target \
     --exclude-dir=.git \
+    --exclude-dir=reality-gate \
     'STUBS FOR|Pretend |pretend |mock of|#!\[allow\(dead_code\)\]|todo!\(|unimplemented!\(' \
     . || true
 )

@@ -1,4 +1,5 @@
 pub mod fractal;
+pub mod frame_pool;
 pub mod holographic;
 pub mod laminar;
 pub mod lorenz_vmm;

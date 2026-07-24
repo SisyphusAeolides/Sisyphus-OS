@@ -3,7 +3,8 @@ pub mod spectral_router;
 #[cfg(target_os = "none")]
 use crate::arch::x86_64::active_page_table_root;
 #[cfg(target_os = "none")]
-use crate::mmio::{EARLY_MAPPED_PHYSICAL_LIMIT, direct_map_address};
+use crate::mmio::{direct_map_address, EARLY_MAPPED_PHYSICAL_LIMIT};
+use crate::process::context::{ContextError, DispatchContext, SavedUserContext};
 #[cfg(target_os = "none")]
 use crate::serial::SerialPort;
 
@@ -40,17 +41,21 @@ static LAST_YIELD_HINT: AtomicU64 = AtomicU64::new(0);
 static WRITE_HITS: AtomicUsize = AtomicUsize::new(0);
 static EXIT_REQUESTS: AtomicUsize = AtomicUsize::new(0);
 
-/// Register image built by the x86-64 syscall entry stub.
-#[repr(C)]
-pub struct SyscallFrame {
-    pub number_or_result: u64,
-    pub arguments: [u64; 6],
-    pub user_instruction_pointer: u64,
-    pub user_flags: u64,
-    pub user_stack_pointer: u64,
-}
+/// The syscall entry frame is the same complete register image retained by
+/// the process lifecycle scheduler.
+pub type SyscallFrame = SavedUserContext;
 
-const _: () = assert!(core::mem::size_of::<SyscallFrame>() == 80);
+/// Replaces a syscall return frame with a lifecycle-selected process. The
+/// caller must activate the returned CR3 and kernel stack before returning to
+/// user mode.
+pub fn install_scheduled_return(
+    frame: &mut SyscallFrame,
+    context: DispatchContext,
+) -> Result<DispatchContext, ContextError> {
+    context.validate()?;
+    *frame = context.user;
+    Ok(context)
+}
 
 pub fn dispatch(number: usize, arguments: [usize; 6]) -> isize {
     match number {
@@ -60,15 +65,10 @@ pub fn dispatch(number: usize, arguments: [usize; 6]) -> isize {
         // Host dispatch cannot own a real process address space or switch
         // privilege levels. Process lifecycle syscalls remain unavailable in
         // this host-only scalar entry point.
-        grimoire::SYS_EXIT | grimoire::SYS_SPAWN | grimoire::SYS_WAIT => {
-            ERROR_NOT_IMPLEMENTED
+        grimoire::SYS_EXIT | grimoire::SYS_SPAWN | grimoire::SYS_WAIT => ERROR_NOT_IMPLEMENTED,
+        grimoire::SYS_NEXUS_ENTANGLE | grimoire::SYS_NEXUS_STATS | grimoire::SYS_NEXUS_POLICY => {
+            dispatch_scalar_nexus(number, arguments.map(|value| value as u64))
         }
-        grimoire::SYS_NEXUS_ENTANGLE
-        | grimoire::SYS_NEXUS_STATS
-        | grimoire::SYS_NEXUS_POLICY => dispatch_scalar_nexus(
-            number,
-            arguments.map(|value| value as u64),
-        ),
         _ => ERROR_NOT_IMPLEMENTED,
     }
 }
@@ -89,64 +89,37 @@ pub fn exit_requests() -> usize {
     EXIT_REQUESTS.load(Ordering::Acquire)
 }
 
-fn dispatch_scalar_nexus(
-    number: usize,
-    arguments: [u64; 6],
-) -> isize {
-    use aether::nexus_wire::{
-        NexusCommand, NexusOpcode, NexusStatus,
-    };
+fn dispatch_scalar_nexus(number: usize, arguments: [u64; 6]) -> isize {
+    use aether::nexus_wire::{NexusCommand, NexusOpcode, NexusStatus};
 
-    let (opcode, command_arguments, capability, sequence) =
-        match number {
-            grimoire::SYS_NEXUS_ENTANGLE => (
-                NexusOpcode::Entangle,
-                [
-                    arguments[0],
-                    arguments[1],
-                    arguments[2],
-                    arguments[3],
-                ],
-                arguments[4],
-                arguments[5],
-            ),
-            grimoire::SYS_NEXUS_STATS => (
-                NexusOpcode::QueryStats,
-                [0; 4],
-                arguments[0],
-                arguments[1],
-            ),
-            grimoire::SYS_NEXUS_POLICY => {
-                let opcode = match arguments[0] {
-                    0 => NexusOpcode::SetCollapseThreshold,
-                    1 => NexusOpcode::SetPriorityMass,
-                    2 => NexusOpcode::OfferKairos,
-                    _ => return ERROR_INVALID_ARGUMENT,
-                };
-                (
-                    opcode,
-                    [arguments[1], 0, 0, 0],
-                    arguments[2],
-                    arguments[3],
-                )
-            }
-            _ => return ERROR_NOT_IMPLEMENTED,
-        };
+    let (opcode, command_arguments, capability, sequence) = match number {
+        grimoire::SYS_NEXUS_ENTANGLE => (
+            NexusOpcode::Entangle,
+            [arguments[0], arguments[1], arguments[2], arguments[3]],
+            arguments[4],
+            arguments[5],
+        ),
+        grimoire::SYS_NEXUS_STATS => (NexusOpcode::QueryStats, [0; 4], arguments[0], arguments[1]),
+        grimoire::SYS_NEXUS_POLICY => {
+            let opcode = match arguments[0] {
+                0 => NexusOpcode::SetCollapseThreshold,
+                1 => NexusOpcode::SetPriorityMass,
+                2 => NexusOpcode::OfferKairos,
+                _ => return ERROR_INVALID_ARGUMENT,
+            };
+            (opcode, [arguments[1], 0, 0, 0], arguments[2], arguments[3])
+        }
+        _ => return ERROR_NOT_IMPLEMENTED,
+    };
 
     if capability == 0 || sequence == 0 {
         return ERROR_INVALID_ARGUMENT;
     }
 
-    let command = NexusCommand::new(
-        opcode,
-        sequence,
-        capability,
-        command_arguments,
-    );
+    let command = NexusCommand::new(opcode, sequence, capability, command_arguments);
     let reply = crate::nexus_runtime::control(
         &command,
-        <crate::arch::Active as crate::arch::Architecture>::
-            counter_sample(),
+        <crate::arch::Active as crate::arch::Architecture>::counter_sample(),
     );
 
     let status = match reply.validate(sequence) {
@@ -155,9 +128,7 @@ fn dispatch_scalar_nexus(
     };
 
     match status {
-        NexusStatus::Ok => {
-            isize::try_from(reply.values[0]).unwrap_or(isize::MAX)
-        }
+        NexusStatus::Ok => isize::try_from(reply.values[0]).unwrap_or(isize::MAX),
         NexusStatus::BadFrame => -74,
         NexusStatus::Denied => -13,
         NexusStatus::Expired => -62,
@@ -175,44 +146,39 @@ extern "C" fn boulder_syscall_dispatch(frame: *mut SyscallFrame) {
     let Some(frame) = (unsafe { frame.as_mut() }) else {
         crate::arch::x86_64::halt();
     };
-    if !valid_user_control_address(frame.user_instruction_pointer)
-        || !valid_user_control_address(frame.user_stack_pointer)
-    {
+    if frame.validate().is_err() {
         crate::arch::x86_64::halt();
     }
 
-    let number = frame.number_or_result as usize;
+    let number = frame.rax as usize;
+    let arguments = frame.syscall_arguments();
     let result = match number {
-        grimoire::SYS_WRITE => write_from_user(frame.arguments),
+        grimoire::SYS_WRITE => write_from_user(arguments),
         grimoire::SYS_YIELD => {
-            LAST_YIELD_HINT.store(frame.arguments[0], Ordering::Release);
+            LAST_YIELD_HINT.store(arguments[0], Ordering::Release);
             YIELD_HITS.fetch_add(1, Ordering::AcqRel);
             0
         }
         grimoire::SYS_EXIT => {
             EXIT_REQUESTS.fetch_add(1, Ordering::AcqRel);
-            match crate::process::lifecycle::exit_current(
-                frame.arguments[0] as isize,
-            ) {
+            match crate::process::lifecycle::exit_current(arguments[0] as isize) {
                 Ok(()) => 0,
                 Err(_) => ERROR_INVALID_ARGUMENT,
             }
         }
         grimoire::SYS_SPAWN | grimoire::SYS_WAIT => ERROR_NOT_IMPLEMENTED,
-        grimoire::SYS_DISP_QUERY => kairos_query_to_user(frame.arguments),
-        grimoire::SYS_DISP_LEASE => kairos_abi_to_user(frame.arguments),
-        grimoire::SYS_NEXUS_TELEMETRY => nexus_telemetry_to_user(frame.arguments),
+        grimoire::SYS_DISP_QUERY => kairos_query_to_user(arguments),
+        grimoire::SYS_DISP_LEASE => kairos_abi_to_user(arguments),
+        grimoire::SYS_NEXUS_TELEMETRY => nexus_telemetry_to_user(arguments),
 
-        grimoire::SYS_NEXUS_CONTROL => nexus_control_from_user(frame.arguments),
+        grimoire::SYS_NEXUS_CONTROL => nexus_control_from_user(arguments),
 
-        grimoire::SYS_NEXUS_ENTANGLE
-        | grimoire::SYS_NEXUS_STATS
-        | grimoire::SYS_NEXUS_POLICY => {
-            dispatch_scalar_nexus(number, frame.arguments)
+        grimoire::SYS_NEXUS_ENTANGLE | grimoire::SYS_NEXUS_STATS | grimoire::SYS_NEXUS_POLICY => {
+            dispatch_scalar_nexus(number, arguments)
         }
         _ => ERROR_NOT_IMPLEMENTED,
     };
-    frame.number_or_result = result as u64;
+    frame.set_syscall_result(result);
 }
 
 #[cfg(any(target_os = "none", test))]
@@ -543,6 +509,26 @@ fn nexus_telemetry_to_user(arguments: [u64; 6]) -> isize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scheduled_context_overwrites_the_complete_syscall_return_frame() {
+        let mut frame = SavedUserContext::initial(0x2000, 0x8000);
+        frame.r15 = 1;
+        frame.rbx = 2;
+        frame.rax = grimoire::SYS_YIELD as u64;
+
+        let mut next_user = SavedUserContext::initial(0x3000, 0x9000);
+        next_user.r15 = 0x15;
+        next_user.rbx = 0xb;
+        let next = DispatchContext {
+            user: next_user,
+            address_space_root: 0x4000,
+            kernel_stack_pointer: 0xffff_8000_0000_8000,
+        };
+
+        assert_eq!(install_scheduled_return(&mut frame, next), Ok(next));
+        assert_eq!(frame, next_user);
+    }
 
     fn mapped_entry(physical: u64) -> u64 {
         physical | ENTRY_PRESENT | ENTRY_USER

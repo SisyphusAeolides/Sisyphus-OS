@@ -1,13 +1,14 @@
 use core::{mem::size_of, ptr};
 
-use abyss::frame::{BitmapFrameAllocator, FrameAllocatorError};
-use abyss::paging::{PAGE_SIZE, PhysicalAddress};
+use abyss::frame::FrameAllocatorError;
+use abyss::paging::{PhysicalAddress, PAGE_SIZE};
 
 #[cfg(target_os = "none")]
-use crate::arch::x86_64::{X86_64, active_page_table_root, load_page_table_root};
+use crate::arch::x86_64::{active_page_table_root, load_page_table_root, X86_64};
 #[cfg(target_os = "none")]
 use crate::capability::InterruptGuard;
 use crate::capability::{Capability, PhysicalMemoryControl, ProcessInstallControl};
+use crate::memory::frame_pool::PhysicalFramePool;
 use crate::process::install::{
     MappingPermissions, ProcessImageHandle, ProcessImageInfo, UserAddressSpaceBackend,
 };
@@ -23,6 +24,7 @@ const TABLE_ENTRIES: usize = 512;
 
 pub const MAXIMUM_PROCESS_PAGES: usize = 512;
 pub const MAXIMUM_OWNED_FRAMES: usize = 576;
+pub const MAXIMUM_RETAINED_PROCESSES: usize = 2;
 pub const INITIAL_USER_STACK_BASE: u64 = 0x0040_0000;
 pub const INITIAL_USER_STACK_PAGES: usize = if cfg!(test) { 112 } else { 192 };
 // Leave one mapped page below the ABI block so the entry trampoline and the
@@ -70,7 +72,7 @@ pub trait ProcessFrameMemory {
 
 /// Accesses allocator-owned RAM through Boulder's established direct map.
 pub struct DirectMapFrameMemory<'allocator, 'storage> {
-    allocator: &'allocator mut BitmapFrameAllocator<'storage>,
+    frames: &'allocator PhysicalFramePool<'storage>,
     direct_map_base: usize,
     mapped_physical_limit: u64,
 }
@@ -80,18 +82,18 @@ impl<'allocator, 'storage> DirectMapFrameMemory<'allocator, 'storage> {
     ///
     /// # Safety
     ///
-    /// Every frame returned by `allocator` below `mapped_physical_limit` must
+    /// Every frame returned by `frames` below `mapped_physical_limit` must
     /// be mapped writable at `direct_map_base + physical_address`. The mapping
     /// must remain stable and exclusively represent ordinary RAM for this
     /// adapter's lifetime.
     pub const unsafe fn new(
-        allocator: &'allocator mut BitmapFrameAllocator<'storage>,
+        frames: &'allocator PhysicalFramePool<'storage>,
         direct_map_base: usize,
         mapped_physical_limit: u64,
         _authority: &Capability<'_, PhysicalMemoryControl>,
     ) -> Self {
         Self {
-            allocator,
+            frames,
             direct_map_base,
             mapped_physical_limit,
         }
@@ -128,14 +130,14 @@ impl ProcessFrameMemory for DirectMapFrameMemory<'_, '_> {
 
     fn allocate_zeroed(&mut self) -> Result<PhysicalAddress, Self::Error> {
         let frame = self
-            .allocator
+            .frames
             .allocate()
             .ok_or(DirectMapMemoryError::OutOfFrames)?;
         let pointer = match self.pointer(frame, 0, PAGE_SIZE) {
             Ok(pointer) => pointer,
             Err(error) => {
-                self.allocator
-                    .deallocate(frame)
+                self.frames
+                    .release(frame)
                     .map_err(DirectMapMemoryError::Allocator)?;
                 return Err(error);
             }
@@ -147,8 +149,8 @@ impl ProcessFrameMemory for DirectMapFrameMemory<'_, '_> {
     }
 
     fn release(&mut self, frame: PhysicalAddress) -> Result<(), Self::Error> {
-        self.allocator
-            .deallocate(frame)
+        self.frames
+            .release(frame)
             .map_err(DirectMapMemoryError::Allocator)
     }
 
@@ -227,11 +229,13 @@ pub enum DirectMapMemoryError {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FrameBackedSpace {
+    slot: u16,
     generation: u32,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FrameBackedMapping {
+    space_slot: u16,
     slot: u8,
     generation: u32,
 }
@@ -278,18 +282,18 @@ impl PageRecord {
     };
 }
 
-/// Builds an x86_64 hardware-format user address space from owned frames.
-///
-/// The root inherits only PML4 entries 256..511 from the active kernel root.
-/// A committed root can be switched into CR3 for a bounded validation while
-/// the kernel remains entirely in its inherited higher-half mappings. Retained
-/// ownership and privilege entry remain responsibilities of the scheduler.
-pub struct FrameBackedAddressSpace<Memory: ProcessFrameMemory> {
-    memory: Memory,
-    kernel_root: PhysicalAddress,
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SpacePhase {
+    Free,
+    Staging,
+    Committed,
+}
+
+#[derive(Clone, Copy)]
+struct FrameBackedSlot {
+    phase: SpacePhase,
     root: Option<PhysicalAddress>,
     generation: u32,
-    active: bool,
     image_start: u64,
     image_end: u64,
     mappings: [MappingRecord; super::install::MAXIMUM_PROCESS_SEGMENTS],
@@ -298,9 +302,43 @@ pub struct FrameBackedAddressSpace<Memory: ProcessFrameMemory> {
     page_count: usize,
     owned_frames: [PhysicalAddress; MAXIMUM_OWNED_FRAMES],
     owned_frame_count: usize,
-    process_live: bool,
-    process_generation: u32,
     process_info: ProcessImageInfo,
+}
+
+impl FrameBackedSlot {
+    const EMPTY: Self = Self {
+        phase: SpacePhase::Free,
+        root: None,
+        generation: 0,
+        image_start: 0,
+        image_end: 0,
+        mappings: [MappingRecord::EMPTY; super::install::MAXIMUM_PROCESS_SEGMENTS],
+        mapping_count: 0,
+        pages: [PageRecord::EMPTY; MAXIMUM_PROCESS_PAGES],
+        page_count: 0,
+        owned_frames: [PhysicalAddress::new(0); MAXIMUM_OWNED_FRAMES],
+        owned_frame_count: 0,
+        process_info: ProcessImageInfo {
+            entry_point: 0,
+            segment_count: 0,
+            address_space_root: None,
+            owned_frames: 0,
+            initial_stack_pointer: None,
+        },
+    };
+}
+
+/// Builds a fixed-capacity pool of x86_64 hardware-format user address spaces.
+///
+/// The root inherits only PML4 entries 256..511 from the active kernel root.
+/// A committed root can be switched into CR3 for a bounded validation while
+/// the kernel remains entirely in its inherited higher-half mappings. Retained
+/// ownership and privilege entry remain responsibilities of the scheduler.
+pub struct FrameBackedAddressSpace<Memory: ProcessFrameMemory> {
+    memory: Memory,
+    kernel_root: PhysicalAddress,
+    active_slot: Option<u16>,
+    slots: [FrameBackedSlot; MAXIMUM_RETAINED_PROCESSES],
 }
 
 impl<Memory: ProcessFrameMemory> FrameBackedAddressSpace<Memory> {
@@ -312,26 +350,8 @@ impl<Memory: ProcessFrameMemory> FrameBackedAddressSpace<Memory> {
         Self {
             memory,
             kernel_root,
-            root: None,
-            generation: 0,
-            active: false,
-            image_start: 0,
-            image_end: 0,
-            mappings: [MappingRecord::EMPTY; super::install::MAXIMUM_PROCESS_SEGMENTS],
-            mapping_count: 0,
-            pages: [PageRecord::EMPTY; MAXIMUM_PROCESS_PAGES],
-            page_count: 0,
-            owned_frames: [PhysicalAddress::new(0); MAXIMUM_OWNED_FRAMES],
-            owned_frame_count: 0,
-            process_live: false,
-            process_generation: 0,
-            process_info: ProcessImageInfo {
-                entry_point: 0,
-                segment_count: 0,
-                address_space_root: None,
-                owned_frames: 0,
-                initial_stack_pointer: None,
-            },
+            active_slot: None,
+            slots: [FrameBackedSlot::EMPTY; MAXIMUM_RETAINED_PROCESSES],
         }
     }
 
@@ -344,7 +364,13 @@ impl<Memory: ProcessFrameMemory> FrameBackedAddressSpace<Memory> {
     }
 
     pub const fn owned_frame_count(&self) -> usize {
-        self.owned_frame_count
+        let mut total = 0;
+        let mut index = 0;
+        while index < self.slots.len() {
+            total += self.slots[index].owned_frame_count;
+            index += 1;
+        }
+        total
     }
 
     /// Adds a fixed 128 KiB zeroed, writable, non-executable stack to a
@@ -354,47 +380,53 @@ impl<Memory: ProcessFrameMemory> FrameBackedAddressSpace<Memory> {
         process: &ProcessImageHandle,
         _authority: &Capability<'_, ProcessInstallControl>,
     ) -> Result<u64, FrameBackedError<Memory::Error>> {
-        if self.active
-            || self.process_info(process).is_none()
-            || self.process_info.initial_stack_pointer.is_some()
-            || self.page_count + INITIAL_USER_STACK_PAGES > self.pages.len()
+        let slot_index = self.process_slot(process)?;
+        if self.active_slot.is_some()
+            || self.slots[slot_index]
+                .process_info
+                .initial_stack_pointer
+                .is_some()
+            || self.slots[slot_index].page_count + INITIAL_USER_STACK_PAGES
+                > self.slots[slot_index].pages.len()
         {
             return Err(FrameBackedError::InvalidState);
         }
 
-        let owned_before = self.owned_frame_count;
-        let pages_before = self.page_count;
+        let owned_before = self.slots[slot_index].owned_frame_count;
+        let pages_before = self.slots[slot_index].page_count;
         for page in 0..INITIAL_USER_STACK_PAGES {
             let virtual_address =
                 INITIAL_USER_STACK_MAPPING_BASE + (page as u64 * PAGE_SIZE as u64);
-            let (table, index) = match self.ensure_leaf_slot(virtual_address) {
+            let (table, index) = match self.ensure_leaf_slot(slot_index, virtual_address) {
                 Ok(slot) => slot,
                 Err(error) => {
-                    self.rollback_stack_install(owned_before, pages_before)?;
+                    self.rollback_stack_install(slot_index, owned_before, pages_before)?;
                     return Err(error);
                 }
             };
-            let frame = match self.allocate_owned() {
+            let frame = match self.allocate_owned(slot_index) {
                 Ok(frame) => frame,
                 Err(error) => {
-                    self.rollback_stack_install(owned_before, pages_before)?;
+                    self.rollback_stack_install(slot_index, owned_before, pages_before)?;
                     return Err(error);
                 }
             };
             let entry =
                 frame.as_u64() | ENTRY_PRESENT | ENTRY_WRITABLE | ENTRY_USER | ENTRY_NO_EXECUTE;
             if let Err(error) = self.memory.write_entry(table, index, entry) {
-                self.rollback_stack_install(owned_before, pages_before)?;
+                self.rollback_stack_install(slot_index, owned_before, pages_before)?;
                 return Err(FrameBackedError::Memory(error));
             }
-            self.pages[self.page_count] = PageRecord {
+            let page_index = self.slots[slot_index].page_count;
+            self.slots[slot_index].pages[page_index] = PageRecord {
                 frame,
                 virtual_address,
             };
-            self.page_count += 1;
+            self.slots[slot_index].page_count += 1;
         }
-        self.process_info.initial_stack_pointer = Some(INITIAL_USER_STACK_POINTER);
-        self.process_info.owned_frames = self.owned_frame_count;
+        self.slots[slot_index].process_info.initial_stack_pointer =
+            Some(INITIAL_USER_STACK_POINTER);
+        self.slots[slot_index].process_info.owned_frames = self.slots[slot_index].owned_frame_count;
         Ok(INITIAL_USER_STACK_POINTER)
     }
 
@@ -404,12 +436,13 @@ impl<Memory: ProcessFrameMemory> FrameBackedAddressSpace<Memory> {
         process: &ProcessImageHandle,
         _authority: &Capability<'_, ProcessInstallControl>,
     ) -> Result<u64, FrameBackedError<Memory::Error>> {
-        if self.active || self.process_info(process).is_none() {
+        let slot_index = self.process_slot(process)?;
+        if self.active_slot.is_some() {
             return Err(FrameBackedError::InvalidState);
         }
         let virtual_address = 0x0080_0000;
-        let (table, index) = self.ensure_leaf_slot(virtual_address)?;
-        let frame = self.allocate_owned()?;
+        let (table, index) = self.ensure_leaf_slot(slot_index, virtual_address)?;
+        let frame = self.allocate_owned(slot_index)?;
         // Zero the frame
         if let Some(ptr) = crate::mmio::direct_map_address(frame.as_u64()) {
             unsafe { core::ptr::write_bytes(ptr as *mut u8, 0, 4096) };
@@ -418,12 +451,13 @@ impl<Memory: ProcessFrameMemory> FrameBackedAddressSpace<Memory> {
         self.memory
             .write_entry(table, index, entry)
             .map_err(FrameBackedError::Memory)?;
-        self.pages[self.page_count] = PageRecord {
+        let page_index = self.slots[slot_index].page_count;
+        self.slots[slot_index].pages[page_index] = PageRecord {
             frame,
             virtual_address,
         };
-        self.page_count += 1;
-        self.process_info.owned_frames = self.owned_frame_count;
+        self.slots[slot_index].page_count += 1;
+        self.slots[slot_index].process_info.owned_frames = self.slots[slot_index].owned_frame_count;
         Ok(virtual_address)
     }
 
@@ -437,11 +471,12 @@ impl<Memory: ProcessFrameMemory> FrameBackedAddressSpace<Memory> {
         process: &ProcessImageHandle,
         _authority: &Capability<'_, ProcessInstallControl>,
     ) -> Result<(), FrameBackedError<Memory::Error>> {
-        if self.active
-            || self.process_info(process).is_none()
-            || self.page_count.checked_add(3).is_none_or(
-                |count| count > self.pages.len(),
-            )
+        let slot_index = self.process_slot(process)?;
+        if self.active_slot.is_some()
+            || self.slots[slot_index]
+                .page_count
+                .checked_add(3)
+                .is_none_or(|count| count > self.slots[slot_index].pages.len())
         {
             return Err(FrameBackedError::InvalidState);
         }
@@ -469,21 +504,14 @@ impl<Memory: ProcessFrameMemory> FrameBackedAddressSpace<Memory> {
                 return Err(FrameBackedError::InvalidPhysicalFrame);
             }
 
-            let physical = crate::mmio::kernel_virtual_to_physical(
-                kernel_pointer,
-                PAGE_SIZE,
-            )
-            .ok_or(FrameBackedError::InvalidPhysicalFrame)?;
-            if physical & (PAGE_SIZE as u64 - 1) != 0
-                || physical & !PAGE_ADDRESS_MASK != 0
-            {
+            let physical = crate::mmio::kernel_virtual_to_physical(kernel_pointer, PAGE_SIZE)
+                .ok_or(FrameBackedError::InvalidPhysicalFrame)?;
+            if physical & (PAGE_SIZE as u64 - 1) != 0 || physical & !PAGE_ADDRESS_MASK != 0 {
                 return Err(FrameBackedError::InvalidPhysicalFrame);
             }
 
-            let (table, index) =
-                self.ensure_leaf_slot(virtual_address)?;
-            let mut entry =
-                physical | ENTRY_PRESENT | ENTRY_USER | ENTRY_NO_EXECUTE;
+            let (table, index) = self.ensure_leaf_slot(slot_index, virtual_address)?;
+            let mut entry = physical | ENTRY_PRESENT | ENTRY_USER | ENTRY_NO_EXECUTE;
             if writable {
                 entry |= ENTRY_WRITABLE;
             }
@@ -491,14 +519,15 @@ impl<Memory: ProcessFrameMemory> FrameBackedAddressSpace<Memory> {
                 .write_entry(table, index, entry)
                 .map_err(FrameBackedError::Memory)?;
 
-            self.pages[self.page_count] = PageRecord {
+            let page_index = self.slots[slot_index].page_count;
+            self.slots[slot_index].pages[page_index] = PageRecord {
                 frame: PhysicalAddress::new(physical),
                 virtual_address,
             };
-            self.page_count += 1;
+            self.slots[slot_index].page_count += 1;
         }
 
-        self.process_info.owned_frames = self.owned_frame_count;
+        self.slots[slot_index].process_info.owned_frames = self.slots[slot_index].owned_frame_count;
         Ok(())
     }
 
@@ -510,9 +539,12 @@ impl<Memory: ProcessFrameMemory> FrameBackedAddressSpace<Memory> {
         argv: &[&[u8]],
         envp: &[&[u8]],
     ) -> Result<u64, FrameBackedError<Memory::Error>> {
-        if self.active
-            || self.process_info(process).is_none()
-            || self.process_info.initial_stack_pointer.is_none()
+        let slot_index = self.process_slot(process)?;
+        if self.active_slot.is_some()
+            || self.slots[slot_index]
+                .process_info
+                .initial_stack_pointer
+                .is_none()
         {
             return Err(FrameBackedError::InvalidState);
         }
@@ -542,32 +574,32 @@ impl<Memory: ProcessFrameMemory> FrameBackedAddressSpace<Memory> {
 
         let stack_base = INITIAL_USER_STACK_BASE;
         let mut word_address = stack_base;
-        self.write_stack_word(word_address, argv.len() as u64)?;
+        self.write_stack_word(slot_index, word_address, argv.len() as u64)?;
         word_address += 8;
         let string_start = stack_base + pointer_bytes as u64;
         let mut string_address = string_start;
         for value in argv {
-            self.write_stack_word(word_address, string_address)?;
+            self.write_stack_word(slot_index, word_address, string_address)?;
             word_address += 8;
             string_address += value.len() as u64 + 1;
         }
-        self.write_stack_word(word_address, 0)?;
+        self.write_stack_word(slot_index, word_address, 0)?;
         word_address += 8;
         for value in envp {
-            self.write_stack_word(word_address, string_address)?;
+            self.write_stack_word(slot_index, word_address, string_address)?;
             word_address += 8;
             string_address += value.len() as u64 + 1;
         }
-        self.write_stack_word(word_address, 0)?;
+        self.write_stack_word(slot_index, word_address, 0)?;
 
         string_address = string_start;
         for value in argv.iter().chain(envp.iter()) {
-            self.write_stack_bytes(string_address, value)?;
+            self.write_stack_bytes(slot_index, string_address, value)?;
             string_address += value.len() as u64;
-            self.write_stack_bytes(string_address, &[0])?;
+            self.write_stack_bytes(slot_index, string_address, &[0])?;
             string_address += 1;
         }
-        self.process_info.initial_stack_pointer = Some(stack_base);
+        self.slots[slot_index].process_info.initial_stack_pointer = Some(stack_base);
         Ok(stack_base)
     }
 
@@ -577,14 +609,24 @@ impl<Memory: ProcessFrameMemory> FrameBackedAddressSpace<Memory> {
         &mut self,
         _authority: &Capability<'_, PhysicalMemoryControl>,
     ) -> Result<(), FrameBackedError<Memory::Error>> {
-        if self.active || self.process_live {
+        if self.active_slot.is_some() {
             return Err(FrameBackedError::InvalidState);
         }
-        self.release_owned()
+        for slot_index in 0..self.slots.len() {
+            if self.slots[slot_index].phase == SpacePhase::Free
+                && self.slots[slot_index].owned_frame_count != 0
+            {
+                self.release_owned(slot_index)?;
+            }
+        }
+        Ok(())
     }
 
-    fn allocate_owned(&mut self) -> Result<PhysicalAddress, FrameBackedError<Memory::Error>> {
-        if self.owned_frame_count == self.owned_frames.len() {
+    fn allocate_owned(
+        &mut self,
+        slot_index: usize,
+    ) -> Result<PhysicalAddress, FrameBackedError<Memory::Error>> {
+        if self.slots[slot_index].owned_frame_count == self.slots[slot_index].owned_frames.len() {
             return Err(FrameBackedError::CapacityExceeded);
         }
         let frame = self
@@ -597,17 +639,18 @@ impl<Memory: ProcessFrameMemory> FrameBackedAddressSpace<Memory> {
                 .map_err(FrameBackedError::Memory)?;
             return Err(FrameBackedError::InvalidPhysicalFrame);
         }
-        self.owned_frames[self.owned_frame_count] = frame;
-        self.owned_frame_count += 1;
+        let frame_index = self.slots[slot_index].owned_frame_count;
+        self.slots[slot_index].owned_frames[frame_index] = frame;
+        self.slots[slot_index].owned_frame_count += 1;
         Ok(frame)
     }
 
-    fn release_owned(&mut self) -> Result<(), FrameBackedError<Memory::Error>> {
+    fn release_owned(&mut self, slot_index: usize) -> Result<(), FrameBackedError<Memory::Error>> {
         let mut first_error = None;
         let mut retained = [PhysicalAddress::new(0); MAXIMUM_OWNED_FRAMES];
         let mut retained_count = 0;
-        for index in (0..self.owned_frame_count).rev() {
-            let frame = self.owned_frames[index];
+        for index in (0..self.slots[slot_index].owned_frame_count).rev() {
+            let frame = self.slots[slot_index].owned_frames[index];
             if let Err(error) = self.memory.release(frame) {
                 retained[retained_count] = frame;
                 retained_count += 1;
@@ -616,9 +659,9 @@ impl<Memory: ProcessFrameMemory> FrameBackedAddressSpace<Memory> {
                 }
             }
         }
-        self.owned_frames = retained;
-        self.owned_frame_count = retained_count;
-        self.root = None;
+        self.slots[slot_index].owned_frames = retained;
+        self.slots[slot_index].owned_frame_count = retained_count;
+        self.slots[slot_index].root = None;
         match first_error {
             Some(error) => Err(error),
             None => Ok(()),
@@ -627,46 +670,52 @@ impl<Memory: ProcessFrameMemory> FrameBackedAddressSpace<Memory> {
 
     fn release_last_owned(
         &mut self,
+        slot_index: usize,
         frame: PhysicalAddress,
     ) -> Result<(), FrameBackedError<Memory::Error>> {
-        let Some(index) = self.owned_frame_count.checked_sub(1) else {
+        let Some(index) = self.slots[slot_index].owned_frame_count.checked_sub(1) else {
             return Err(FrameBackedError::CorruptHierarchy);
         };
-        if self.owned_frames[index] != frame {
+        if self.slots[slot_index].owned_frames[index] != frame {
             return Err(FrameBackedError::CorruptHierarchy);
         }
         self.memory
             .release(frame)
             .map_err(FrameBackedError::Memory)?;
-        self.owned_frames[index] = PhysicalAddress::new(0);
-        self.owned_frame_count = index;
+        self.slots[slot_index].owned_frames[index] = PhysicalAddress::new(0);
+        self.slots[slot_index].owned_frame_count = index;
         Ok(())
     }
 
     fn rollback_stack_install(
         &mut self,
+        slot_index: usize,
         owned_before: usize,
         pages_before: usize,
     ) -> Result<(), FrameBackedError<Memory::Error>> {
-        while self.owned_frame_count > owned_before {
-            let frame = self.owned_frames[self.owned_frame_count - 1];
-            self.release_last_owned(frame)?;
+        while self.slots[slot_index].owned_frame_count > owned_before {
+            let frame =
+                self.slots[slot_index].owned_frames[self.slots[slot_index].owned_frame_count - 1];
+            self.release_last_owned(slot_index, frame)?;
         }
-        self.pages[pages_before..self.page_count].fill(PageRecord::EMPTY);
-        self.page_count = pages_before;
+        let page_count = self.slots[slot_index].page_count;
+        self.slots[slot_index].pages[pages_before..page_count].fill(PageRecord::EMPTY);
+        self.slots[slot_index].page_count = pages_before;
         Ok(())
     }
 
     fn write_stack_word(
         &mut self,
+        slot_index: usize,
         address: u64,
         value: u64,
     ) -> Result<(), FrameBackedError<Memory::Error>> {
-        self.write_stack_bytes(address, &value.to_le_bytes())
+        self.write_stack_bytes(slot_index, address, &value.to_le_bytes())
     }
 
     fn write_stack_bytes(
         &mut self,
+        slot_index: usize,
         address: u64,
         bytes: &[u8],
     ) -> Result<(), FrameBackedError<Memory::Error>> {
@@ -675,16 +724,16 @@ impl<Memory: ProcessFrameMemory> FrameBackedAddressSpace<Memory> {
             let current = address
                 .checked_add(copied as u64)
                 .ok_or(FrameBackedError::InvalidRange)?;
-            let page_index = self
+            let page_index = self.slots[slot_index]
                 .pages
                 .iter()
-                .take(self.page_count)
+                .take(self.slots[slot_index].page_count)
                 .position(|page| {
                     current >= page.virtual_address
                         && current < page.virtual_address + PAGE_SIZE as u64
                 })
                 .ok_or(FrameBackedError::InvalidRange)?;
-            let page = self.pages[page_index];
+            let page = self.slots[slot_index].pages[page_index];
             let offset = (current - page.virtual_address) as usize;
             let length = (PAGE_SIZE - offset).min(bytes.len() - copied);
             self.memory
@@ -695,12 +744,12 @@ impl<Memory: ProcessFrameMemory> FrameBackedAddressSpace<Memory> {
         Ok(())
     }
 
-    fn reset_records(&mut self) {
-        self.mappings.fill(MappingRecord::EMPTY);
-        self.mapping_count = 0;
-        self.pages.fill(PageRecord::EMPTY);
-        self.page_count = 0;
-        self.process_info = ProcessImageInfo {
+    fn reset_records(&mut self, slot_index: usize) {
+        self.slots[slot_index].mappings.fill(MappingRecord::EMPTY);
+        self.slots[slot_index].mapping_count = 0;
+        self.slots[slot_index].pages.fill(PageRecord::EMPTY);
+        self.slots[slot_index].page_count = 0;
+        self.slots[slot_index].process_info = ProcessImageInfo {
             entry_point: 0,
             segment_count: 0,
             address_space_root: None,
@@ -709,9 +758,12 @@ impl<Memory: ProcessFrameMemory> FrameBackedAddressSpace<Memory> {
         };
     }
 
-    fn initialize_root(&mut self) -> Result<(), FrameBackedError<Memory::Error>> {
-        let root = self.allocate_owned()?;
-        self.root = Some(root);
+    fn initialize_root(
+        &mut self,
+        slot_index: usize,
+    ) -> Result<(), FrameBackedError<Memory::Error>> {
+        let root = self.allocate_owned(slot_index)?;
+        self.slots[slot_index].root = Some(root);
         for index in USER_PML4_ENTRIES..TABLE_ENTRIES {
             let entry = self
                 .memory
@@ -728,7 +780,11 @@ impl<Memory: ProcessFrameMemory> FrameBackedAddressSpace<Memory> {
         &self,
         mapping: FrameBackedMapping,
     ) -> Result<MappingRecord, FrameBackedError<Memory::Error>> {
-        self.mappings
+        if self.active_slot != Some(mapping.space_slot) {
+            return Err(FrameBackedError::InvalidHandle);
+        }
+        self.slots[usize::from(mapping.space_slot)]
+            .mappings
             .get(usize::from(mapping.slot))
             .copied()
             .filter(|record| record.occupied && record.generation == mapping.generation)
@@ -737,13 +793,16 @@ impl<Memory: ProcessFrameMemory> FrameBackedAddressSpace<Memory> {
 
     fn ensure_leaf_slot(
         &mut self,
+        slot_index: usize,
         virtual_address: u64,
     ) -> Result<(PhysicalAddress, usize), FrameBackedError<Memory::Error>> {
         let indices = page_indices(virtual_address)?;
         if indices[0] >= USER_PML4_ENTRIES {
             return Err(FrameBackedError::InvalidUserRange);
         }
-        let mut table = self.root.ok_or(FrameBackedError::InvalidState)?;
+        let mut table = self.slots[slot_index]
+            .root
+            .ok_or(FrameBackedError::InvalidState)?;
         for index in &indices[..3] {
             let entry = self
                 .memory
@@ -755,7 +814,7 @@ impl<Memory: ProcessFrameMemory> FrameBackedAddressSpace<Memory> {
                 }
                 table = PhysicalAddress::new(entry & PAGE_ADDRESS_MASK);
             } else {
-                let next = self.allocate_owned()?;
+                let next = self.allocate_owned(slot_index)?;
                 self.memory
                     .write_entry(
                         table,
@@ -779,10 +838,13 @@ impl<Memory: ProcessFrameMemory> FrameBackedAddressSpace<Memory> {
 
     fn leaf_slot(
         &self,
+        slot_index: usize,
         virtual_address: u64,
     ) -> Result<(PhysicalAddress, usize), FrameBackedError<Memory::Error>> {
         let indices = page_indices(virtual_address)?;
-        let mut table = self.root.ok_or(FrameBackedError::InvalidState)?;
+        let mut table = self.slots[slot_index]
+            .root
+            .ok_or(FrameBackedError::InvalidState)?;
         for index in &indices[..3] {
             let entry = self
                 .memory
@@ -798,22 +860,42 @@ impl<Memory: ProcessFrameMemory> FrameBackedAddressSpace<Memory> {
 
     fn frame_for_mapping_page(
         &self,
+        slot_index: usize,
         mapping: MappingRecord,
         page: usize,
     ) -> Result<PhysicalAddress, FrameBackedError<Memory::Error>> {
         if page >= usize::from(mapping.page_count) {
             return Err(FrameBackedError::InvalidRange);
         }
-        self.pages
+        self.slots[slot_index]
+            .pages
             .get(usize::from(mapping.first_page) + page)
             .map(|record| record.frame)
             .ok_or(FrameBackedError::CorruptHierarchy)
     }
 
-    fn cleanup_transaction(&mut self) -> Result<(), FrameBackedError<Memory::Error>> {
-        self.active = false;
-        self.reset_records();
-        self.release_owned()
+    fn cleanup_transaction(
+        &mut self,
+        slot_index: usize,
+    ) -> Result<(), FrameBackedError<Memory::Error>> {
+        self.active_slot = None;
+        self.slots[slot_index].phase = SpacePhase::Free;
+        self.reset_records(slot_index);
+        self.release_owned(slot_index)
+    }
+
+    fn process_slot(
+        &self,
+        process: &ProcessImageHandle,
+    ) -> Result<usize, FrameBackedError<Memory::Error>> {
+        let slot_index = usize::from(process.slot());
+        self.slots
+            .get(slot_index)
+            .filter(|slot| {
+                slot.phase == SpacePhase::Committed && slot.generation == process.generation()
+            })
+            .map(|_| slot_index)
+            .ok_or(FrameBackedError::InvalidHandle)
     }
 }
 
@@ -824,28 +906,33 @@ impl<Memory: ProcessFrameMemory> UserAddressSpaceBackend for FrameBackedAddressS
     type Process = ProcessImageHandle;
 
     fn begin(&mut self, image_start: u64, image_end: u64) -> Result<Self::Space, Self::Error> {
-        if self.active
-            || self.process_live
-            || self.owned_frame_count != 0
+        if self.active_slot.is_some()
             || image_start >= image_end
             || image_end > 0x0000_8000_0000_0000
             || !self.kernel_root.is_page_aligned()
         {
             return Err(FrameBackedError::InvalidState);
         }
-        self.generation = next_generation(self.generation);
-        self.active = true;
-        self.image_start = image_start;
-        self.image_end = image_end;
-        self.reset_records();
-        if let Err(error) = self.initialize_root() {
-            return match self.cleanup_transaction() {
+        let slot_index = self
+            .slots
+            .iter()
+            .position(|slot| slot.phase == SpacePhase::Free && slot.owned_frame_count == 0)
+            .ok_or(FrameBackedError::CapacityExceeded)?;
+        self.slots[slot_index].generation = next_generation(self.slots[slot_index].generation);
+        self.slots[slot_index].phase = SpacePhase::Staging;
+        self.slots[slot_index].image_start = image_start;
+        self.slots[slot_index].image_end = image_end;
+        self.active_slot = Some(slot_index as u16);
+        self.reset_records(slot_index);
+        if let Err(error) = self.initialize_root(slot_index) {
+            return match self.cleanup_transaction(slot_index) {
                 Ok(()) => Err(error),
                 Err(cleanup) => Err(cleanup),
             };
         }
         Ok(FrameBackedSpace {
-            generation: self.generation,
+            slot: slot_index as u16,
+            generation: self.slots[slot_index].generation,
         })
     }
 
@@ -858,43 +945,49 @@ impl<Memory: ProcessFrameMemory> UserAddressSpaceBackend for FrameBackedAddressS
         let end = virtual_address
             .checked_add(memory_size as u64)
             .ok_or(FrameBackedError::InvalidRange)?;
-        if !self.active
-            || space.generation != self.generation
+        let slot_index = usize::from(space.slot);
+        let Some(slot) = self.slots.get(slot_index) else {
+            return Err(FrameBackedError::InvalidHandle);
+        };
+        if self.active_slot != Some(space.slot)
+            || slot.phase != SpacePhase::Staging
+            || space.generation != slot.generation
             || memory_size == 0
             || virtual_address & (PAGE_SIZE as u64 - 1) != 0
-            || virtual_address < self.image_start
-            || end > self.image_end
+            || virtual_address < slot.image_start
+            || end > slot.image_end
         {
             return Err(FrameBackedError::InvalidRange);
         }
         let pages_needed = memory_size.div_ceil(PAGE_SIZE);
         if pages_needed == 0
             || pages_needed > u8::MAX as usize
-            || self.page_count + pages_needed > self.pages.len()
+            || self.slots[slot_index].page_count + pages_needed > self.slots[slot_index].pages.len()
         {
             return Err(FrameBackedError::CapacityExceeded);
         }
-        let mapping_index = self.mapping_count;
-        if mapping_index >= self.mappings.len() {
+        let mapping_index = self.slots[slot_index].mapping_count;
+        if mapping_index >= self.slots[slot_index].mappings.len() {
             return Err(FrameBackedError::CapacityExceeded);
         }
-        let first_page = self.page_count;
+        let first_page = self.slots[slot_index].page_count;
         for page in 0..pages_needed {
             let page_virtual = virtual_address
                 .checked_add((page * PAGE_SIZE) as u64)
                 .ok_or(FrameBackedError::InvalidRange)?;
-            let frame = self.allocate_owned()?;
-            let _ = self.ensure_leaf_slot(page_virtual)?;
-            self.pages[self.page_count] = PageRecord {
+            let frame = self.allocate_owned(slot_index)?;
+            let _ = self.ensure_leaf_slot(slot_index, page_virtual)?;
+            let page_index = self.slots[slot_index].page_count;
+            self.slots[slot_index].pages[page_index] = PageRecord {
                 frame,
                 virtual_address: page_virtual,
             };
-            self.page_count += 1;
+            self.slots[slot_index].page_count += 1;
         }
-        self.mappings[mapping_index] = MappingRecord {
+        self.slots[slot_index].mappings[mapping_index] = MappingRecord {
             occupied: true,
             sealed: false,
-            generation: self.generation,
+            generation: self.slots[slot_index].generation,
             virtual_address,
             memory_size,
             first_page: first_page as u8,
@@ -905,10 +998,11 @@ impl<Memory: ProcessFrameMemory> UserAddressSpaceBackend for FrameBackedAddressS
                 executable: false,
             },
         };
-        self.mapping_count += 1;
+        self.slots[slot_index].mapping_count += 1;
         Ok(FrameBackedMapping {
+            space_slot: space.slot,
             slot: mapping_index as u8,
-            generation: self.generation,
+            generation: self.slots[slot_index].generation,
         })
     }
 
@@ -932,7 +1026,8 @@ impl<Memory: ProcessFrameMemory> UserAddressSpaceBackend for FrameBackedAddressS
             let page = absolute / PAGE_SIZE;
             let within_page = absolute % PAGE_SIZE;
             let length = (PAGE_SIZE - within_page).min(bytes.len() - copied);
-            let frame = self.frame_for_mapping_page(record, page)?;
+            let frame =
+                self.frame_for_mapping_page(usize::from(mapping.space_slot), record, page)?;
             self.memory
                 .write_bytes(frame, within_page, &bytes[copied..copied + length])
                 .map_err(FrameBackedError::Memory)?;
@@ -956,7 +1051,8 @@ impl<Memory: ProcessFrameMemory> UserAddressSpaceBackend for FrameBackedAddressS
             let page = offset / PAGE_SIZE;
             let within_page = offset % PAGE_SIZE;
             let length = (PAGE_SIZE - within_page).min(initialized.len() - offset);
-            let frame = self.frame_for_mapping_page(record, page)?;
+            let frame =
+                self.frame_for_mapping_page(usize::from(mapping.space_slot), record, page)?;
             if !self
                 .memory
                 .bytes_equal(frame, within_page, &initialized[offset..offset + length])
@@ -970,7 +1066,8 @@ impl<Memory: ProcessFrameMemory> UserAddressSpaceBackend for FrameBackedAddressS
             let page = offset / PAGE_SIZE;
             let within_page = offset % PAGE_SIZE;
             let length = (PAGE_SIZE - within_page).min(memory_size - offset);
-            let frame = self.frame_for_mapping_page(record, page)?;
+            let frame =
+                self.frame_for_mapping_page(usize::from(mapping.space_slot), record, page)?;
             if !self
                 .memory
                 .bytes_zero(frame, within_page, length)
@@ -989,6 +1086,7 @@ impl<Memory: ProcessFrameMemory> UserAddressSpaceBackend for FrameBackedAddressS
         permissions: MappingPermissions,
     ) -> Result<(), Self::Error> {
         let record = self.mapping(mapping)?;
+        let slot_index = usize::from(mapping.space_slot);
         if record.sealed
             || !permissions.readable
             || (permissions.writable && permissions.executable)
@@ -996,8 +1094,8 @@ impl<Memory: ProcessFrameMemory> UserAddressSpaceBackend for FrameBackedAddressS
             return Err(FrameBackedError::UnsupportedPermissions);
         }
         for page in 0..usize::from(record.page_count) {
-            let page_record = self.pages[usize::from(record.first_page) + page];
-            let (table, index) = self.leaf_slot(page_record.virtual_address)?;
+            let page_record = self.slots[slot_index].pages[usize::from(record.first_page) + page];
+            let (table, index) = self.leaf_slot(slot_index, page_record.virtual_address)?;
             let mut entry = page_record.frame.as_u64() | ENTRY_PRESENT | ENTRY_USER;
             if permissions.writable {
                 entry |= ENTRY_WRITABLE;
@@ -1009,8 +1107,8 @@ impl<Memory: ProcessFrameMemory> UserAddressSpaceBackend for FrameBackedAddressS
                 .write_entry(table, index, entry)
                 .map_err(FrameBackedError::Memory)?;
         }
-        self.mappings[usize::from(mapping.slot)].permissions = permissions;
-        self.mappings[usize::from(mapping.slot)].sealed = true;
+        self.slots[slot_index].mappings[usize::from(mapping.slot)].permissions = permissions;
+        self.slots[slot_index].mappings[usize::from(mapping.slot)].sealed = true;
         Ok(())
     }
 
@@ -1019,13 +1117,18 @@ impl<Memory: ProcessFrameMemory> UserAddressSpaceBackend for FrameBackedAddressS
         space: Self::Space,
         entry_point: u64,
     ) -> Result<Self::Process, Self::Error> {
-        if !self.active
-            || space.generation != self.generation
-            || self.mapping_count == 0
-            || self.mappings[..self.mapping_count]
+        let slot_index = usize::from(space.slot);
+        let Some(slot) = self.slots.get(slot_index) else {
+            return Err(FrameBackedError::InvalidHandle);
+        };
+        if self.active_slot != Some(space.slot)
+            || slot.phase != SpacePhase::Staging
+            || space.generation != slot.generation
+            || slot.mapping_count == 0
+            || slot.mappings[..slot.mapping_count]
                 .iter()
                 .any(|mapping| !mapping.sealed)
-            || !self.mappings[..self.mapping_count].iter().any(|mapping| {
+            || !slot.mappings[..slot.mapping_count].iter().any(|mapping| {
                 mapping.permissions.executable
                     && entry_point >= mapping.virtual_address
                     && entry_point < mapping.virtual_address + mapping.memory_size as u64
@@ -1033,32 +1136,38 @@ impl<Memory: ProcessFrameMemory> UserAddressSpaceBackend for FrameBackedAddressS
         {
             return Err(FrameBackedError::InvalidState);
         }
-        let root = self.root.ok_or(FrameBackedError::InvalidState)?;
-        self.active = false;
-        self.process_generation = next_generation(self.process_generation);
-        self.process_live = true;
-        self.process_info = ProcessImageInfo {
+        let root = slot.root.ok_or(FrameBackedError::InvalidState)?;
+        self.active_slot = None;
+        self.slots[slot_index].phase = SpacePhase::Committed;
+        self.slots[slot_index].process_info = ProcessImageInfo {
             entry_point,
-            segment_count: self.mapping_count,
+            segment_count: self.slots[slot_index].mapping_count,
             address_space_root: Some(root.as_u64()),
-            owned_frames: self.owned_frame_count,
+            owned_frames: self.slots[slot_index].owned_frame_count,
             initial_stack_pointer: None,
         };
-        Ok(ProcessImageHandle::new(0, self.process_generation))
+        Ok(ProcessImageHandle::new(
+            space.slot,
+            self.slots[slot_index].generation,
+        ))
     }
 
     fn abort(&mut self, space: Self::Space) -> Result<(), Self::Error> {
-        if !self.active || space.generation != self.generation {
+        let slot_index = usize::from(space.slot);
+        if self.active_slot != Some(space.slot)
+            || self.slots.get(slot_index).is_none_or(|slot| {
+                slot.phase != SpacePhase::Staging || slot.generation != space.generation
+            })
+        {
             return Err(FrameBackedError::InvalidHandle);
         }
-        self.cleanup_transaction()
+        self.cleanup_transaction(slot_index)
     }
 
     fn process_info(&self, process: &Self::Process) -> Option<ProcessImageInfo> {
-        (self.process_live
-            && process.slot() == 0
-            && process.generation() == self.process_generation)
-            .then_some(self.process_info)
+        self.process_slot(process)
+            .ok()
+            .map(|slot_index| self.slots[slot_index].process_info)
     }
 
     fn process_generation(&self, process: &Self::Process) -> Option<u32> {
@@ -1102,12 +1211,10 @@ impl<Memory: ProcessFrameMemory> UserAddressSpaceBackend for FrameBackedAddressS
     }
 
     fn release_process(&mut self, process: &Self::Process) -> Result<(), Self::Error> {
-        if self.process_info(process).is_none() {
-            return Err(FrameBackedError::InvalidHandle);
-        }
-        self.process_live = false;
-        self.reset_records();
-        self.release_owned()
+        let slot_index = self.process_slot(process)?;
+        self.slots[slot_index].phase = SpacePhase::Free;
+        self.reset_records(slot_index);
+        self.release_owned(slot_index)
     }
 }
 
@@ -1141,20 +1248,24 @@ fn page_indices<MemoryError>(address: u64) -> Result<[usize; 4], FrameBackedErro
 
 const fn next_generation(generation: u32) -> u32 {
     let next = generation.wrapping_add(1);
-    if next == 0 { 1 } else { next }
+    if next == 0 {
+        1
+    } else {
+        next
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use alloc::boxed::Box;
     use blacklab::oureboros::{
-        FractalCatalog, FractalClass, FractalRecipe, FractalSeed, MINIMAL_X86_64_ELF_BYTES,
-        TargetArchitecture, measure_recipe,
+        measure_recipe, FractalCatalog, FractalClass, FractalRecipe, FractalSeed,
+        TargetArchitecture, MINIMAL_X86_64_ELF_BYTES,
     };
 
     use crate::capability::{Authority, ProcessInstallControl, UserlandImageControl};
     use crate::process::image::prepare_user_image;
-    use crate::process::install::{InstallError, install_user_image};
+    use crate::process::install::{install_user_image, InstallError};
 
     use super::*;
 
@@ -1445,6 +1556,100 @@ mod tests {
     }
 
     #[test]
+    fn retains_two_processes_and_recycles_only_the_released_slot() {
+        let memory = Box::new(TestMemory::<176>::new());
+        let authority = unsafe { Authority::assume_root() };
+        let image_control = authority.grant::<UserlandImageControl>();
+        let install_control = authority.grant::<ProcessInstallControl>();
+        let mut backend =
+            FrameBackedAddressSpace::new(memory, PhysicalAddress::new(0), &install_control);
+        let catalog = catalog();
+        let mut first_bytes = [0_u8; MINIMAL_X86_64_ELF_BYTES];
+        let first_artifact = catalog.materialize(1, &mut first_bytes).unwrap();
+        let first_image = prepare_user_image(first_artifact, &image_control).unwrap();
+        let first = install_user_image(first_image, &mut backend, &install_control).unwrap();
+        let first_info = backend.process_info(&first.process).unwrap();
+
+        let mut second_bytes = [0_u8; MINIMAL_X86_64_ELF_BYTES];
+        let second_artifact = catalog.materialize(1, &mut second_bytes).unwrap();
+        let second_image = prepare_user_image(second_artifact, &image_control).unwrap();
+        let second = install_user_image(second_image, &mut backend, &install_control).unwrap();
+        backend
+            .install_initial_stack(&second.process, &install_control)
+            .unwrap();
+        let second_info = backend.process_info(&second.process).unwrap();
+
+        assert_ne!(first.process.slot(), second.process.slot());
+        assert_ne!(
+            first_info.address_space_root,
+            second_info.address_space_root
+        );
+        assert_eq!(
+            backend.owned_frame_count(),
+            first_info.owned_frames + second_info.owned_frames
+        );
+        assert_eq!(backend.memory().in_use(), backend.owned_frame_count());
+
+        let mut rejected_bytes = [0_u8; MINIMAL_X86_64_ELF_BYTES];
+        let rejected_artifact = catalog.materialize(1, &mut rejected_bytes).unwrap();
+        let rejected_image = prepare_user_image(rejected_artifact, &image_control).unwrap();
+        assert_eq!(
+            install_user_image(rejected_image, &mut backend, &install_control),
+            Err(InstallError::Backend(FrameBackedError::CapacityExceeded))
+        );
+
+        backend.release_process(&first.process).unwrap();
+        assert_eq!(backend.process_info(&first.process), None);
+        assert_eq!(backend.process_info(&second.process), Some(second_info));
+        assert_eq!(backend.owned_frame_count(), second_info.owned_frames);
+        assert_eq!(backend.memory().in_use(), second_info.owned_frames);
+
+        let mut replacement_bytes = [0_u8; MINIMAL_X86_64_ELF_BYTES];
+        let replacement_artifact = catalog.materialize(1, &mut replacement_bytes).unwrap();
+        let replacement_image = prepare_user_image(replacement_artifact, &image_control).unwrap();
+        let replacement =
+            install_user_image(replacement_image, &mut backend, &install_control).unwrap();
+        assert_eq!(replacement.process.slot(), first.process.slot());
+        assert_ne!(replacement.process.generation(), first.process.generation());
+        assert_eq!(backend.process_info(&first.process), None);
+
+        backend.release_process(&replacement.process).unwrap();
+        backend.release_process(&second.process).unwrap();
+        assert_eq!(backend.owned_frame_count(), 0);
+        assert_eq!(backend.memory().in_use(), 0);
+    }
+
+    #[test]
+    fn failed_committed_release_quarantines_only_failed_frames() {
+        let memory = TestMemory::<16>::new();
+        let authority = unsafe { Authority::assume_root() };
+        let image_control = authority.grant::<UserlandImageControl>();
+        let install_control = authority.grant::<ProcessInstallControl>();
+        let physical_memory = authority.grant::<PhysicalMemoryControl>();
+        let mut backend =
+            FrameBackedAddressSpace::new(memory, PhysicalAddress::new(0), &install_control);
+        let catalog = catalog();
+        let mut bytes = [0_u8; MINIMAL_X86_64_ELF_BYTES];
+        let artifact = catalog.materialize(1, &mut bytes).unwrap();
+        let image = prepare_user_image(artifact, &image_control).unwrap();
+        let installed = install_user_image(image, &mut backend, &install_control).unwrap();
+        assert_eq!(backend.owned_frame_count(), 5);
+
+        backend.memory_mut().fail_release_once = true;
+        assert_eq!(
+            backend.release_process(&installed.process),
+            Err(FrameBackedError::Memory(TestMemoryError::ReleaseFailed))
+        );
+        assert_eq!(backend.process_info(&installed.process), None);
+        assert_eq!(backend.owned_frame_count(), 1);
+        assert_eq!(backend.memory().in_use(), 1);
+
+        backend.retry_cleanup(&physical_memory).unwrap();
+        assert_eq!(backend.owned_frame_count(), 0);
+        assert_eq!(backend.memory().in_use(), 0);
+    }
+
+    #[test]
     fn allocation_failure_aborts_and_reclaims_partial_hierarchy() {
         let memory = TestMemory::<5>::new();
         let catalog = catalog();
@@ -1474,7 +1679,7 @@ mod tests {
             FrameBackedAddressSpace::new(memory, PhysicalAddress::new(0), &install_control);
         let space = backend.begin(0x1000, 0x2000).unwrap();
         let mapping = backend.map_zeroed(space, 0x1000, PAGE_SIZE).unwrap();
-        let root = backend.root.unwrap();
+        let root = backend.slots[usize::from(space.slot)].root.unwrap();
         let p3 = backend.memory().read_entry(root, 0).unwrap() & PAGE_ADDRESS_MASK;
         let p2 = backend
             .memory()

@@ -1,5 +1,5 @@
 use crate::memory::{MemoryMap, MemoryRegionKind};
-use crate::paging::{FrameAllocator, PAGE_SIZE, PhysicalAddress};
+use crate::paging::{FrameAllocator, PhysicalAddress, PAGE_SIZE};
 use crate::reservation::ReservationTable;
 
 const BITS_PER_WORD: usize = u64::BITS as usize;
@@ -95,24 +95,85 @@ impl<'a> BitmapFrameAllocator<'a> {
         None
     }
 
+    /// Allocates an aligned, physically contiguous run atomically.
+    /// `alignment_frames` is expressed in pages and must be a power of two.
+    pub fn allocate_contiguous(
+        &mut self,
+        frame_count: usize,
+        alignment_frames: usize,
+    ) -> Option<PhysicalAddress> {
+        if frame_count == 0
+            || alignment_frames == 0
+            || !alignment_frames.is_power_of_two()
+            || frame_count > self.free_frames
+        {
+            return None;
+        }
+        let first = self
+            .find_contiguous(self.next_search, frame_count, alignment_frames)
+            .or_else(|| self.find_contiguous(0, frame_count, alignment_frames))?;
+        for frame in first..first + frame_count {
+            self.set_allocated(frame, true);
+        }
+        self.free_frames -= frame_count;
+        self.next_search = (first + frame_count) % self.frame_count;
+        Some(PhysicalAddress::new(first as u64 * PAGE_SIZE as u64))
+    }
+
     pub fn deallocate(&mut self, frame: PhysicalAddress) -> Result<(), FrameAllocatorError> {
-        if !frame.is_page_aligned() {
+        self.deallocate_contiguous(frame, 1)
+    }
+
+    /// Releases a contiguous run only after validating the complete span.
+    /// A malformed, reserved, or partially free span leaves every bit intact.
+    pub fn deallocate_contiguous(
+        &mut self,
+        first_frame: PhysicalAddress,
+        frame_count: usize,
+    ) -> Result<(), FrameAllocatorError> {
+        if frame_count == 0 {
+            return Err(FrameAllocatorError::InvalidFrameCount);
+        }
+        if !first_frame.is_page_aligned() {
             return Err(FrameAllocatorError::UnalignedFrame);
         }
-        let index = (frame.as_u64() / PAGE_SIZE as u64) as usize;
-        if index >= self.frame_count {
-            return Err(FrameAllocatorError::FrameOutOfRange);
+        let first = (first_frame.as_u64() / PAGE_SIZE as u64) as usize;
+        let end = first
+            .checked_add(frame_count)
+            .filter(|end| *end <= self.frame_count)
+            .ok_or(FrameAllocatorError::FrameOutOfRange)?;
+        for index in first..end {
+            if self.is_reserved(index) {
+                return Err(FrameAllocatorError::ReservedFrame);
+            }
+            if !self.is_allocated(index) {
+                return Err(FrameAllocatorError::DoubleFree);
+            }
         }
-        if self.is_reserved(index) {
-            return Err(FrameAllocatorError::ReservedFrame);
+        for index in first..end {
+            self.set_allocated(index, false);
         }
-        if !self.is_allocated(index) {
-            return Err(FrameAllocatorError::DoubleFree);
-        }
-        self.set_allocated(index, false);
-        self.free_frames += 1;
-        self.next_search = index;
+        self.free_frames += frame_count;
+        self.next_search = first;
         Ok(())
+    }
+
+    fn find_contiguous(
+        &self,
+        search_start: usize,
+        frame_count: usize,
+        alignment_frames: usize,
+    ) -> Option<usize> {
+        let mut candidate = align_up_index(search_start, alignment_frames)?;
+        while candidate.checked_add(frame_count)? <= self.frame_count {
+            let span = candidate..candidate + frame_count;
+            if let Some(occupied) = span.clone().find(|frame| self.is_allocated(*frame)) {
+                candidate = align_up_index(occupied + 1, alignment_frames)?;
+            } else {
+                return Some(candidate);
+            }
+        }
+        None
     }
 
     pub const fn free_frames(&self) -> usize {
@@ -169,10 +230,17 @@ impl FrameAllocator for BitmapFrameAllocator<'_> {
 pub enum FrameAllocatorError {
     AddressOverflow,
     StorageTooSmall,
+    InvalidFrameCount,
     UnalignedFrame,
     FrameOutOfRange,
     ReservedFrame,
     DoubleFree,
+}
+
+fn align_up_index(value: usize, alignment: usize) -> Option<usize> {
+    value
+        .checked_add(alignment - 1)
+        .map(|rounded| rounded & !(alignment - 1))
 }
 
 fn frame_count(maximum_address: u64) -> Result<usize, FrameAllocatorError> {
@@ -276,6 +344,52 @@ mod tests {
         assert_eq!(
             allocator.deallocate(PhysicalAddress::new(0)),
             Err(FrameAllocatorError::ReservedFrame)
+        );
+    }
+
+    #[test]
+    fn allocates_aligned_contiguous_runs_and_reclaims_them_atomically() {
+        let map = test_map();
+        let mut storage = [0_u64; 2];
+        let mut allocator =
+            BitmapFrameAllocator::new(&map, 16 * PAGE_SIZE as u64, &mut storage).unwrap();
+        allocator.allocate().unwrap();
+        allocator.allocate().unwrap();
+        allocator.allocate().unwrap();
+
+        let run = allocator.allocate_contiguous(3, 4).unwrap();
+        assert_eq!(run, PhysicalAddress::new(4 * PAGE_SIZE as u64));
+        assert_eq!(allocator.free_frames(), 10);
+        allocator.deallocate_contiguous(run, 3).unwrap();
+        assert_eq!(allocator.free_frames(), 13);
+        assert_eq!(allocator.allocate_contiguous(0, 1), None);
+        assert_eq!(allocator.allocate_contiguous(1, 3), None);
+    }
+
+    #[test]
+    fn malformed_range_release_changes_no_other_frame() {
+        let map = test_map();
+        let mut storage = [0_u64; 2];
+        let mut allocator =
+            BitmapFrameAllocator::new(&map, 16 * PAGE_SIZE as u64, &mut storage).unwrap();
+        let run = allocator.allocate_contiguous(4, 1).unwrap();
+        allocator
+            .deallocate(PhysicalAddress::new(PAGE_SIZE as u64))
+            .unwrap();
+        let free_before = allocator.free_frames();
+
+        assert_eq!(
+            allocator.deallocate_contiguous(run, 4),
+            Err(FrameAllocatorError::DoubleFree)
+        );
+        assert_eq!(allocator.free_frames(), free_before);
+        assert!(allocator.is_allocated(0));
+        assert!(!allocator.is_allocated(1));
+        assert!(allocator.is_allocated(2));
+        assert!(allocator.is_allocated(3));
+        assert_eq!(
+            allocator.deallocate_contiguous(run, 0),
+            Err(FrameAllocatorError::InvalidFrameCount)
         );
     }
 }
