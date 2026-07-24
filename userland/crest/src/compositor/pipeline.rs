@@ -81,6 +81,16 @@ impl DamageTracker {
         idx < MAX_TILES && self.dirty[idx / 64] & (1u64 << (idx % 64)) != 0
     }
 
+    pub fn clear_tile(&mut self, tx: u32, ty: u32) {
+        if tx >= self.tiles_wide || ty >= self.tiles_tall {
+            return;
+        }
+        let index = (ty * self.tiles_wide + tx) as usize;
+        if index < MAX_TILES {
+            self.dirty[index / 64] &= !(1_u64 << (index % 64));
+        }
+    }
+
     pub fn clear_all(&mut self) {
         for word in self.dirty.iter_mut() {
             *word = 0;
@@ -178,23 +188,104 @@ impl CompositorPipeline {
         shell: &ObsidianShell,
         buf: &mut [u8],
     ) -> Result<u32, CompositorError> {
-        let mut rendered = 0u32;
-        let tw = self.damage.tiles_wide();
-        let tt = self.damage.tiles_tall();
-        for tile_idx in 0..(tw * tt) {
-            let tx = tile_idx % tw;
-            let ty = tile_idx / tw;
-            if !self.damage.is_dirty(tx, ty) {
-                self.tiles_skipped_total += 1;
+        self.validate_buffer(buf)?;
+
+        let mut rendered = 0_u32;
+        let mut skipped = 0_u64;
+        let tiles_wide = self.damage.tiles_wide();
+        let tiles_tall = self.damage.tiles_tall();
+        for tile_index in 0..(tiles_wide * tiles_tall) {
+            let tile_x = tile_index % tiles_wide;
+            let tile_y = tile_index / tiles_wide;
+            if !self.damage.is_dirty(tile_x, tile_y) {
+                skipped = skipped.saturating_add(1);
                 continue;
             }
-            render_tile(shell, buf, self.mode, tx, ty)?;
-            rendered += 1;
-            self.tiles_rendered_total += 1;
+            render_tile(shell, buf, self.mode, tile_x, tile_y)?;
+            rendered = rendered.saturating_add(1);
         }
+
         self.damage.clear_all();
-        self.frame_count += 1;
+        self.tiles_rendered_total = self
+            .tiles_rendered_total
+            .saturating_add(u64::from(rendered));
+        self.tiles_skipped_total = self.tiles_skipped_total.saturating_add(skipped);
+        self.frame_count = self.frame_count.saturating_add(1);
         Ok(rendered)
+    }
+
+    /// Renders exactly the ordered tile prefix selected by the frame planner.
+    ///
+    /// Dirty tiles not present in `indices` remain dirty for the next frame.
+    /// The update is transactional with respect to damage state: no dirty bit
+    /// is cleared unless every selected tile rendered successfully.
+    pub fn render_schedule(
+        &mut self,
+        shell: &ObsidianShell,
+        buf: &mut [u8],
+        indices: &[u16],
+    ) -> Result<u32, CompositorError> {
+        self.validate_buffer(buf)?;
+        if indices.len() > MAX_TILES {
+            return Err(CompositorError::InvalidTileSchedule);
+        }
+
+        let tiles_wide = self.damage.tiles_wide();
+        let tiles_tall = self.damage.tiles_tall();
+        let total_tiles = tiles_wide
+            .checked_mul(tiles_tall)
+            .ok_or(CompositorError::InvalidTileSchedule)?;
+        let mut seen = [0_u64; DIRTY_WORDS];
+        let mut rendered = 0_u32;
+        let mut skipped = 0_u64;
+
+        for &encoded in indices {
+            let tile_index = u32::from(encoded);
+            if tile_index >= total_tiles {
+                return Err(CompositorError::InvalidTileSchedule);
+            }
+            let bit_index = tile_index as usize;
+            let mask = 1_u64 << (bit_index % 64);
+            let word = &mut seen[bit_index / 64];
+            if *word & mask != 0 {
+                return Err(CompositorError::InvalidTileSchedule);
+            }
+            *word |= mask;
+
+            let tile_x = tile_index % tiles_wide;
+            let tile_y = tile_index / tiles_wide;
+            if !self.damage.is_dirty(tile_x, tile_y) {
+                skipped = skipped.saturating_add(1);
+                continue;
+            }
+            render_tile(shell, buf, self.mode, tile_x, tile_y)?;
+            rendered = rendered.saturating_add(1);
+        }
+
+        for &encoded in indices {
+            let tile_index = u32::from(encoded);
+            let tile_x = tile_index % tiles_wide;
+            let tile_y = tile_index / tiles_wide;
+            self.damage.clear_tile(tile_x, tile_y);
+        }
+
+        self.tiles_rendered_total = self
+            .tiles_rendered_total
+            .saturating_add(u64::from(rendered));
+        self.tiles_skipped_total = self.tiles_skipped_total.saturating_add(skipped);
+        self.frame_count = self.frame_count.saturating_add(1);
+        Ok(rendered)
+    }
+
+    fn validate_buffer(&self, buf: &[u8]) -> Result<(), CompositorError> {
+        let required = u64::from(self.mode.pitch)
+            .checked_mul(u64::from(self.mode.height))
+            .and_then(|bytes| usize::try_from(bytes).ok())
+            .ok_or(CompositorError::BufferTooSmall)?;
+        if buf.len() < required {
+            return Err(CompositorError::BufferTooSmall);
+        }
+        Ok(())
     }
 
     pub fn stats(&self) -> PipelineStats {
@@ -245,6 +336,7 @@ pub enum CompositorError {
     Obsidian(ObsidianError),
     Display(DisplayError),
     BufferTooSmall,
+    InvalidTileSchedule,
 }
 
 #[cfg(test)]
@@ -306,5 +398,35 @@ mod tests {
         let mut buf = vec![0u8; (mode.pitch * mode.height) as usize];
         pipe.render_dirty(&shell, &mut buf).unwrap();
         assert_eq!(pipe.render_dirty(&shell, &mut buf).unwrap(), 0);
+    }
+
+    #[test]
+    fn budgeted_schedule_leaves_deferred_tiles_dirty() {
+        let mode = test_mode();
+        let shell = sphere_shell();
+        let mut pipe = CompositorPipeline::new(mode);
+        let mut buf = vec![0_u8; (mode.pitch * mode.height) as usize];
+
+        assert_eq!(
+            pipe.render_schedule(&shell, &mut buf, &[0, 1, 4, 5])
+                .unwrap(),
+            4,
+        );
+        assert_eq!(pipe.damage.dirty_tile_count(), 12);
+        assert_eq!(pipe.render_dirty(&shell, &mut buf).unwrap(), 12);
+    }
+
+    #[test]
+    fn duplicate_schedule_is_rejected_without_clearing_damage() {
+        let mode = test_mode();
+        let shell = sphere_shell();
+        let mut pipe = CompositorPipeline::new(mode);
+        let mut buf = vec![0_u8; (mode.pitch * mode.height) as usize];
+
+        assert_eq!(
+            pipe.render_schedule(&shell, &mut buf, &[0, 0]),
+            Err(CompositorError::InvalidTileSchedule),
+        );
+        assert_eq!(pipe.damage.dirty_tile_count(), 16);
     }
 }

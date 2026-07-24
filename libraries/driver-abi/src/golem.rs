@@ -22,7 +22,6 @@
 //         optimal memory policy (latency vs throughput) +
 //         IRQ affinity hint (CPU core range)
 
-#![allow(dead_code)]
 extern crate alloc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};

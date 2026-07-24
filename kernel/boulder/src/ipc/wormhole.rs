@@ -28,7 +28,6 @@
 // Causal ordering: enforced via Lamport logical clocks embedded in each slot.
 //   Violation = paradox → kernel resolves by choosing lower logical clock (past wins).
 
-#![allow(dead_code)]
 extern crate alloc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};

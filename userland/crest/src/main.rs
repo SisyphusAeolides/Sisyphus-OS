@@ -9,8 +9,12 @@ use core::panic::PanicInfo;
 static ALLOC: slope::memory::GlobalSlabHeap = slope::memory::GlobalSlabHeap::new();
 
 use crest::compositor::pipeline::{CompositorPipeline, TILE_SIZE};
+use crest::compositor::Rectangle;
 use crest::manifold::{DisplayMode, PixelFormat};
 use crest::obsidian::{Fixed, ObsidianShell, SdfInstruction, SdfProgram, SemanticAppNode, Vector3};
+use crest::quantum_frame_oracle::{FrameObservation, QuantumFrameOracle};
+use crest::quantum_tile_field::QuantumTileField;
+use slope::quantum_crest::{QuantumDisplayState, QuantumSystemSnapshot};
 
 const WIDTH: u32 = 160;
 const HEIGHT: u32 = 90;
@@ -35,6 +39,8 @@ enum FirstLightError {
     Render,
     EmptyFrame,
     DamagePath,
+    DamageOracle,
+    FrameOracle,
 }
 
 #[unsafe(no_mangle)]
@@ -94,15 +100,75 @@ fn run_first_light() -> Result<FirstLightReport, FirstLightError> {
         .map_err(|_| FirstLightError::Scene)?;
 
     let mut pipeline = CompositorPipeline::new(mode);
+    let mut tile_field =
+        QuantumTileField::new(mode).map_err(|_| FirstLightError::DamageOracle)?;
+    tile_field.mark_rectangle(
+        Rectangle {
+            x: 0,
+            y: 0,
+            width: WIDTH,
+            height: HEIGHT,
+        },
+        1,
+        1,
+        true,
+    );
+    let first_schedule = tile_field
+        .compile_schedule(tile_field.total_tiles(), 0, 0x5449_4c45_5f52_4f4f)
+        .map_err(|_| FirstLightError::DamageOracle)?;
+
+    let mut oracle =
+        QuantumFrameOracle::new(0x4652_414d_455f_4f52)
+            .map_err(|_| FirstLightError::FrameOracle)?;
+    let mut snapshot = QuantumSystemSnapshot::empty();
+    snapshot.sequence = 1;
+    snapshot.epoch = 1;
+    snapshot.logical_tick = 1;
+    snapshot.desktop_session = 1;
+    snapshot.desktop_generation = 1;
+    snapshot.display = QuantumDisplayState {
+        width: WIDTH,
+        height: HEIGHT,
+        pitch: PITCH,
+        format: PixelFormat::Argb8888 as u32,
+        refresh_millihertz: 60_000,
+        beam_position: 0,
+        present_sequence: 0,
+        frame_budget_ticks: 1_u64 << 56,
+        predicted_render_ticks: 0,
+        damage_tiles: first_schedule.scheduled as u32,
+        total_tiles: tile_field.total_tiles() as u32,
+    };
+
+    let first_begin = slope::time::read_counter();
+    let first_plan = oracle
+        .plan(snapshot, &first_schedule, first_begin)
+        .map_err(|_| FirstLightError::FrameOracle)?;
 
     // SAFETY: `_start` is the sole owner of this retained buffer.
     let frame = unsafe { &mut *FRAME.0.get() };
 
     let first_tiles = pipeline
-        .render_dirty(&shell, frame)
+        .render_schedule(
+            &shell,
+            frame,
+            &first_schedule.indices()[..first_plan.tile_budget],
+        )
         .map_err(|_| FirstLightError::Render)?;
+    let first_end = slope::time::read_counter();
+    oracle
+        .observe(FrameObservation {
+            frame_sequence: first_plan.frame_sequence,
+            rendered_tiles: first_tiles.max(1) as usize,
+            render_ticks: first_end.saturating_sub(first_begin),
+            missed_deadline: first_end >= first_plan.deadline_tick,
+            present_tick: first_end,
+        })
+        .map_err(|_| FirstLightError::FrameOracle)?;
     let expected_tiles = WIDTH.div_ceil(TILE_SIZE) * HEIGHT.div_ceil(TILE_SIZE);
-    if first_tiles != expected_tiles {
+    if first_plan.tile_budget != expected_tiles as usize
+        || first_tiles != expected_tiles
+    {
         return Err(FirstLightError::EmptyFrame);
     }
 
@@ -111,10 +177,57 @@ fn run_first_light() -> Result<FirstLightReport, FirstLightError> {
         return Err(FirstLightError::EmptyFrame);
     }
 
-    pipeline.invalidate_rect(WIDTH / 4, HEIGHT / 4, WIDTH / 2, HEIGHT / 2);
+    let partial = Rectangle {
+        x: (WIDTH / 4) as i32,
+        y: (HEIGHT / 4) as i32,
+        width: WIDTH / 2,
+        height: HEIGHT / 2,
+    };
+    pipeline.invalidate_rect(
+        partial.x as u32,
+        partial.y as u32,
+        partial.x as u32 + partial.width,
+        partial.y as u32 + partial.height,
+    );
+    tile_field.complete_prefix(
+        &first_schedule,
+        first_plan.tile_budget,
+        first_end,
+    );
+    tile_field.mark_rectangle(partial, first_end, 2, false);
+    let second_schedule = tile_field
+        .compile_schedule(tile_field.total_tiles(), 0, 0x5449_4c45_5f52_4f4f)
+        .map_err(|_| FirstLightError::DamageOracle)?;
+    snapshot.sequence = 2;
+    snapshot.logical_tick = first_end.max(2);
+    snapshot.display.damage_tiles = second_schedule.scheduled as u32;
+
+    let second_begin = slope::time::read_counter();
+    let second_plan = oracle
+        .plan(snapshot, &second_schedule, second_begin)
+        .map_err(|_| FirstLightError::FrameOracle)?;
     let second_tiles = pipeline
-        .render_dirty(&shell, frame)
+        .render_schedule(
+            &shell,
+            frame,
+            &second_schedule.indices()[..second_plan.tile_budget],
+        )
         .map_err(|_| FirstLightError::Render)?;
+    let second_end = slope::time::read_counter();
+    oracle
+        .observe(FrameObservation {
+            frame_sequence: second_plan.frame_sequence,
+            rendered_tiles: second_tiles.max(1) as usize,
+            render_ticks: second_end.saturating_sub(second_begin),
+            missed_deadline: second_end >= second_plan.deadline_tick,
+            present_tick: second_end,
+        })
+        .map_err(|_| FirstLightError::FrameOracle)?;
+    tile_field.complete_prefix(
+        &second_schedule,
+        second_plan.tile_budget,
+        second_end,
+    );
     if second_tiles == 0 || second_tiles >= first_tiles {
         return Err(FirstLightError::DamagePath);
     }
@@ -129,6 +242,13 @@ fn run_first_light() -> Result<FirstLightReport, FirstLightError> {
         second_tiles,
         frame_count: stats.frame_count,
         skipped_tiles: stats.tiles_skipped_total,
+        first_plan_root: first_plan.root,
+        second_plan_root: second_plan.root,
+        first_predicted_ticks: first_plan.predicted_render_ticks,
+        second_predicted_ticks: second_plan.predicted_render_ticks,
+        conformal_guard_ticks: oracle
+            .conformal_guard_ticks()
+            .map_err(|_| FirstLightError::FrameOracle)?,
     })
 }
 
@@ -149,10 +269,15 @@ struct FirstLightReport {
     second_tiles: u32,
     frame_count: u64,
     skipped_tiles: u64,
+    first_plan_root: u64,
+    second_plan_root: u64,
+    first_predicted_ticks: u64,
+    second_predicted_ticks: u64,
+    conformal_guard_ticks: u64,
 }
 
 fn publish_report(report: FirstLightReport) {
-    let mut line = [0_u8; 192];
+    let mut line = [0_u8; 320];
     let mut cursor = 0_usize;
 
     cursor = append(&mut line, cursor, b"[CREST] first-light PASS root0=");
@@ -167,6 +292,16 @@ fn publish_report(report: FirstLightReport) {
     cursor = append_u64(&mut line, cursor, report.frame_count);
     cursor = append(&mut line, cursor, b" skipped=");
     cursor = append_u64(&mut line, cursor, report.skipped_tiles);
+    cursor = append(&mut line, cursor, b" plan0=");
+    cursor = append_hex(&mut line, cursor, report.first_plan_root);
+    cursor = append(&mut line, cursor, b" plan1=");
+    cursor = append_hex(&mut line, cursor, report.second_plan_root);
+    cursor = append(&mut line, cursor, b" predicted=");
+    cursor = append_u64(&mut line, cursor, report.first_predicted_ticks);
+    cursor = append(&mut line, cursor, b"/");
+    cursor = append_u64(&mut line, cursor, report.second_predicted_ticks);
+    cursor = append(&mut line, cursor, b" guard=");
+    cursor = append_u64(&mut line, cursor, report.conformal_guard_ticks);
     cursor = append(&mut line, cursor, b"\n");
 
     let _ = slope::io::write(1, &line[..cursor]);
@@ -180,6 +315,8 @@ fn publish_failure(error: FirstLightError) {
         FirstLightError::Render => b"[CREST] first-light FAIL render\n".as_slice(),
         FirstLightError::EmptyFrame => b"[CREST] first-light FAIL empty-frame\n".as_slice(),
         FirstLightError::DamagePath => b"[CREST] first-light FAIL damage-path\n".as_slice(),
+        FirstLightError::DamageOracle => b"[CREST] first-light FAIL damage-oracle\n".as_slice(),
+        FirstLightError::FrameOracle => b"[CREST] first-light FAIL frame-oracle\n".as_slice(),
     };
     let _ = slope::io::write(1, message);
 }

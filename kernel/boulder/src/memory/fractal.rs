@@ -16,7 +16,6 @@
 // because the memory layout is chaotic and non-linear. Adjacent virtual pages
 // map to wildly different physical locations based on chaotic dynamics.
 
-#![allow(dead_code)]
 extern crate alloc;
 use alloc::collections::BTreeMap;
 

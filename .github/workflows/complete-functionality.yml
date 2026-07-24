@@ -12,6 +12,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Structural source audit
+        run: python3 scripts/static-repository-audit.py
+      - name: Driver ABI reference compile
+        run: scripts/check-driver-abi.sh
       - uses: dtolnay/rust-toolchain@1.85.0
         with:
           components: rustfmt,clippy

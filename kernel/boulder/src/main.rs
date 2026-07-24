@@ -10,8 +10,8 @@ use boulder::arch::x86_64::{active_page_table_root, enable_execute_disable, halt
 use boulder::boot::acpi::discover_madt;
 use boulder::boot::multiboot2::BootInformation;
 use boulder::capability::{
-    ArtifactSynthesisControl, Authority, FabricControl, FaultPolicyControl, LearningControl,
-    MachineProfileControl, MemorySharingControl, PhysicalMemoryControl, PolicyControl,
+    ArtifactSynthesisControl, Authority, DeviceMemoryControl, FabricControl, FaultPolicyControl,
+    LearningControl, MachineProfileControl, MemorySharingControl, PhysicalMemoryControl, PolicyControl,
     ProcessInstallControl, ResonanceControl, UserlandImageControl,
 };
 use boulder::cpu::topology::{self, ExecutionClass, TopologyPolicy};
@@ -223,6 +223,34 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
         multiboot_physical_address,
         multiboot_physical_address + boot.total_size()
     );
+    let boot_framebuffer = match boot.framebuffer() {
+        Ok(framebuffer) => framebuffer,
+        Err(boulder::boot::multiboot2::BootError::UnsupportedFramebuffer) => {
+            let _ = writeln!(
+                serial,
+                "Boulder: firmware framebuffer format unsupported; continuing headless"
+            );
+            None
+        }
+        Err(error) => {
+            let _ = writeln!(serial, "Boulder: framebuffer tag rejected: {error:?}");
+            halt();
+        }
+    };
+    if let Some(framebuffer) = boot_framebuffer {
+        let _ = writeln!(
+            serial,
+            "Boulder: firmware framebuffer {:#x}..{:#x} {}x{} pitch={} format={}",
+            framebuffer.physical_address,
+            framebuffer.end().unwrap_or(framebuffer.physical_address),
+            framebuffer.width,
+            framebuffer.height,
+            framebuffer.pitch,
+            framebuffer.format,
+        );
+    } else {
+        let _ = writeln!(serial, "Boulder: no supported firmware framebuffer");
+    }
     let push_module = match boot.module(b"push") {
         Ok(module) => module,
         Err(error) => {
@@ -377,6 +405,28 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
         if let Err(error) = reservations.push(reservation) {
             let _ = writeln!(serial, "Abyss: reservation table failed: {error:?}");
             halt();
+        }
+    }
+
+    if let Some(framebuffer) = boot_framebuffer {
+        if framebuffer.physical_address < IDENTITY_MAP_END {
+            let end = framebuffer
+                .end()
+                .unwrap_or(framebuffer.physical_address)
+                .min(IDENTITY_MAP_END);
+            if end > framebuffer.physical_address {
+                if let Err(error) = reservations.push(Reservation::new(
+                    PhysicalAddress::new(framebuffer.physical_address),
+                    PhysicalAddress::new(end),
+                    ReservationKind::DeviceMemory,
+                )) {
+                    let _ = writeln!(
+                        serial,
+                        "Abyss: framebuffer reservation failed: {error:?}"
+                    );
+                    halt();
+                }
+            }
         }
     }
 
@@ -816,23 +866,91 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
         pci_inventory.devices().len()
     );
 
-    // Drivernet: collapse GPU driver superposition before Kairos profiles I/O.
-    let mut blacklab_complex = boulder::blacklab_bootstrap::KernelBlackLabComplex::new(
-        boulder::blacklab_bootstrap::BlackLabSeeds {
-            ledger_secret: 0x1111111111111111,
-            plan_secret: 0x2222222222222222,
-            dma_secret: 0x3333333333333333,
-            ledger_epoch: 1,
+    // Drivernet: derive a per-boot, measurement-bound control domain before
+    // collapsing the GPU strategy set. No driver key is a repeated literal.
+    let gpu_boot_counter =
+        <boulder::arch::Active as boulder::arch::Architecture>::counter_sample();
+    let gpu_domains = match boulder::drivernet_host::derive_gpu_boot_domains(
+        PUSH_EXPECTED_SHA256,
+        gpu_boot_counter,
+        &pci_inventory,
+        boot_framebuffer,
+    ) {
+        Ok(domains) => domains,
+        Err(error) => {
+            let _ = writeln!(
+                serial,
+                "Boulder: GPU boot-domain derivation failed: {error:?}"
+            );
+            halt();
         }
-    ).unwrap();
-    let drivernet =
-        boulder::drivernet_host::resolve_drivernet(&pci_inventory, &authority, &mut blacklab_complex);
+    };
+    let mut blacklab_complex = match
+        boulder::blacklab_bootstrap::KernelBlackLabComplex::new(
+            gpu_domains.blacklab,
+        )
+    {
+        Ok(complex) => complex,
+        Err(error) => {
+            let _ = writeln!(serial, "Boulder: Blacklab bootstrap failed: {error:?}");
+            halt();
+        }
+    };
+    let blacklab_policy = authority.grant::<boulder::capability::PolicyControl>();
+    if let Err(error) = blacklab_complex.install_default_rules(&blacklab_policy) {
+        let _ = writeln!(serial, "Boulder: Blacklab rule install failed: {error:?}");
+        halt();
+    }
+    let drivernet = match boulder::drivernet_host::resolve_drivernet(
+        &pci_inventory,
+        boot_framebuffer,
+        gpu_domains.drivernet,
+        &authority,
+        &mut blacklab_complex,
+    ) {
+        Ok(summary) => summary,
+        Err(error) => {
+            let _ = writeln!(serial, "Boulder: Drivernet resolution failed: {error:?}");
+            halt();
+        }
+    };
     let _ = writeln!(
         serial,
         "Boulder: drivernet resolved {} GPU slot(s), {} display function(s)",
         drivernet.length,
         drivernet.fingerprint_summary.display_functions
     );
+
+    if let Some(primary) = drivernet.primary().filter(|resolution| {
+        resolution.strategy
+            == boulder::drivers::drivernet::model::DriverStrategy::FirmwareFramebuffer
+            && resolution.framebuffer_object != 0
+    }) {
+        let device_memory = authority.grant::<DeviceMemoryControl>();
+        match boulder::drivers::firmware_display::render_boot_signature(
+            primary.framebuffer_object,
+            &device_memory,
+        ) {
+            Ok(report) => {
+                let _ = writeln!(
+                    serial,
+                    "Boulder: firmware scanout verified object={:#x} generation={} pixels={} samples={} root={:#x}",
+                    report.object,
+                    report.generation,
+                    report.pixels_written,
+                    report.pixels_verified,
+                    report.image_root,
+                );
+            }
+            Err(error) => {
+                let _ = writeln!(
+                    serial,
+                    "Boulder: firmware scanout verification failed: {error:?}"
+                );
+                halt();
+            }
+        }
+    }
 
     // Manifold: PCI/drivernet → cluster quiver → Hodge Δ₁ → NTT64 fairq
     boulder::manifold_orchestrator::boot_after_drivernet(

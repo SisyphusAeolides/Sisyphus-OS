@@ -1,341 +1,291 @@
 # Sisyphus OS
 
-Sisyphus OS is a Rust-first operating system organized around narrow, explicit
-boundaries between memory management, the kernel, drivers, system libraries,
-and userland.
+**A Rust-first research operating system built around measured boot, explicit
+capabilities, bounded state, mathematical control, and fail-closed hardware
+activation.**
+
+Sisyphus OS is intentionally experimental. Its unusual names are not a promise
+of magic: every production path is expected to identify its inputs, authority,
+resource bounds, failure behavior, observable result, and validation evidence.
+Unsupported operations remain unavailable rather than reporting work that did
+not happen.
+
+## Current engineering status
+
+| Area | Status | Evidence |
+|---|---|---|
+| Multiboot2 long-mode boot | Implemented | Memory map, modules, ACPI roots, framebuffer tag, COM1 boot trace |
+| Physical memory | Implemented | Typed reservations and bounded bitmap frame allocation |
+| Interrupt foundation | Implemented | IDT, PIC fallback, xAPIC, I/O APIC routing, timer calibration |
+| Measured PID 1 transfer | Implemented | Static ELF validation, W^X mapping, retained user stack, Ring 3 entry |
+| General process creation | Fail-closed | Lifecycle registry exists; `spawn` and `wait` remain unavailable until retained address-space ownership and context switching are complete |
+| Firmware display | Implemented | Multiboot framebuffer evidence, retained object, bounded MMIO mapping, write/read verification |
+| Native GPU activation | Fail-closed | Compatibility proof and probe evidence exist; activation requires real generation-specific BAR, DMA, interrupt, reset, and firmware backends |
+| Hermes GSP transport | Implemented foundation | Versioned wire ABI, compatibility manifests, bounded rings, deadline admission, reply tracking, fault states |
+| Crest software compositor | Implemented | Fixed-point scene evaluation, damage tiles, deterministic first-light frame |
+| Crest hardware presentation | In progress | Firmware scanout exists in Boulder; a general userland present lease is not yet complete |
+| Foreign driver personalities | Version-scoped | Object validation and narrow service tables exist; unsupported contracts reject loading |
+
+A subsystem should be described as complete only after the exact commit passes
+host tests, custom-target builds, and the relevant boot or hardware assertion.
 
 ## Architecture
 
-- `core/abyss`: physical and virtual memory primitives.
-- `core/aether`: explicit effect machines, bounded flight recording, and policy execution.
-- `core/blacklab`: logical-time, inference, and adaptation planning.
-- `core/kairos`: ABI negotiation, normalized machine profiles, and object authority.
-- `kernel/boulder`: kernel core and C driver host.
-- `libraries/driver-abi`: canonical Rust definition of the stable C driver ABI.
-- `libraries/slope`: syscall, shared-memory, DMA-ring, time, and storage contracts.
-- `userland/push`: measured PID 1, bounded supervision, and capability policy.
-- `userland/corinth`: bounded package DNA, synthesis, integration, and swarm transport.
-- `userland/crest`: display/input contracts and fixed-point semantic rendering.
-
-## Advanced Subsystems
-
-Sisyphus OS embraces advanced, state-based, and mathematically rigorous metaphors for operating system design:
-- **Zero-Copy Ring IPC**: Causal time-reversal message passing using CTC (Closed Timelike Curve) ring buffers and holographic semantic hashing.
-- **Temporal Entropy Engine**: An entropy engine that harvests CPU jitter to feed a cellular automaton, searching for temporal patterns to predict optimal preemption windows.
-- **State-Space Scheduler**: A workload scheduler that models processes as vector states, dynamically recalculating their coupling energy to solve for the optimal co-schedule.
-- **Causal Execution Graph**: A spacetime execution graph that tracks all kernel events as nodes in a light cone, detecting causal violations and deadlocks via topological sort.
-- **Speculative Branch Sandbox**: A speculative execution sandbox that physically bifurcates the execution state to evaluate both sides of an uncertain branch simultaneously, collapsing the state only when the truth is observed.
-- **Holographic Hash Filesystem**: A log-structured filesystem where files are hashed into a 2D holographic representation, eventually migrating as compacted data into the entropy engine.
-- **Non-Linear Page Tables**: An iterated function system memory space where virtual addresses are mapped to physical frames via chaotic dynamics, rendering ROP chains mathematically impossible.
-- **Deep-Packet IPC Firewall**: An intrusion detection system where patrolling agents inspect IPC channels, quarantine malicious packets, and broadcast extracted signatures to trigger termination in rogue processes.
-- **Co-Location Scheduler**: Inspired by endosymbiosis, this module forces highly communicative processes into shared execution—entangling their page tables and permanently collapsing their IPC overhead into a single host.
-- **Morphic ABI Transpiler**: Auto-detects foreign C driver ABIs via machine-code prologue analysis and generates live JIT trampolines to seamlessly bridge calling conventions to the kernel on the fly.
-- **Behavioral Fingerprinter**: A no_std Naive Bayes classifier that watches a transpiled driver's first 1000 syscalls to deduce its hardware class (GPU, NIC, Storage) without source code, automatically granting exactly the right capability subsets.
-- **Transactional Driver Membrane**: A self-healing transactional barrier surrounding the driver ABI. If a closed-source driver crashes mid-execution, it rolls back the kernel state and resurrects the driver from its last known-good checkpoint.
-- **Proof-Carrying Control Kernel**: A proof-carrying actuation loop managed by the Manifold Orchestrator. Models resource congestion as heat diffusion, simplifies driver dependencies via graph fusion, locates bottlenecks using Tropical max-plus semirings, guarantees fair-queue service mathematically, and strictly validates kernel state mutations against a stabilizer algebra.
-
-## C driver contract
-
 ```text
-C DRIVER BLOB (.so / .ko / .dll / .elf)
-  │
-  ▼
-PROMETHEUS: scan_elf64_for_entry() → PrologueDecoder → CallingConv detected
-  │  if MsX64: gen_msx64_to_sysv thunk (live x86 machine code)
-  │  if SysV:  gen_passthrough thunk
-  ▼
-KernelApi vtable handed to driver with all fn pointers wrapped through...
-  │
-  ▼
-LAZARUS: arm_watchdog() → driver calls mmio_map / dma_alloc / irq_register
-  │  each call journaled → on crash: rollback() → resurrect() → re-probe
-  │
-  ▼
-GOLEM: records every KernelApi call → after 1024 calls: classify()
-  │  NaiveBayes → DriverArchetype → recommended_caps() + irq_core_hint()
-  │  kernel auto-updates DriverDescriptor.required_capabilities
-  ▼
-DRIVER IS ALIVE, CLASSIFIED, CRASH-PROOF — ZERO SOURCE CODE REQUIRED
+                           measured boot image
+                                  │
+                                  ▼
+┌──────────────────────────────── BOULDER ────────────────────────────────┐
+│ Multiboot2  ACPI  PCI  memory  interrupts  syscalls  capabilities      │
+│      │       │    │      │         │          │           │            │
+│      └───────┴────┴──────┴─────────┴──────────┴───────────┘            │
+│                                  │                                      │
+│                    evidence-bearing kernel state                        │
+│                                  │                                      │
+│     ┌────────────────────────────┼────────────────────────────┐         │
+│     ▼                            ▼                            ▼         │
+│ Drivernet                 Manifold control              Nexus runtime   │
+│ compatibility proofs      certified queue pressure      lease admission │
+│ transactional brokers     predictive containment        rollback/replay │
+└─────┬────────────────────────────┬────────────────────────────┬─────────┘
+      │                            │                            │
+      ▼                            ▼                            ▼
+  driver ABI                    Slope ABI                  measured PID 1
+      │                            │                            │
+      └────────────────────────────┴────────────────────────────┘
+                                   │
+                     ┌─────────────┼─────────────┐
+                     ▼             ▼             ▼
+                   Push         Corinth         Crest
+                supervision     synthesis     compositor
 ```
 
-The kernel exposes a versioned function table to drivers. Drivers receive no
-Rust types and no direct access to kernel data structures. Every public
-structure starts with ABI metadata, all resources use opaque handles, and
-optional services are advertised through capability bits and nullable function
-pointers.
+### Repository map
 
-This contract supports portable freestanding C drivers written for Sisyphus.
-Drivers written for Linux, BSD, Windows, or another kernel still need an API
-compatibility layer because their source code calls that kernel's internal
-interfaces.
+```text
+core/
+  abyss/        physical and virtual memory primitives
+  aether/       bounded effects, policy execution, causal recording
+  blacklab/     logical-time models, inference, adaptation proposals
+  kairos/       ABI negotiation, topology snapshots, object authority
 
-The canonical C header is
-`kernel/boulder/include/sisyphus/driver.h`. A linked reference driver lives in
-`kernel/boulder/drivers/reference` and is exercised by the Rust test suite.
+kernel/
+  boulder/      boot, memory, interrupts, scheduling, drivers, syscalls
 
-Boulder also contains compatibility foundations for externally built C code:
+libraries/
+  driver-abi/   stable C and GPU compatibility wire contracts
+  slope/        user/kernel ABI, shared pages, time, service calculus
 
-- bounds-checked ELF64 relocatable-object and shared-object validation;
-- a W^X load-plan validator and bounded AMD64 relocation engine;
-- an explicit external-symbol allowlist and a small versioned Linux KPI subset;
-- serialized C device and network vtable adapters;
-- backend-gated IOMMU domains, deferred hotplug events, and device typestates.
+userland/
+  push/         measured PID 1 and bounded supervision
+  corinth/      package synthesis and integration machinery
+  crest/        fixed-point desktop and damage-tracked compositor
+  cerebral/     shared control-plane client
 
-The Mirage personality registry selects a versioned object format, calling
-convention, service table, and external-symbol allowlist for each foreign
-environment. The current Linux personalities expose a deliberately small
-symbol subset. Windows NT personalities expose Win64 pool allocation/free and
-a bounded PE32+ load-plan validator, while IRP layouts remain behind a
-version-specific opaque bridge. FreeBSD personalities fail closed until their
-native contracts and service implementations are installed. Mirage thunk pages
-follow a writable-then-executable lifecycle;
-cross-ABI thunk generation remains disabled until complete register, stack,
-floating-point, and unwind translation is available.
+tools/
+  reality-gate/ source functionality ledger and façade detection
+```
 
-VT-d table support uses 128-bit root and context entries with explicit
-context-cache and IOTLB invalidation hooks. Translation activation remains
-behind a platform backend so firmware DMAR discovery and capability checks
-must succeed before hardware registers are touched.
+## Black-lab control mathematics
 
-These components do not claim that an arbitrary foreign kernel module can run
-unchanged. Linux, BSD, and Windows drivers depend on large, version-specific
-kernel interfaces and execution assumptions. Each compatibility personality
-must resolve and validate those contracts before executable module loading is
-enabled.
+The current upgrade unifies Boulder command admission and Crest frame planning
+around one allocation-free service-calculus core in
+`libraries/slope/src/service_calculus.rs`.
 
-`DriverHost` derives its capability mask and callback table directly from the
-installed services. A capability cannot be advertised without its backend.
-`AbyssAllocator` connects the C allocation callbacks to Abyss's bootstrap bump
-allocator. The default early-boot host intentionally exposes logging only;
-MMIO, DMA, IRQ, clocks, sleeping, and device publication become visible to
-drivers only after Boulder installs their initialized Ring 0 services.
+### Deterministic min-plus service bound
 
-## Local checks
+A rate-latency service curve provides a hard delay envelope for a new job with
+backlog `q`:
+
+```text
+windows(q) = ceil((q + 1) / minimum_completions_per_window)
+deterministic_delay(q) = latency + windows(q) × window_ticks
+```
+
+Admission is rejected if the complete delay cannot fit the caller's deadline.
+The controller also enforces a bounded arrival envelope and maximum live
+backlog.
+
+### One-sided conformal calibration
+
+Completed work contributes only positive underprediction residuals. A bounded
+order statistic supplies an uncertainty guard without assuming Gaussian noise:
+
+```text
+residual = max(0, observed_delay - predicted_delay)
+guard = conformal_quantile(last N residuals) + fixed_slack
+```
+
+The same fixed-capacity implementation is consumed by:
+
+- Hermes GSP command admission in Boulder;
+- Crest's frame oracle and first-light diagnostic.
+
+### Drift-plus-penalty pressure
+
+A virtual Lyapunov backlog records sustained under-service. It raises admission
+pressure when work completes later than the certified bound and drains as
+service windows advance. This does not replace the deterministic safety bound;
+it adds an adaptive penalty while keeping the hard admission rule explicit.
+
+Every accepted job receives a sealed admission certificate containing:
+
+```text
+reservation sequence
+window position
+backlog and arrival count
+deterministic delay
+conformal uncertainty guard
+drift penalty
+deadline slack
+service-curve root
+calibration root
+certificate root
+```
+
+## GPU universality without false universality
+
+Sisyphus OS does not select a driver from a vendor ID alone. The portable GPU
+ABI describes both measured device evidence and a driver's compatibility
+obligations:
+
+```text
+PCI identity and class
+revision interval
+BAR type and minimum size
+topology requirements
+IOMMU isolation
+required and optional features
+firmware-surface policy
+architecture hint
+```
+
+`GpuCompatibilityProof` records satisfied, missing, and violated obligations.
+A strategy is eligible only when its complete proof accepts. Native activation
+still remains unavailable unless a generation-specific backend can establish
+real isolation, transport, reset, interrupt, and health evidence.
+
+The firmware framebuffer is a real fallback, not a fabricated driver. Boulder
+parses the Multiboot2 direct-color framebuffer tag, creates a generation-checked
+object, maps at most one MiB for the boot signature, performs volatile writes,
+reads verification samples back, unmaps the aperture, and reports a sealed
+image root.
+
+The boot-domain schedule binds the measured image, boot counter, PCI inventory,
+and framebuffer transcript. It provides deterministic domain separation and
+transcript binding; it is not secret entropy unless a platform randomness
+source is mixed into the root material.
+
+## Crest: deterministic first light
+
+The Crest executable performs a real bounded rendering diagnostic:
+
+1. construct two fixed-point signed-distance scenes;
+2. compile a Hilbert-ordered tile schedule;
+3. obtain a conformal frame-time plan;
+4. render a complete frame;
+5. feed the measured counter delta back into the frame oracle;
+6. invalidate a partial rectangle;
+7. re-plan and render only the affected tiles;
+8. publish frame roots, plan roots, predicted ticks, and the learned guard.
+
+Expected serial evidence has this shape:
+
+```text
+[CREST] first-light PASS root0=0x... root1=0x... tiles=N/M \
+frames=2 skipped=N plan0=0x... plan1=0x... predicted=N/M guard=N
+```
+
+This proves software composition and adaptive frame planning. It does not claim
+that a standalone Crest process is already presenting through every native GPU.
+
+## Driver contract
+
+The stable C driver boundary is defined in:
+
+```text
+kernel/boulder/include/sisyphus/driver.h
+libraries/driver-abi/
+```
+
+Drivers receive a versioned function table, opaque handles, and only the
+capabilities backed by initialized kernel services. The early host exposes
+logging; MMIO, DMA, IRQ, clocks, sleeping, and publication are advertised only
+when their backends exist.
+
+Foreign personalities are explicit and version-scoped. A Linux, BSD, or
+Windows driver depends on that kernel's internal object, synchronization,
+allocation, interrupt, and unwind contracts. Unresolved contracts reject the
+module. Cross-ABI thunks must prove register, stack, floating-point, and unwind
+translation before executable use.
+
+## Process model
+
+Boulder can install and enter the measured Push image as PID 1. The lifecycle
+registry is fixed-capacity and generation-checked; it admits a runnable process
+only after receiving a complete launch record containing:
+
+```text
+address-space root
+user entry and stack
+kernel stack
+image measurement root
+capability root
+service class and priority
+```
+
+General `spawn` and `wait` are intentionally fail-closed today. Completing them
+requires retained per-process address spaces, kernel stacks, saved trap
+contexts, timer-driven selection, CR3/TSS switching, parent wakeup, and exact
+resource reclamation. PID allocation alone is not treated as execution.
+
+## Build and validation
+
+Host and workspace checks:
 
 ```sh
+cargo fmt --all --check
 cargo check --workspace
-cargo test -p boulder
-cargo user-push
-cargo kernel
+cargo test --workspace
+cargo check -p crest --features os-bin
+cargo run -p sisyphus-reality-gate -- \
+  --root . \
+  --ledger target/sisyphus-functionality-ledger.tsv
 ```
 
-The custom target is intentionally not the workspace default, which keeps host
-tests usable. Current Rust releases require nightly for JSON targets. Boot-target
-builds use `x86_64-sisyphus.json` with custom `core`, `alloc`, and
-`compiler_builtins`;
-that stage also requires the `rust-src` component.
-
-## Booting Boulder
-
-Boulder boots through Multiboot2, creates an identity map for the first GiB,
-enters x86-64 long mode, and reports early boot state on COM1. GRUB's memory map
-is validated and copied into Abyss before the bootstrap heap is selected. Abyss
-then builds a reclaiming bitmap frame allocator with typed reservations for low
-memory, the kernel, boot information, heap, and allocator metadata. Boulder also
-installs a higher-half physical alias and a dedicated cache-disabled MMIO window.
-The bootstrap CPU then installs a 256-entry IDT, remaps and masks the legacy
-8259 PIC, and exposes generation-checked IRQ registrations to C drivers. APIC
-capability is detected at boot, the local xAPIC is enabled through the uncached
-MMIO window, and a self-IPI validates local routing. Boulder validates the
-Multiboot ACPI root pointer, traverses the RSDT or XSDT, parses the MADT, applies
-interrupt-source overrides, and programs every I/O APIC redirection entry from
-a masked state. The local APIC timer is calibrated against PIT channel 2 and
-must deliver repeated periodic interrupts before boot can complete. Legacy PCI
-configuration-space discovery records all present functions while respecting
-multifunction headers.
-
-MADT processor records retain firmware UIDs, APIC/x2APIC IDs, enabled state,
-and online-capable state. Boulder assigns the boot processor to Aegis, reserves
-up to two discovered APs for Mirage enclaves, and leaves a compute core when
-the machine is large enough. APs remain in the discovered state until a later
-INIT/SIPI startup handshake marks each one online. Role enforcement is an
-explicit execution authorization check; it does not disable the interrupts
-needed for timers, IPIs, or watchdog delivery.
-
-The real-time scheduler implements fixed-capacity EDF admission for independent,
-preemptible, implicit-deadline periodic tasks using conservative integer
-utilization accounting. Runtime budgets, absolute deadlines, missed releases,
-and overruns are reported explicitly. RTM wrappers are CPUID-gated rollback
-aids only and are not treated as memory-security boundaries.
-
-Boulder has a compile-time architecture contract for CPU identity, local
-counter sampling, interrupt-state preservation, local TLB invalidation, and idle
-behavior. The x86-64 backend is implemented; additional architecture backends
-remain gated until their boot, interrupt-controller, and page-table paths are
-complete. Scoped authority proofs make privileged operations explicit without
-claiming that kernel bootstrap cannot construct the root authority.
-
-The bounded heterogeneous fabric routes fixed-size work descriptors to CPU,
-firmware, copy, compute, media, or remote nodes by capability and NUMA domain.
-Node queues and work slots use generation-checked handles, explicit completion
-transitions, and bounded capacity. The initial implementation serializes
-metadata and is restricted to thread context; interrupt handlers must defer
-work through an IRQ handoff queue.
-
-Aether provides allocation-free effect state machines whose handlers fail
-closed on unknown operations, a bounded single-writer flight recorder with
-stable logical tickets, and a policy VM with verified registers and branches,
-bounded execution fuel, serialized program replacement, and explicit
-host-call registration. It executes policy mutations across a trinary
-counterfactual Reality Forge (lanes α, β, and γ), reducing state divergence
-to a 2-of-3 consensus majority. This self-verifying state-transmutation layer
-ensures deterministic replay and fault containment without hidden runtime
-machinery. Rejected realities are preserved in a bounded Divergence Vault,
-while committed transitions are cryptographically sealed into a 128-byte
-Transition Certificate, published atomically to user-space via Cerebral's
-read-only pages. 
-
-Final machine model:
-```text
-typed effect program
-        │
-        ▼
-causal CPU quorum
-        │
-        ▼
-trinary reality forge
-  α         β         γ
-        │
-        ▼
-invariant mesh
-        │
-        ▼
-live atomic cutover
-        │
-        ├── transition certificate
-        ├── witness-chain root
-        └── protected pre-state
-                    │
-          2048 logical ticks later
-                    │
-                    ▼
-             temporal echo
-                    │
-        ┌───────────┴───────────┐
-        ▼                       ▼
- exact reproduction         divergence
-        │                       │
-        ▼                       ▼
- echo-chain proof       guarded state rewind
-```
-
-Software provenance, speculative journals, and linear session
-IPC remain disabled until their cross-CPU ownership and revocation models are
-complete.
-
-Kairos strictly negotiates self-describing ABI layouts and feature
-intersections, constructs bounded machine profiles from Boulder's real ACPI,
-boot-memory, and PCI observations, and synthesizes immutable machine and NUMA
-domain snapshots. Its shared C wire layouts are defined once in `core/kairos`.
-Boulder exposes bounded topology-query and ABI-negotiation syscalls that copy
-through validated user-writable mappings without placing the 70 KiB topology
-reply on the kernel entry stack. Slope retains the raw reply in process-wide
-storage, validates counts, domain membership, parents, and feature grants, and
-provides zero-allocation CPU/domain iterators, workload affinity hints, and
-CPU-proportional NUMA work partitions. The kernel advertises only implemented
-features, so required capabilities fail closed while optional capabilities are
-reported as unavailable. Slope also centralizes argv/environment collapse and
-Kairos setup in `ProcessRuntime` for binaries using the process-entry stack ABI.
-Boulder now allocates a retained multi-page user stack, materializes
-`[argc][argv][envp]` with C strings, and passes its base through the Ring 3
-entry trampoline. Push now negotiates ABI features, queries the topology, and
-dispatches a bounded NUMA-aware executor probe before entering supervision.
-The large topology snapshot is retained in process-lifetime storage so nested
-aggregate return paths never turn user stack data into kernel addresses.
-Kairos's internal object table uses
-non-cloneable, generation-checked handles with rights attenuation and opaque
-payload handles. Raw-pointer message transport and mutable global profile
-publication remain disabled pending per-process handle tables and
-revocation-safe ownership transfer.
-
-Black Lab evaluates a checked rational logical-time model, stores bounded
-semantic memory relationships through object handles and page numbers, ranks
-validated hardware-personality transforms, and emits resonance plans from
-immutable snapshots. Its fixed-shape INT8 inference uses checked configuration,
-i64 accumulators, and bounded operation counts. Thermal forecasts become power
-advice only after offline validation metadata passes the configured quality
-gate. Its Q16.16 PA-I learner publishes atomic weight snapshots and provides
-telemetry only; it cannot authorize memory access. Resonance outputs remain
-advisory and never directly remap memory or reconfigure hardware. Aion's
-bounded evolution chamber uses an explicit deterministic seed, scores each
-forecast once against later observations, preserves four elites, and requires
-minimum evidence before producing a new generation. Evolved candidates remain
-non-actionable until independently validated through the thermal quality gate.
-Echidna represents temporary cross-address-space sharing as generation-checked,
-expiring metadata leases; the memory manager must separately validate and map
-their opaque object handles. Tartarus tracks retired ranges in software and
-returns quarantine decisions while placing learning samples on a bounded queue.
-It neither overloads architecture page-table bits nor trains a model in an
-exception handler.
-Oureboros is a fixed-capacity measured-artifact catalog, not a replacement VFS
-or a claim that arbitrary binaries can be reconstructed from tiny random seeds.
-It verifies immutable boot artifacts against independently embedded SHA-256
-manifests and clears generated output on failure. GRUB supplies the separately
-built `push` ELF as a named Multiboot2 module; Boulder reserves that physical
-range, verifies its exact size, digest, and entry-point manifest, and rejects
-dynamic-linker requirements, non-user addresses, overlapping or oversized
-segments, and writable-executable mappings. The address-space installer uses
-zeroed staging pages, bounded copies, initialized-data and BSS verification,
-final W^X sealing, commit-after-seal ordering, and abort on every intermediate
-failure. Its hardware-format four-level hierarchy inherits only the upper
-kernel PML4 half and is retained for the lifetime of PID 1.
-Boulder now enters through a physical low bootstrap island, transfers code and
-stack execution to the higher half, removes PML4 entry zero, and checks that
-transition before initializing the IDT. During serialized bootstrap it also
-switches to PID 1's frame-backed CR3, confirms execution survives solely on the
-inherited higher-half mappings, and restores the kernel root. The process
-hierarchy is now retained with a separate zeroed RW+NX user stack. A higher-half
-GDT and 64-bit TSS provide SYSRET-compatible DPL3 selectors and a dedicated
-RSP0 entry stack. The kernel programs EFER/STAR/LSTAR/FMASK and enters native
-syscalls on a separate 16 KiB kernel stack. The bounded write path walks every
-user page through the active hierarchy, requires user permission at all four
-levels, copies at most 256 bytes through the retained direct map, and never
-dereferences a raw user pointer. Boulder switches to Push's CR3 and transfers
-permanently to its measured ET_EXEC entry. Push then exercises native bounded
-write and cooperative-yield syscalls from a persistent Ring 3 supervision loop.
-Manifest measurements provide authenticity only when the manifest root is
-independently protected and replicated.
-
-Push models Slope-Net, Corinth, and Crest as a fixed dependency graph with
-bounded restart/backoff policy, saturating per-service failure mass, telemetry,
-and a deadlock detector that observes stalled launch work rather than mistaking
-a stable healthy system for failure. Gordian request pages use explicit atomic
-states and return opaque generation-checked capability handles. The 
-process-spawn capability and complete process lifecycle (`SYS_SPAWN`, `SYS_EXIT`, `SYS_WAIT`) 
-are fully implemented and wired into the core process scheduler, enabling functional 
-child-process execution and supervision natively within the kernel.
-
-Slope provides bounded syscall wrappers, revocation-aware pointer resolution,
-borrow-scoped shared-memory access, split-ownership DMA rings, cooperative
-network futures, and opaque pinned-block storage contracts. Corinth validates
-fixed-capacity package DNA, drives backend-supplied code lowering and artifact
-publication, commits dependency updates transactionally, and advances swarm
-assimilation one verified fragment per poll. Crest keeps display, input, and
-framebuffer authority behind backend traits. Its Obsidian path validates a
-bounded fixed-point SDF instruction set; Heliosphere consumes telemetry
-snapshots, and the orbital cortex solves Kepler's equation with a fixed six-step
-integer Newton budget. None of these userland contracts grant raw MMIO, NVMe,
-HID, or CRTC pointers.
-
-ignition sequence is a protocol-neutral phase guard around Boulder's
-existing GRUB/Multiboot2 handoff. It requires validated boot information,
-memory, topology, subsystems, interrupt routing, and the measured PID 1 install
-before declaring userland ready. A future Limine entry can feed the same guard
-without adding a competing entry symbol. Scheduler-owned process exit,
-preemptive user scheduling, and measured child-process spawn/wait are fully 
-integrated and functional, with all mathematical constraint verifications actively 
-enforced in the hardware trace via `MnemosyneLedger`.
-
-**Functionality status:** production claims are accepted only when the complete workspace, custom targets, source reality gate, and QEMU boot assertions pass for the exact commit. Experimental modules remain explicitly identified until they have real production callers, authority boundaries, rollback behavior, and target evidence.
+Bare-metal checks require nightly and `rust-src`:
 
 ```sh
-rustup component add rust-src --toolchain nightly
-scripts/build-iso.sh
-scripts/run-qemu.sh
+cargo +nightly user-push
+cargo +nightly kernel
 scripts/test-boot.sh
 ```
 
-The ISO path is `target/sisyphus-os.iso`. Building it requires GRUB and
-`xorriso`; running it requires `qemu-system-x86_64`. `test-boot.sh` succeeds
-only after COM1 proves measured installation, permanent Ring 3 transfer, native
-Push syscalls, and bounded transition into recovery mode.
+The complete workflow also rejects tracked compiler archives, patch recovery
+files, module-wide dead-code suppression, unfinished macros, and explicit
+simulated-success markers.
+
+## Experimental engineering rule
+
+Unconventional work is welcome when it has conventional accountability.
+Every production subsystem must provide:
+
+```text
+purpose
+production caller
+measured input
+observable output
+bounded memory and execution
+explicit authority
+failure and rollback behavior
+tests
+target evidence
+```
+
+Real mathematics may be speculative. Kernel success paths may not be.
+
+## Engineering records
+
+- [`docs/UPGRADE_REPORT.md`](docs/UPGRADE_REPORT.md) — integrated design and control mathematics
+- [`docs/FUNCTIONAL_STATUS.md`](docs/FUNCTIONAL_STATUS.md) — subsystem promotion matrix
+- [`docs/VALIDATION.md`](docs/VALIDATION.md) — completed checks and required target gates

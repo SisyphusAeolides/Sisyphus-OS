@@ -28,7 +28,6 @@
 //   RiscVLP64        — RISC-V Linux (a0..a7 args)
 //   Unknown          — fallback: probe with SysV, monitor for crashes
 
-#![allow(dead_code)]
 extern crate alloc;
 use core::ffi::c_void;
 use core::sync::atomic::{AtomicU32, Ordering};

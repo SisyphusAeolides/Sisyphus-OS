@@ -1,5 +1,6 @@
 use core::ffi::c_void;
 
+use sisyphus_driver_abi::gpu::GpuCompatibilityManifest;
 use sisyphus_driver_abi::hermes::{
     HERMES_PERSONALITY_ABI_VERSION, HermesBootInstruction, HermesNormalizedCommand,
     HermesNormalizedEvent, HermesPciIdentity, HermesProbeEvidence, HermesStatus,
@@ -150,6 +151,7 @@ pub struct HermesMorphicDescriptor {
     pub maximum_execution_fuel: u64,
     pub context: *mut c_void,
     pub dispatch: Option<HermesMorphicDispatchFn>,
+    pub compatibility: GpuCompatibilityManifest,
 }
 
 impl HermesMorphicDescriptor {
@@ -165,6 +167,7 @@ impl HermesMorphicDescriptor {
             maximum_execution_fuel: 0,
             context: core::ptr::null_mut(),
             dispatch: None,
+            compatibility: GpuCompatibilityManifest::EMPTY,
         }
     }
 
@@ -177,6 +180,8 @@ impl HermesMorphicDescriptor {
             && self.authority_epoch != 0
             && self.maximum_execution_fuel != 0
             && self.dispatch.is_some()
+            && self.compatibility.valid()
+            && self.compatibility.driver_id == self.personality_id
     }
 }
 

@@ -1048,6 +1048,7 @@ mod tests {
         let mut fingerprint = GpuFingerprint::EMPTY;
         fingerprint.firmware_framebuffer = FirmwareFramebufferEvidence {
             kind: FirmwareFramebufferKind::UefiGop,
+            physical_address: 0xe000_0000,
             width: 1920,
             height: 1080,
             pitch: 7680,

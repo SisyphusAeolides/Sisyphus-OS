@@ -6,7 +6,6 @@
 //! cech_h1      — H¹ obstruction on the same nerve
 //! tropical_crit — max-plus critical chain on residual edges
 
-#![allow(dead_code)]
 
 use crate::cluster_quiver::{Arrow, MAX_E, MAX_N, ResourceQuiver};
 use crate::hodge_cech::{FP_ONE as H_ONE, Fp as HFp, HodgeNerve, MAX_E as HMAX_E, MAX_V};

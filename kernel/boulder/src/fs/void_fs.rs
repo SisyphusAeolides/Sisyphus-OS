@@ -20,7 +20,6 @@
 //   Over time, deleted files literally evaporate into pure thermal noise,
 //   completing the data lifecycle.
 
-#![allow(dead_code)]
 extern crate alloc;
 use alloc::collections::BTreeMap;
 use alloc::string::String;

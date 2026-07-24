@@ -12,7 +12,6 @@
 //! Alien bit: endpoints carry a proof index into a dual pair table;
 //! wormhole enqueue refuses payloads that don't match the expected tag.
 
-#![allow(dead_code)]
 
 pub const MAX_PROTO_OPS: usize = 32;
 pub const MAX_SESSIONS: usize = 64;

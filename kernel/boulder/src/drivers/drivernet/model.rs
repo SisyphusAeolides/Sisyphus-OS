@@ -831,6 +831,7 @@ mod tests {
         fingerprint.class_code = PCI_CLASS_DISPLAY;
         fingerprint.firmware_framebuffer = FirmwareFramebufferEvidence {
             kind: FirmwareFramebufferKind::UefiGop,
+            physical_address: 0xe000_0000,
             width: 1920,
             height: 1080,
             pitch: 7680,

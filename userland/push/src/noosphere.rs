@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 use alloc::{collections::BTreeMap, string::String, vec, vec::Vec};
 
 // ─────────────────────────────────────────────

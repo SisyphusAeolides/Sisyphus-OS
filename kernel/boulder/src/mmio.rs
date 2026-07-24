@@ -267,9 +267,10 @@ pub fn kernel_virtual_to_physical(
 
 #[cfg(not(target_os = "none"))]
 pub fn kernel_virtual_to_physical(
-    _virtual_address: usize,
-    _length: usize,
+    virtual_address: usize,
+    length: usize,
 ) -> Option<u64> {
+    let _ = virtual_address.checked_add(length);
     None
 }
 
@@ -323,6 +324,30 @@ impl MmioWindow {
 
     pub const fn length(&self) -> usize {
         self.length
+    }
+
+    pub fn read_u16(&self, offset: usize) -> Result<u16, MmioAccessError> {
+        let pointer = self.checked_pointer::<u16>(offset)?;
+        compiler_fence(Ordering::SeqCst);
+
+        // SAFETY: checked_pointer verified range and alignment, and the mapping
+        // remains owned by this non-Copy MmioWindow.
+        let value = unsafe { pointer.read_volatile() };
+
+        compiler_fence(Ordering::SeqCst);
+        Ok(value)
+    }
+
+    pub fn write_u16(&self, offset: usize, value: u16) -> Result<(), MmioAccessError> {
+        let pointer = self.checked_pointer::<u16>(offset)?;
+        compiler_fence(Ordering::SeqCst);
+
+        // SAFETY: checked_pointer verified range and alignment, and the mapping
+        // remains owned by this non-Copy MmioWindow.
+        unsafe { pointer.write_volatile(value) };
+
+        compiler_fence(Ordering::SeqCst);
+        Ok(())
     }
 
     pub fn read_u32(&self, offset: usize) -> Result<u32, MmioAccessError> {

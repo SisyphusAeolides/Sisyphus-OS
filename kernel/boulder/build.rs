@@ -15,6 +15,7 @@ fn main() {
     println!("cargo:rerun-if-changed=src/bootstrap.S");
     println!("cargo:rerun-if-changed=src/interrupts/stubs.S");
     println!("cargo:rerun-if-changed=include/sisyphus/driver.h");
+    println!("cargo:rerun-if-changed=include/sisyphus/gpu.h");
     println!("cargo:rerun-if-changed=drivers/reference/reference_driver.c");
     println!("cargo:rerun-if-env-changed=CC");
     println!("cargo:rerun-if-env-changed=AR");

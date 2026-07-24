@@ -10,7 +10,6 @@
 //!   - axiom_manifold state cells (CELL_DMA_RESERVE, CELL_THERMAL_BUDGET, ...)
 //!   - charybdis_dma_firewall (DMA charge sink)
 
-#![allow(dead_code)]
 
 use core::sync::atomic::{AtomicI64, Ordering};
 

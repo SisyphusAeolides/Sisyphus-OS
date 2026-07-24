@@ -14,7 +14,6 @@
 //!
 //! Paradox → reject load, ghost chronicle PARADOX_REJECT, no partial state.
 
-#![allow(dead_code)]
 
 pub const MAX_PENDING: usize = 16;
 pub const HASH_WORDS: usize = 4;

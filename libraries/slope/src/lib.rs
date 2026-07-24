@@ -18,6 +18,7 @@ pub mod quantum_crest;
 pub mod resonance_plane;
 pub mod runtime;
 pub mod scheduler;
+pub mod service_calculus;
 pub mod signal;
 pub mod storage;
 pub mod sync;

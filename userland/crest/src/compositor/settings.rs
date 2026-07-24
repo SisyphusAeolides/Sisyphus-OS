@@ -44,7 +44,7 @@ pub struct AppearanceSettings {
     pub panel_at_bottom: bool,
     pub panel_opacity: u8, // 0=transparent, 255=opaque
     pub accent: AccentColor,
-    pub blur_radius: u8, // future: background blur hint in pixels
+    pub blur_radius: u8, // reserved background-blur radius in pixels
     pub animations_on: bool,
     pub tween_speed: u8, // 1=slow, 10=instant
 }
@@ -119,7 +119,7 @@ impl Default for KeybindSettings {
             (ShellAction::FocusNext, 15, ALT),              // Alt+Tab
             (ShellAction::FocusPrev, 15, ALT | SHIFT),      // Alt+Shift+Tab
             (ShellAction::CloseApp, 16, ALT),               // Alt+Q
-            (ShellAction::ToggleFullscreen, 33, 0),         // F (no mod — placeholder)
+            (ShellAction::ToggleFullscreen, 33, 0),         // F (no modifier; deterministic default binding)
             (ShellAction::Screenshot, 99, 0),               // PrintScreen
             (ShellAction::WorkspaceNext, 78, SUPER),        // Super+Right
             (ShellAction::WorkspacePrev, 75, SUPER),        // Super+Left

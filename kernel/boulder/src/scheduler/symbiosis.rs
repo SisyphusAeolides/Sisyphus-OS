@@ -18,7 +18,6 @@
 // CPU without yielding beneficial data), the host immune system (Macrophage)
 // will trigger apoptosis in the parasite.
 
-#![allow(dead_code)]
 extern crate alloc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};

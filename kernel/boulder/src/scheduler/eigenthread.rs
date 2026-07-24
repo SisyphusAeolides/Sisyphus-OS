@@ -26,7 +26,6 @@
 //   I/O contention detected via IRQ co-arrival rate (from SynapticCortex)
 //   Pipeline coupling detected via IPC correlation between processes
 
-#![allow(dead_code)]
 extern crate alloc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};

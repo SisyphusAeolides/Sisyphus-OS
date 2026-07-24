@@ -1,4 +1,5 @@
 #include <sisyphus/driver.h>
+#include <sisyphus/gpu.h>
 
 static const uint8_t driver_name[] = "sisyphus-reference";
 static const uint8_t probe_message[] = "reference driver probe";
@@ -190,4 +191,16 @@ sisy_status_t sisyphus_reference_exercise_api(
         return status;
     }
     return api->device_remove(api->kernel_context, child_handle);
+}
+
+size_t sisyphus_reference_sizeof_gpu_device_evidence(void) {
+    return sizeof(struct sisy_gpu_device_evidence);
+}
+
+size_t sisyphus_reference_sizeof_gpu_compatibility_manifest(void) {
+    return sizeof(struct sisy_gpu_compatibility_manifest);
+}
+
+size_t sisyphus_reference_sizeof_gpu_compatibility_proof(void) {
+    return sizeof(struct sisy_gpu_compatibility_proof);
 }

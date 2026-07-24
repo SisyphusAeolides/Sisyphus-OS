@@ -26,7 +26,6 @@
 //   ELSEWHERE:             spacelike-separated events (cannot causally interact)
 //   Elsewhere events are safe to execute in parallel → parallelism oracle
 
-#![allow(dead_code)]
 extern crate alloc;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;

@@ -1,6 +1,6 @@
-#![no_std]
-
 use core::ffi::c_void;
+
+use crate::gpu::GpuCompatibilityManifest;
 
 pub type HermesStatus = i32;
 
@@ -13,7 +13,7 @@ pub const HERMES_STATUS_CORRUPT: HermesStatus = -5;
 pub const HERMES_STATUS_DENIED: HermesStatus = -6;
 
 pub const HERMES_PERSONALITY_ABI_MAJOR: u32 = 1;
-pub const HERMES_PERSONALITY_ABI_MINOR: u32 = 0;
+pub const HERMES_PERSONALITY_ABI_MINOR: u32 = 2;
 pub const HERMES_PERSONALITY_ABI_VERSION: u32 =
     (HERMES_PERSONALITY_ABI_MAJOR << 16) | HERMES_PERSONALITY_ABI_MINOR;
 
@@ -133,7 +133,12 @@ pub struct HermesTransportProfile {
     pub optional_features: u64,
     pub maximum_wire_bytes: u32,
     pub maximum_boot_steps: u16,
+    pub minimum_completions_per_window: u16,
+    pub maximum_admissions_per_window: u16,
+    pub maximum_admission_backlog: u16,
     pub reserved1: u16,
+    pub service_window_ticks: u64,
+    pub service_latency_ticks: u64,
 }
 
 impl HermesTransportProfile {
@@ -172,7 +177,12 @@ impl HermesTransportProfile {
             optional_features: 0,
             maximum_wire_bytes: 0,
             maximum_boot_steps: 0,
+            minimum_completions_per_window: 0,
+            maximum_admissions_per_window: 0,
+            maximum_admission_backlog: 0,
             reserved1: 0,
+            service_window_ticks: 0,
+            service_latency_ticks: 0,
         }
     }
 }
@@ -359,6 +369,7 @@ pub struct HermesPersonalityDescriptor {
     pub encode_command: Option<HermesEncodeCommandFn>,
     pub decode_event: Option<HermesDecodeEventFn>,
     pub reset_codec: Option<HermesResetCodecFn>,
+    pub compatibility: GpuCompatibilityManifest,
 }
 
 impl HermesPersonalityDescriptor {
@@ -379,6 +390,7 @@ impl HermesPersonalityDescriptor {
             encode_command: None,
             decode_event: None,
             reset_codec: None,
+            compatibility: GpuCompatibilityManifest::EMPTY,
         }
     }
 
@@ -392,6 +404,7 @@ impl HermesPersonalityDescriptor {
             && self.boot_instruction.is_some()
             && self.encode_command.is_some()
             && self.decode_event.is_some()
+            && self.compatibility.valid()
     }
 }
 

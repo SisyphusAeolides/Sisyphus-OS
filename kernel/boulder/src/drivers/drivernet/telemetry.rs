@@ -63,7 +63,9 @@ pub trait DriverNetObserver {
 pub struct NullObserver;
 
 impl DriverNetObserver for NullObserver {
-    fn observe(&mut self, _event: DriverNetEvent) {}
+    fn observe(&mut self, event: DriverNetEvent) {
+        let _ = event.root;
+    }
 }
 
 pub fn fingerprint_event(secret: u64, tick: u64, fingerprint: &GpuFingerprint) -> DriverNetEvent {

@@ -11,7 +11,6 @@
 //!
 //! Output: reduced node count → cheaper tropical_crit / fiedler input.
 
-#![allow(dead_code)]
 
 pub const MAX_SPIDERS: usize = 48;
 pub const MAX_WIRES: usize = 96;

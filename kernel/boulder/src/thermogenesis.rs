@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 use alloc::{collections::BTreeMap, vec, vec::Vec};
 use core::cell::Cell;
 use core::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering};

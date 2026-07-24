@@ -495,13 +495,25 @@ impl StrategyBroker for QuarantineBroker {
 
     fn rollback(
         &self,
-        _transaction: &mut BrokerTransaction,
-        _stage: DispatchStage,
-        _fault: BackendFault,
+        transaction: &mut BrokerTransaction,
+        stage: DispatchStage,
+        fault: BackendFault,
         _device: &Capability<'_, DeviceMemoryControl>,
         _dma: &Capability<'_, DmaControl>,
         _fault_policy: &Capability<'_, FaultPolicyControl>,
     ) -> Result<(), BackendFault> {
+        if transaction.token == 0 {
+            return Err(BackendFault::new(
+                FaultCode::RollbackFault,
+                false,
+                fault.root,
+            ));
+        }
+        transaction.state = [0; 8];
+        transaction.root = mix(
+            transaction.root,
+            u64::from(stage as u8) ^ fault.root,
+        );
         Ok(())
     }
 }

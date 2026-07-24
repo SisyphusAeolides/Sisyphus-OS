@@ -13,7 +13,6 @@
 //!      orthogonalized against the constant (D^{1/2} 1) mode
 //! Fixed-point 16.16 throughout; n ≤ 32.
 
-#![allow(dead_code)]
 
 pub const N_MAX: usize = 32;
 pub type Fp = i32;

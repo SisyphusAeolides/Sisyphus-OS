@@ -19,7 +19,6 @@
 // No floats in hot path — gradients are integer-approximated via
 //   a precomputed lookup table (LUT) using fixed-point 16.16 math.
 
-#![allow(dead_code)]
 extern crate alloc;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;

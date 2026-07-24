@@ -6,7 +6,6 @@
 //! After K steps, flat cold regions are compaction candidates
 //! for mycelium reclaim; deep wells pin working sets.
 
-#![allow(dead_code)]
 
 pub const MAX_NODES: usize = 128;
 pub const MAX_EDGES: usize = 512;

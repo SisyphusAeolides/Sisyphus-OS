@@ -30,7 +30,6 @@
 //
 // Memory: journal stored in a fixed-size arena (no heap needed for rollback path)
 
-#![allow(dead_code)]
 extern crate alloc;
 use super::{DeviceInfo, Handle, INVALID_HANDLE, KernelApi, STATUS_IO_ERROR, STATUS_OK, Status};
 use alloc::vec::Vec;

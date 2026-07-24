@@ -15,7 +15,6 @@
 //!
 //! Cluster x[i] seeded from class heuristics; congestion from strategy rank.
 
-#![allow(dead_code)]
 
 use crate::cluster_quiver::{ClusterFault, FP_ONE, Fp, MAX_N, NodeKind, ResourceQuiver};
 use crate::drivers::drivernet::DriverNetSummary;

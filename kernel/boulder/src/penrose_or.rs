@@ -14,7 +14,6 @@
 //! Collapse emits a single schedule index + a witness certificate
 //! for the axiom manifold / ghost chronicle.
 
-#![allow(dead_code)]
 
 pub const MAX_BRANCHES: usize = 8;
 /// 16.16

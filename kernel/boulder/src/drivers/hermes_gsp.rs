@@ -1,10 +1,19 @@
 use core::marker::PhantomData;
 
+use sisyphus_driver_abi::gpu::{
+    GpuCompatibilityManifest, GpuCompatibilityProof, GpuDeviceEvidence,
+    evaluate_compatibility,
+};
 use sisyphus_driver_abi::hermes::{
     HERMES_BOOT_STAGE_FIRMWARE, HERMES_BOOT_STAGE_IGNITE, HERMES_BOOT_STAGE_NEGOTIATE,
     HERMES_BOOT_STAGE_QUEUES, HERMES_EVENT_ASYNC, HERMES_EVENT_FAULT, HERMES_EVENT_REPLY,
     HERMES_MAX_NORMALIZED_PAYLOAD, HermesBootInstruction, HermesNormalizedCommand,
     HermesNormalizedEvent, HermesPciIdentity, HermesProbeEvidence, HermesTransportProfile,
+};
+
+use super::hermes_service::{
+    HermesAdmissionCertificate, HermesAdmissionFault, HermesServiceController,
+    HermesServiceCurve,
 };
 
 pub const NVIDIA_VENDOR_ID: u16 = 0x10de;
@@ -40,6 +49,7 @@ pub enum HermesFault {
     AmbiguousPersonality,
     PersonalityCapacity,
     PersonalityRejected,
+    CompatibilityRejected,
     ProfileRejected,
     CodecRejected,
     FirmwareMissing,
@@ -59,6 +69,12 @@ pub enum HermesFault {
     QueueGeometry,
     QueueFull,
     QueueCorrupt,
+    ServiceCurveRejected,
+    ServiceBacklogSaturated,
+    ServiceArrivalEnvelopeExceeded,
+    ServiceDeadlineUnsafe,
+    ServiceTimeRegression,
+    ServiceReservationCorrupt,
     PendingCapacity,
     DuplicateRequest,
     UnknownResponse,
@@ -173,6 +189,8 @@ pub trait HermesPlatform: Sync {
 pub trait HermesCodec: Sync {
     fn personality_id(&self) -> u64;
 
+    fn compatibility_manifest(&self) -> GpuCompatibilityManifest;
+
     fn match_device(
         &self,
         identity: &HermesPciIdentity,
@@ -209,6 +227,13 @@ pub trait HermesCodec: Sync {
     fn reset(&self, profile: &HermesTransportProfile, new_epoch: u32) -> Result<(), HermesFault>;
 }
 
+#[derive(Clone, Copy)]
+pub struct ResolvedPersonality<'a> {
+    pub codec: &'a dyn HermesCodec,
+    pub proof: GpuCompatibilityProof,
+    pub score: u32,
+}
+
 pub struct PersonalityRegistry<'a, const N: usize> {
     entries: [Option<&'a dyn HermesCodec>; N],
     length: usize,
@@ -223,7 +248,12 @@ impl<'a, const N: usize> PersonalityRegistry<'a, N> {
     }
 
     pub fn register(&mut self, codec: &'a dyn HermesCodec) -> Result<(), HermesFault> {
-        if codec.personality_id() == 0 {
+        let manifest = codec.compatibility_manifest();
+        if codec.personality_id() == 0
+            || !manifest.valid()
+            || manifest.driver_id != codec.personality_id()
+            || manifest.vendor_id != NVIDIA_VENDOR_ID
+        {
             return Err(HermesFault::PersonalityRejected);
         }
 
@@ -248,24 +278,51 @@ impl<'a, const N: usize> PersonalityRegistry<'a, N> {
         &self,
         identity: &HermesPciIdentity,
         evidence: &HermesProbeEvidence,
+        portable_evidence: &GpuDeviceEvidence,
+        proof_secret: u64,
         minimum_score: u32,
-    ) -> Result<&'a dyn HermesCodec, HermesFault> {
-        let mut winner: Option<&'a dyn HermesCodec> = None;
-        let mut winning_score = 0_u32;
+    ) -> Result<ResolvedPersonality<'a>, HermesFault> {
+        if proof_secret == 0 || !portable_identity_matches(identity, portable_evidence) {
+            return Err(HermesFault::CompatibilityRejected);
+        }
+
+        let mut winner: Option<ResolvedPersonality<'a>> = None;
         let mut tied = false;
 
         for codec in self.entries[..self.length].iter().flatten().copied() {
-            let score = codec.match_device(identity, evidence)?;
-            if score < minimum_score {
+            let proof = evaluate_compatibility(
+                &codec.compatibility_manifest(),
+                portable_evidence,
+                proof_secret,
+            );
+            if !proof.accepted() {
                 continue;
             }
 
-            if score > winning_score {
-                winner = Some(codec);
-                winning_score = score;
-                tied = false;
-            } else if score == winning_score && score != 0 {
-                tied = true;
+            let codec_score = codec.match_device(identity, evidence)?;
+            if codec_score < minimum_score {
+                continue;
+            }
+            let score = codec_score.saturating_add(proof.score_q16);
+            let candidate = ResolvedPersonality {
+                codec,
+                proof,
+                score,
+            };
+
+            match winner {
+                None => {
+                    winner = Some(candidate);
+                    tied = false;
+                }
+                Some(current) if score > current.score => {
+                    winner = Some(candidate);
+                    tied = false;
+                }
+                Some(current) if score == current.score => {
+                    tied = true;
+                }
+                Some(_) => {}
             }
         }
 
@@ -275,6 +332,24 @@ impl<'a, const N: usize> PersonalityRegistry<'a, N> {
 
         winner.ok_or(HermesFault::NoPersonality)
     }
+}
+
+fn portable_identity_matches(
+    identity: &HermesPciIdentity,
+    portable: &GpuDeviceEvidence,
+) -> bool {
+    identity.segment == portable.identity.segment
+        && identity.bus == portable.identity.bus
+        && identity.slot == portable.identity.slot
+        && identity.function == portable.identity.function
+        && identity.revision == portable.identity.revision
+        && identity.vendor_id == portable.identity.vendor_id
+        && identity.device_id == portable.identity.device_id
+        && identity.subsystem_vendor_id == portable.identity.subsystem_vendor_id
+        && identity.subsystem_device_id == portable.identity.subsystem_device_id
+        && identity.class_code == portable.identity.class_code
+        && identity.subclass == portable.identity.subclass
+        && identity.programming_interface == portable.identity.programming_interface
 }
 
 impl<const N: usize> Default for PersonalityRegistry<'_, N> {
@@ -320,6 +395,7 @@ struct PendingRequest {
     sequence: u32,
     opcode: u32,
     deadline_tick: u64,
+    admission: HermesAdmissionCertificate,
 }
 
 impl PendingRequest {
@@ -329,6 +405,7 @@ impl PendingRequest {
         sequence: 0,
         opcode: 0,
         deadline_tick: 0,
+        admission: HermesAdmissionCertificate::EMPTY,
     };
 }
 
@@ -369,10 +446,9 @@ impl<const N: usize> PendingTable<N> {
         }
     }
 
-    fn complete(
+    fn take_response(
         &mut self,
         event: &HermesNormalizedEvent,
-        now_tick: u64,
     ) -> Result<PendingRequest, HermesFault> {
         let entry = self
             .entries
@@ -384,30 +460,24 @@ impl<const N: usize> PendingTable<N> {
             })
             .ok_or(HermesFault::UnknownResponse)?;
 
-        if tick_reached(now_tick, entry.deadline_tick) {
-            *entry = PendingRequest::EMPTY;
-            return Err(HermesFault::ResponseExpired);
-        }
-
-        if entry.opcode != event.opcode {
-            *entry = PendingRequest::EMPTY;
-            return Err(HermesFault::ResponseMismatch);
-        }
-
         let completed = *entry;
         *entry = PendingRequest::EMPTY;
         Ok(completed)
     }
 
-    fn expire_one(&mut self, now_tick: u64) -> Option<(u32, u32)> {
+    fn live_count(&self) -> usize {
+        self.entries.iter().filter(|entry| entry.live).count()
+    }
+
+    fn expire_one(&mut self, now_tick: u64) -> Option<PendingRequest> {
         let entry = self
             .entries
             .iter_mut()
             .find(|entry| entry.live && tick_reached(now_tick, entry.deadline_tick))?;
 
-        let id = (entry.epoch, entry.sequence);
+        let expired = *entry;
         *entry = PendingRequest::EMPTY;
-        Some(id)
+        Some(expired)
     }
 }
 
@@ -419,10 +489,17 @@ struct Runtime<const PENDING: usize> {
     feature_epoch: u32,
     negotiated_features: u64,
     pending: PendingTable<PENDING>,
+    service: HermesServiceController,
+    last_admission: HermesAdmissionCertificate,
 }
 
 impl<const PENDING: usize> Runtime<PENDING> {
-    fn new(identity: &HermesPciIdentity, now_tick: u64) -> Self {
+    fn new(
+        identity: &HermesPciIdentity,
+        profile: &HermesTransportProfile,
+        now_tick: u64,
+        service_secret: u64,
+    ) -> Result<Self, HermesFault> {
         let location = ((identity.bus as u32) << 16)
             | ((identity.slot as u32) << 8)
             | identity.function as u32;
@@ -435,7 +512,22 @@ impl<const PENDING: usize> Runtime<PENDING> {
             epoch = 1;
         }
 
-        Self {
+        let service = HermesServiceController::new(
+            HermesServiceCurve {
+                minimum_completions_per_window:
+                    profile.minimum_completions_per_window,
+                maximum_admissions_per_window:
+                    profile.maximum_admissions_per_window,
+                window_ticks: profile.service_window_ticks,
+                latency_ticks: profile.service_latency_ticks,
+                maximum_backlog: profile.maximum_admission_backlog,
+            },
+            now_tick,
+            service_secret,
+        )
+        .map_err(|_| HermesFault::ServiceCurveRejected)?;
+
+        Ok(Self {
             epoch,
             next_sequence: 1,
             command_producer: 0,
@@ -443,7 +535,9 @@ impl<const PENDING: usize> Runtime<PENDING> {
             feature_epoch: 0,
             negotiated_features: 0,
             pending: PendingTable::new(),
-        }
+            service,
+            last_admission: HermesAdmissionCertificate::EMPTY,
+        })
     }
 
     fn allocate_sequence(&mut self) -> u32 {
@@ -532,6 +626,7 @@ pub struct Hermes<'a, Backend: HermesPlatform + ?Sized, State, const PENDING: us
     identity: HermesPciIdentity,
     evidence: HermesProbeEvidence,
     profile: HermesTransportProfile,
+    compatibility_proof: GpuCompatibilityProof,
     firmware_seal: Option<FirmwareSeal>,
     lease: HermesLease<'a, Backend>,
     runtime: Runtime<PENDING>,
@@ -546,13 +641,25 @@ impl<'a, Backend: HermesPlatform + ?Sized, const PENDING: usize>
         registry: &'a PersonalityRegistry<'a, PERSONALITIES>,
         identity: HermesPciIdentity,
         evidence: HermesProbeEvidence,
+        portable_evidence: &GpuDeviceEvidence,
+        compatibility_secret: u64,
         minimum_personality_score: u32,
     ) -> Result<Self, HermesFault> {
         validate_identity(&identity)?;
 
-        let codec = registry.resolve(&identity, &evidence, minimum_personality_score)?;
+        let resolved = registry.resolve(
+            &identity,
+            &evidence,
+            portable_evidence,
+            compatibility_secret,
+            minimum_personality_score,
+        )?;
+        let codec = resolved.codec;
         let profile = codec.describe_transport(&identity, &evidence)?;
         validate_profile(codec.personality_id(), &profile, &evidence)?;
+        if PENDING == 0 || usize::from(profile.maximum_admission_backlog) > PENDING {
+            return Err(HermesFault::ServiceCurveRejected);
+        }
 
         Ok(Self {
             backend,
@@ -560,9 +667,15 @@ impl<'a, Backend: HermesPlatform + ?Sized, const PENDING: usize>
             identity,
             evidence,
             profile,
+            compatibility_proof: resolved.proof,
             firmware_seal: None,
             lease: HermesLease::new(backend),
-            runtime: Runtime::new(&identity, backend.now_tick()),
+            runtime: Runtime::new(
+                &identity,
+                &profile,
+                backend.now_tick(),
+                resolved.proof.proof_root,
+            )?,
             _state: PhantomData,
         })
     }
@@ -656,6 +769,7 @@ impl<'a, Backend: HermesPlatform + ?Sized, const PENDING: usize>
             identity: self.identity,
             evidence: self.evidence,
             profile: self.profile,
+            compatibility_proof: self.compatibility_proof,
             firmware_seal: self.firmware_seal,
             lease: self.lease,
             runtime: self.runtime,
@@ -738,6 +852,7 @@ impl<'a, Backend: HermesPlatform + ?Sized, const PENDING: usize>
             identity: self.identity,
             evidence: self.evidence,
             profile: self.profile,
+            compatibility_proof: self.compatibility_proof,
             firmware_seal: self.firmware_seal,
             lease: self.lease,
             runtime: self.runtime,
@@ -755,12 +870,24 @@ impl<Backend: HermesPlatform + ?Sized, const PENDING: usize> Hermes<'_, Backend,
         self.profile
     }
 
+    pub const fn compatibility_proof(&self) -> GpuCompatibilityProof {
+        self.compatibility_proof
+    }
+
     pub const fn negotiated_features(&self) -> u64 {
         self.runtime.negotiated_features
     }
 
     pub const fn firmware_seal(&self) -> Option<FirmwareSeal> {
         self.firmware_seal
+    }
+
+    pub const fn service_curve(&self) -> HermesServiceCurve {
+        self.runtime.service.curve()
+    }
+
+    pub const fn last_admission_certificate(&self) -> HermesAdmissionCertificate {
+        self.runtime.last_admission
     }
 
     pub fn submit(
@@ -775,9 +902,20 @@ impl<Backend: HermesPlatform + ?Sized, const PENDING: usize> Hermes<'_, Backend,
         if opcode == 0 || payload.len() > HERMES_MAX_NORMALIZED_PAYLOAD {
             return Err(HermesFault::ProtocolMismatch);
         }
-        if tick_reached(self.backend.now_tick(), deadline_tick) {
+        let now_tick = self.backend.now_tick();
+        if tick_reached(now_tick, deadline_tick) {
             return Err(HermesFault::DeadlineExpired);
         }
+
+        let admission = self
+            .runtime
+            .service
+            .admit(
+                now_tick,
+                deadline_tick,
+                self.runtime.pending.live_count(),
+            )
+            .map_err(map_admission_fault)?;
 
         let sequence = self.runtime.allocate_sequence();
         let epoch = self.runtime.epoch;
@@ -793,19 +931,31 @@ impl<Backend: HermesPlatform + ?Sized, const PENDING: usize> Hermes<'_, Backend,
         command.payload_length = payload.len() as u16;
         command.payload[..payload.len()].copy_from_slice(payload);
 
-        self.runtime.pending.insert(PendingRequest {
+        if let Err(error) = self.runtime.pending.insert(PendingRequest {
             live: true,
             epoch,
             sequence,
             opcode,
             deadline_tick,
-        })?;
-
-        if let Err(error) = self.send_wire(&command) {
-            self.runtime.pending.cancel(epoch, sequence);
+            admission,
+        }) {
+            self.runtime
+                .service
+                .rollback(admission)
+                .map_err(|_| HermesFault::ServiceReservationCorrupt)?;
             return Err(error);
         }
 
+        if let Err(error) = self.send_wire(&command) {
+            self.runtime.pending.cancel(epoch, sequence);
+            self.runtime
+                .service
+                .rollback(admission)
+                .map_err(|_| HermesFault::ServiceReservationCorrupt)?;
+            return Err(error);
+        }
+
+        self.runtime.last_admission = admission;
         Ok((epoch, sequence))
     }
 
@@ -814,15 +964,33 @@ impl<Backend: HermesPlatform + ?Sized, const PENDING: usize> Hermes<'_, Backend,
             return Ok(None);
         };
 
+        let now_tick = self.backend.now_tick();
         if event.event_kind == HERMES_EVENT_FAULT {
+            if event.correlation_epoch != 0 && event.correlation_sequence != 0 {
+                if let Ok(pending) = self.runtime.pending.take_response(&event) {
+                    self.runtime
+                        .service
+                        .observe_completion(pending.admission, now_tick)
+                        .map_err(map_admission_fault)?;
+                }
+            }
             return Err(HermesFault::RecoveryRequired);
         }
 
         let disposition = if event.event_kind == HERMES_EVENT_REPLY {
-            let pending = self
-                .runtime
-                .pending
-                .complete(&event, self.backend.now_tick())?;
+            let pending = self.runtime.pending.take_response(&event)?;
+            self.runtime
+                .service
+                .observe_completion(pending.admission, now_tick)
+                .map_err(map_admission_fault)?;
+
+            if tick_reached(now_tick, pending.deadline_tick) {
+                return Err(HermesFault::ResponseExpired);
+            }
+            if pending.opcode != event.opcode {
+                return Err(HermesFault::ResponseMismatch);
+            }
+
             EventDisposition::Reply {
                 epoch: pending.epoch,
                 sequence: pending.sequence,
@@ -836,8 +1004,16 @@ impl<Backend: HermesPlatform + ?Sized, const PENDING: usize> Hermes<'_, Backend,
         Ok(Some(ReceivedEvent { event, disposition }))
     }
 
-    pub fn expire_one(&mut self) -> Option<(u32, u32)> {
-        self.runtime.pending.expire_one(self.backend.now_tick())
+    pub fn expire_one(&mut self) -> Result<Option<(u32, u32)>, HermesFault> {
+        let now_tick = self.backend.now_tick();
+        let Some(expired) = self.runtime.pending.expire_one(now_tick) else {
+            return Ok(None);
+        };
+        self.runtime
+            .service
+            .observe_completion(expired.admission, now_tick)
+            .map_err(map_admission_fault)?;
+        Ok(Some((expired.epoch, expired.sequence)))
     }
 }
 
@@ -1176,6 +1352,31 @@ pub struct ReceivedEvent {
     pub disposition: EventDisposition,
 }
 
+fn map_admission_fault(fault: HermesAdmissionFault) -> HermesFault {
+    match fault {
+        HermesAdmissionFault::InvalidCurve
+        | HermesAdmissionFault::ArithmeticOverflow => {
+            HermesFault::ServiceCurveRejected
+        }
+        HermesAdmissionFault::BacklogSaturated => {
+            HermesFault::ServiceBacklogSaturated
+        }
+        HermesAdmissionFault::ArrivalEnvelopeExceeded => {
+            HermesFault::ServiceArrivalEnvelopeExceeded
+        }
+        HermesAdmissionFault::DeadlineUnsafe => {
+            HermesFault::ServiceDeadlineUnsafe
+        }
+        HermesAdmissionFault::TimeRegression => {
+            HermesFault::ServiceTimeRegression
+        }
+        HermesAdmissionFault::StaleReservation
+        | HermesAdmissionFault::CorruptObservation => {
+            HermesFault::ServiceReservationCorrupt
+        }
+    }
+}
+
 fn validate_identity(identity: &HermesPciIdentity) -> Result<(), HermesFault> {
     if identity.vendor_id != NVIDIA_VENDOR_ID {
         return Err(HermesFault::NotNvidia);
@@ -1212,6 +1413,19 @@ fn validate_profile(
 
     validate_ring_geometry(profile.command_depth, profile.command_slot_bytes)?;
     validate_ring_geometry(profile.event_depth, profile.event_slot_bytes)?;
+
+    if profile.minimum_completions_per_window == 0
+        || profile.maximum_admissions_per_window == 0
+        || profile.maximum_admission_backlog == 0
+        || profile.maximum_admission_backlog >= profile.command_depth
+        || profile.minimum_completions_per_window
+            > profile.maximum_admission_backlog
+        || profile.maximum_admissions_per_window
+            > profile.maximum_admission_backlog
+        || profile.service_window_ticks == 0
+    {
+        return Err(HermesFault::ServiceCurveRejected);
+    }
 
     if profile.command_slot_bytes as u32 > profile.maximum_wire_bytes
         || profile.event_slot_bytes as u32 > profile.maximum_wire_bytes
@@ -1432,5 +1646,68 @@ mod tests {
         assert!(tick_reached(100, 100));
         assert!(tick_reached(101, 100));
         assert!(!tick_reached(99, 100));
+    }
+
+    fn admission(sequence: u64) -> HermesAdmissionCertificate {
+        HermesAdmissionCertificate {
+            reservation_sequence: sequence,
+            admitted_tick: 10,
+            window_start: 10,
+            backlog_before: 0,
+            admitted_before: 0,
+            deterministic_delay_ticks: 20,
+            uncertainty_guard_ticks: 1,
+            drift_penalty_ticks: 0,
+            delay_bound_ticks: 21,
+            deadline_slack_ticks: 79,
+            curve_root: 7,
+            calibration_root: 11,
+            certificate_root: 13,
+        }
+    }
+
+    #[test]
+    fn correlated_reply_preserves_admission_evidence() {
+        let mut table = PendingTable::<2>::new();
+        table
+            .insert(PendingRequest {
+                live: true,
+                epoch: 3,
+                sequence: 9,
+                opcode: 0x44,
+                deadline_tick: 100,
+                admission: admission(1),
+            })
+            .unwrap();
+
+        let mut event = HermesNormalizedEvent::empty();
+        event.correlation_epoch = 3;
+        event.correlation_sequence = 9;
+        let completed = table.take_response(&event).unwrap();
+
+        assert_eq!(completed.opcode, 0x44);
+        assert_eq!(completed.admission, admission(1));
+        assert_eq!(table.live_count(), 0);
+    }
+
+    #[test]
+    fn expiry_returns_the_complete_reservation() {
+        let mut table = PendingTable::<2>::new();
+        table
+            .insert(PendingRequest {
+                live: true,
+                epoch: 4,
+                sequence: 10,
+                opcode: 0x55,
+                deadline_tick: 50,
+                admission: admission(2),
+            })
+            .unwrap();
+
+        let expired = table.expire_one(50).unwrap();
+        assert_eq!(expired.epoch, 4);
+        assert_eq!(expired.sequence, 10);
+        assert_eq!(expired.admission, admission(2));
+        assert_eq!(table.live_count(), 0);
     }
 }

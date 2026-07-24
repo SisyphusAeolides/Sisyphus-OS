@@ -61,7 +61,11 @@ unsafe fn waker_wake_by_ref(data: *const ()) {
     }
 }
 
-unsafe fn waker_drop(_data: *const ()) {}
+unsafe fn waker_drop(data: *const ()) {
+    // The raw waker points into a retained task slot; dropping a Waker does not
+    // own or free that slot.
+    let _ = data;
+}
 
 static WAKER_VTABLE: RawWakerVTable =
     RawWakerVTable::new(waker_clone, waker_wake, waker_wake_by_ref, waker_drop);

@@ -12,7 +12,6 @@
 //! (weight > HEAL_RADIUS) is detected and quarantined — never silently
 //! "corrected" into an attacker-chosen state.
 
-#![allow(dead_code)]
 
 pub const SYNDROME_WORDS: usize = 4; // 256-bit
 pub const MAX_PROTECTED: usize = 256;

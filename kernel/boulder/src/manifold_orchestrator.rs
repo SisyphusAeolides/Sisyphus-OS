@@ -12,7 +12,6 @@
 //! Boot:  boot_after_drivernet(pci, drivernet, serial)
 //! Tick:  tick(now_tsc) -> Option<Actuation>
 
-#![allow(dead_code)]
 
 use crate::cluster_quiver::{
     ClusterFault, FP_ONE as Q_ONE, Fp as QFp, MAX_N, NodeKind, ResourceQuiver,

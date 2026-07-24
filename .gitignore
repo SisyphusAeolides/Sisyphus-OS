@@ -7,3 +7,8 @@
 *.img
 compile_commands.json
 kernel/boulder/scratch.rs
+
+*.orig
+*.rej
+*~
+*.swp

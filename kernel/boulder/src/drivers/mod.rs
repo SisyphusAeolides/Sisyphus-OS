@@ -1,4 +1,7 @@
 pub mod drivernet;
+pub mod firmware_display;
+pub mod gpu_portability;
 pub mod hermes_gsp;
+pub mod hermes_service;
 pub mod morphogenetic;
 pub mod net;

@@ -6,6 +6,7 @@ use super::acpi::Rsdp;
 const TAG_END: u32 = 0;
 const TAG_MODULE: u32 = 3;
 const TAG_MEMORY_MAP: u32 = 6;
+const TAG_FRAMEBUFFER: u32 = 8;
 const TAG_ACPI_OLD: u32 = 14;
 const TAG_ACPI_NEW: u32 = 15;
 const HEADER_SIZE: usize = 8;
@@ -14,6 +15,12 @@ const MEMORY_MAP_HEADER_SIZE: usize = 16;
 const MEMORY_MAP_ENTRY_MINIMUM_SIZE: usize = 24;
 const MAXIMUM_BOOT_INFORMATION_SIZE: usize = 16 * 1024 * 1024;
 const MODULE_HEADER_SIZE: usize = 16;
+const FRAMEBUFFER_HEADER_SIZE: usize = 32;
+const FRAMEBUFFER_DIRECT_COLOR_SIZE: usize = 38;
+
+pub const FRAMEBUFFER_FORMAT_XRGB8888: u32 = 1;
+pub const FRAMEBUFFER_FORMAT_XBGR8888: u32 = 2;
+pub const FRAMEBUFFER_FORMAT_RGB565: u32 = 3;
 
 #[derive(Clone, Copy)]
 pub struct BootInformation {
@@ -114,6 +121,88 @@ impl BootInformation {
         Rsdp::parse(payload).map_err(|_| BootError::MalformedAcpiRsdp)
     }
 
+
+    pub fn framebuffer(self) -> Result<Option<BootFramebuffer>, BootError> {
+        let Some(tag) = self.find_tag(TAG_FRAMEBUFFER)? else {
+            return Ok(None);
+        };
+        if tag.size < FRAMEBUFFER_HEADER_SIZE {
+            return Err(BootError::MalformedFramebuffer);
+        }
+
+        // SAFETY: find_tag validated every fixed field used below.
+        let physical_address = unsafe { read_u64(tag.address + 8) };
+        let pitch = unsafe { read_u32(tag.address + 16) };
+        let width = unsafe { read_u32(tag.address + 20) };
+        let height = unsafe { read_u32(tag.address + 24) };
+        let bits_per_pixel = unsafe { read_u8(tag.address + 28) };
+        let framebuffer_type = unsafe { read_u8(tag.address + 29) };
+
+        if physical_address == 0
+            || pitch == 0
+            || width == 0
+            || height == 0
+            || bits_per_pixel == 0
+        {
+            return Err(BootError::MalformedFramebuffer);
+        }
+
+        let format = match framebuffer_type {
+            1 => {
+                if tag.size < FRAMEBUFFER_DIRECT_COLOR_SIZE {
+                    return Err(BootError::MalformedFramebuffer);
+                }
+                // SAFETY: The complete direct-color payload is present.
+                let red_position = unsafe { read_u8(tag.address + 32) };
+                let red_mask = unsafe { read_u8(tag.address + 33) };
+                let green_position = unsafe { read_u8(tag.address + 34) };
+                let green_mask = unsafe { read_u8(tag.address + 35) };
+                let blue_position = unsafe { read_u8(tag.address + 36) };
+                let blue_mask = unsafe { read_u8(tag.address + 37) };
+
+                match (
+                    bits_per_pixel,
+                    red_position,
+                    red_mask,
+                    green_position,
+                    green_mask,
+                    blue_position,
+                    blue_mask,
+                ) {
+                    (32, 16, 8, 8, 8, 0, 8) => FRAMEBUFFER_FORMAT_XRGB8888,
+                    (32, 0, 8, 8, 8, 16, 8) => FRAMEBUFFER_FORMAT_XBGR8888,
+                    (16, 11, 5, 5, 6, 0, 5) => FRAMEBUFFER_FORMAT_RGB565,
+                    _ => return Err(BootError::UnsupportedFramebuffer),
+                }
+            }
+            _ => return Err(BootError::UnsupportedFramebuffer),
+        };
+
+        let minimum_pitch = width
+            .checked_mul(u32::from(bits_per_pixel).div_ceil(8))
+            .ok_or(BootError::AddressOverflow)?;
+        if pitch < minimum_pitch {
+            return Err(BootError::MalformedFramebuffer);
+        }
+
+        let byte_length = u64::from(pitch)
+            .checked_mul(u64::from(height))
+            .ok_or(BootError::AddressOverflow)?;
+        physical_address
+            .checked_add(byte_length)
+            .ok_or(BootError::AddressOverflow)?;
+
+        Ok(Some(BootFramebuffer {
+            physical_address,
+            byte_length,
+            width,
+            height,
+            pitch,
+            bits_per_pixel,
+            format,
+        }))
+    }
+
     pub fn module(self, command_line: &[u8]) -> Result<BootModule, BootError> {
         let end = self.address + self.total_size;
         let mut address = self.address + HEADER_SIZE;
@@ -194,6 +283,24 @@ struct Tag {
     size: usize,
 }
 
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BootFramebuffer {
+    pub physical_address: u64,
+    pub byte_length: u64,
+    pub width: u32,
+    pub height: u32,
+    pub pitch: u32,
+    pub bits_per_pixel: u8,
+    pub format: u32,
+}
+
+impl BootFramebuffer {
+    pub const fn end(self) -> Option<u64> {
+        self.physical_address.checked_add(self.byte_length)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BootModule {
     pub start: PhysicalAddress,
@@ -214,6 +321,8 @@ pub enum BootError {
     MissingEndTag,
     MissingMemoryMap,
     MalformedMemoryMap,
+    MalformedFramebuffer,
+    UnsupportedFramebuffer,
     MissingAcpiRsdp,
     MalformedAcpiRsdp,
     MissingModule,
@@ -243,6 +352,10 @@ const fn region_kind(entry_type: u32) -> MemoryRegionKind {
 
 fn align_up_8(value: usize) -> Option<usize> {
     value.checked_add(7).map(|rounded| rounded & !7)
+}
+
+unsafe fn read_u8(address: usize) -> u8 {
+    unsafe { (address as *const u8).read_unaligned() }
 }
 
 unsafe fn read_u32(address: usize) -> u32 {
@@ -307,6 +420,37 @@ mod tests {
         bytes.0[16..20].copy_from_slice(&(16_u32).to_le_bytes());
         let boot = unsafe { BootInformation::load(bytes.0.as_ptr() as usize) }.unwrap();
         assert_eq!(boot.memory_map().err(), Some(BootError::MalformedMemoryMap));
+    }
+
+    #[test]
+    fn parses_a_direct_color_framebuffer() {
+        #[repr(align(8))]
+        struct FramebufferBootInformation([u8; 56]);
+
+        let mut bytes = FramebufferBootInformation([0; 56]);
+        bytes.0[0..4].copy_from_slice(&(56_u32).to_le_bytes());
+        bytes.0[8..12].copy_from_slice(&TAG_FRAMEBUFFER.to_le_bytes());
+        bytes.0[12..16].copy_from_slice(&(38_u32).to_le_bytes());
+        bytes.0[16..24].copy_from_slice(&(0xe000_0000_u64).to_le_bytes());
+        bytes.0[24..28].copy_from_slice(&(4096_u32).to_le_bytes());
+        bytes.0[28..32].copy_from_slice(&(1024_u32).to_le_bytes());
+        bytes.0[32..36].copy_from_slice(&(768_u32).to_le_bytes());
+        bytes.0[36] = 32;
+        bytes.0[37] = 1;
+        bytes.0[40] = 16;
+        bytes.0[41] = 8;
+        bytes.0[42] = 8;
+        bytes.0[43] = 8;
+        bytes.0[44] = 0;
+        bytes.0[45] = 8;
+        bytes.0[48..52].copy_from_slice(&TAG_END.to_le_bytes());
+        bytes.0[52..56].copy_from_slice(&(8_u32).to_le_bytes());
+
+        let boot = unsafe { BootInformation::load(bytes.0.as_ptr() as usize) }.unwrap();
+        let framebuffer = boot.framebuffer().unwrap().unwrap();
+        assert_eq!(framebuffer.physical_address, 0xe000_0000);
+        assert_eq!(framebuffer.byte_length, 4096 * 768);
+        assert_eq!(framebuffer.format, FRAMEBUFFER_FORMAT_XRGB8888);
     }
 
     #[test]

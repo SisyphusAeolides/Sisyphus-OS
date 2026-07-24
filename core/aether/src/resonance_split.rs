@@ -197,6 +197,14 @@ impl ResonanceIngressPage {
     pub fn doorbell(&self) -> u64 {
         self.core.doorbell.load(Ordering::Acquire)
     }
+
+    pub fn malformed_frames(&self) -> u64 {
+        self.core.malformed_frames.load(Ordering::Acquire)
+    }
+
+    pub fn overwritten_frames(&self) -> u64 {
+        self.core.overwritten_frames.load(Ordering::Acquire)
+    }
 }
 
 #[repr(C, align(64))]
@@ -320,6 +328,18 @@ impl ResonanceObservationPage {
 
     pub fn epoch(&self) -> u64 {
         self.core.epoch.load(Ordering::Acquire)
+    }
+
+    pub fn last_reply_sequence(&self) -> u64 {
+        self.core.last_reply_sequence.load(Ordering::Acquire)
+    }
+
+    pub fn telemetry_publications(&self) -> u64 {
+        self.core.telemetry_publications.load(Ordering::Acquire)
+    }
+
+    pub fn reply_publications(&self) -> u64 {
+        self.core.reply_publications.load(Ordering::Acquire)
     }
 }
 

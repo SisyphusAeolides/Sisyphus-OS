@@ -27,6 +27,7 @@ pub struct ResonancePlaneClient {
     capability: u64,
     next_sequence: u64,
     pending: Option<u64>,
+    dropped_replies: u64,
 }
 
 impl ResonancePlaneClient {
@@ -65,6 +66,7 @@ impl ResonancePlaneClient {
             capability,
             next_sequence: 1,
             pending: None,
+            dropped_replies: 0,
         })
     }
 
@@ -98,6 +100,19 @@ impl ResonancePlaneClient {
             return Ok(None);
         };
 
+        let published = self.observation.last_reply_sequence();
+        if published == 0 || published < expected {
+            return Ok(None);
+        }
+        if published > expected {
+            self.pending = None;
+            self.dropped_replies = self.dropped_replies.saturating_add(1);
+            return Err(PlaneClientError::UnexpectedReply {
+                expected,
+                observed: published,
+            });
+        }
+
         let Some(reply) = self.observation.reply(expected) else {
             return Ok(None);
         };
@@ -118,10 +133,20 @@ impl ResonancePlaneClient {
     }
 
     pub fn dropped_commands(&self) -> u64 {
-        0
+        self.ingress
+            .malformed_frames()
+            .saturating_add(self.ingress.overwritten_frames())
     }
 
-    pub fn dropped_replies(&self) -> u64 {
-        0
+    pub const fn dropped_replies(&self) -> u64 {
+        self.dropped_replies
+    }
+
+    pub fn telemetry_publications(&self) -> u64 {
+        self.observation.telemetry_publications()
+    }
+
+    pub fn reply_publications(&self) -> u64 {
+        self.observation.reply_publications()
     }
 }

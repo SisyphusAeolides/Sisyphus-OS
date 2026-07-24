@@ -60,6 +60,7 @@ pub enum FirmwareFramebufferKind {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FirmwareFramebufferEvidence {
     pub kind: FirmwareFramebufferKind,
+    pub physical_address: u64,
     pub width: u32,
     pub height: u32,
     pub pitch: u32,
@@ -72,6 +73,7 @@ pub struct FirmwareFramebufferEvidence {
 impl FirmwareFramebufferEvidence {
     pub const NONE: Self = Self {
         kind: FirmwareFramebufferKind::None,
+        physical_address: 0,
         width: 0,
         height: 0,
         pitch: 0,
@@ -83,6 +85,7 @@ impl FirmwareFramebufferEvidence {
 
     pub const fn usable(self) -> bool {
         !matches!(self.kind, FirmwareFramebufferKind::None)
+            && self.physical_address != 0
             && self.width != 0
             && self.height != 0
             && self.pitch != 0
@@ -752,6 +755,7 @@ pub fn fingerprint_root(secret: u64, fingerprint: &GpuFingerprint) -> u64 {
         state,
         u64::from(firmware.pitch) | (u64::from(firmware.format) << 32),
     );
+    state = mix(state, firmware.physical_address);
     state = mix(state, firmware.byte_length);
     state = mix(state, firmware.retained as u64);
     if let Some(owner) = firmware.owner {
@@ -839,6 +843,7 @@ mod tests {
     fn firmware_evidence_requires_retention() {
         let evidence = FirmwareFramebufferEvidence {
             kind: FirmwareFramebufferKind::UefiGop,
+            physical_address: 0xe000_0000,
             width: 1920,
             height: 1080,
             pitch: 7680,

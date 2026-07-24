@@ -22,7 +22,6 @@
 // Entanglement: If two speculative threads interact via IPC (e.g., Wormhole),
 //   their wave functions become entangled. Collapsing one collapses the other.
 
-#![allow(dead_code)]
 extern crate alloc;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;

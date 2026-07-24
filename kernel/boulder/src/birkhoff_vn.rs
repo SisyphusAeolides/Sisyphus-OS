@@ -13,7 +13,6 @@
 //! OS: M[i][j] = fraction of work from task class i on core j.
 //! Decomposition → time slots with exclusive assignments (no fractional cores).
 
-#![allow(dead_code)]
 
 pub const N: usize = 8;
 pub type Fp = u32;

@@ -36,6 +36,9 @@ mod tests {
     use core::ptr::NonNull;
     use core::sync::atomic::{AtomicUsize, Ordering};
     use sisyphus_driver_abi::{BUS_PLATFORM, DeviceInfo, DriverDescriptor, KernelApi, STATUS_OK};
+    use sisyphus_driver_abi::gpu::{
+        GpuCompatibilityManifest, GpuCompatibilityProof, GpuDeviceEvidence,
+    };
 
     use super::{
         AbyssAllocator, ClockService, DeviceService, DmaAllocation, DmaService, DriverHost,
@@ -61,6 +64,9 @@ mod tests {
         fn sisyphus_reference_sizeof_kernel_api() -> usize;
         fn sisyphus_reference_sizeof_device_info() -> usize;
         fn sisyphus_reference_sizeof_driver_descriptor() -> usize;
+        fn sisyphus_reference_sizeof_gpu_device_evidence() -> usize;
+        fn sisyphus_reference_sizeof_gpu_compatibility_manifest() -> usize;
+        fn sisyphus_reference_sizeof_gpu_compatibility_proof() -> usize;
         fn sisyphus_reference_exercise_api(api: *const KernelApi) -> i32;
     }
 
@@ -224,6 +230,18 @@ mod tests {
             assert_eq!(
                 sisyphus_reference_sizeof_driver_descriptor(),
                 core::mem::size_of::<DriverDescriptor>()
+            );
+            assert_eq!(
+                sisyphus_reference_sizeof_gpu_device_evidence(),
+                core::mem::size_of::<GpuDeviceEvidence>()
+            );
+            assert_eq!(
+                sisyphus_reference_sizeof_gpu_compatibility_manifest(),
+                core::mem::size_of::<GpuCompatibilityManifest>()
+            );
+            assert_eq!(
+                sisyphus_reference_sizeof_gpu_compatibility_proof(),
+                core::mem::size_of::<GpuCompatibilityProof>()
             );
         }
     }

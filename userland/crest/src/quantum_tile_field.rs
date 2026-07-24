@@ -366,8 +366,28 @@ impl QuantumTileField {
     }
 
     pub fn complete_frame(&mut self, schedule: &TileSchedule, tick: u64) {
-        for &index in schedule.indices() {
-            let signal = &mut self.signals[usize::from(index)];
+        self.complete_indices(schedule.indices(), tick);
+    }
+
+    /// Completes only the planner-authorized prefix of a schedule.
+    ///
+    /// Deferred tiles retain their signal state and can be selected by the next
+    /// frame without reconstructing damage from external state.
+    pub fn complete_prefix(
+        &mut self,
+        schedule: &TileSchedule,
+        completed: usize,
+        tick: u64,
+    ) {
+        let completed = completed.min(schedule.scheduled);
+        self.complete_indices(&schedule.indices()[..completed], tick);
+    }
+
+    fn complete_indices(&mut self, indices: &[u16], tick: u64) {
+        for &index in indices {
+            let Some(signal) = self.signals.get_mut(usize::from(index)) else {
+                continue;
+            };
             signal.phase = TilePhase::Dormant;
             signal.confidence = 0;
             signal.heat >>= 1;

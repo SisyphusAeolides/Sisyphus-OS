@@ -19,10 +19,11 @@ const fn sample_network() -> ThermalNetwork {
     }
 }
 
-/// Placeholder network used to exercise the inference path. Its nonzero
-/// weights normally occupy `.data`, and it is intentionally not certified for
-/// power-management decisions.
-pub static SAMPLE_THERMAL_NETWORK: ThermalNetwork = sample_network();
+/// Uncertified diagnostic network used to exercise the inference path.
+///
+/// It is deliberately excluded from power-management decisions: `advise`
+/// requires an accepted validation report before it can emit an action.
+pub static DIAGNOSTIC_THERMAL_NETWORK: ThermalNetwork = sample_network();
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ThermalSample {
@@ -240,9 +241,9 @@ mod tests {
     }
 
     #[test]
-    fn placeholder_model_cannot_drive_power_management() {
+    fn uncertified_model_cannot_drive_power_management() {
         let oracle =
-            ThermalOracle::new(&SAMPLE_THERMAL_NETWORK, QUANTIZATION, 1_000, 0, None).unwrap();
+            ThermalOracle::new(&DIAGNOSTIC_THERMAL_NETWORK, QUANTIZATION, 1_000, 0, None).unwrap();
         assert_eq!(
             oracle.advise(
                 ThermalSample {

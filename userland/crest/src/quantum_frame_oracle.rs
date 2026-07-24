@@ -3,6 +3,7 @@ use slope::quantum_crest::{
     SNAPSHOT_FLAG_FRAME_DEADLINE_AT_RISK, SNAPSHOT_FLAG_QUARANTINE_ACTIVE,
     SNAPSHOT_FLAG_RECOVERY_PENDING, SNAPSHOT_FLAG_SAFE_MODE,
 };
+use slope::service_calculus::ResidualCalibrator;
 
 use crate::quantum_tile_field::TileSchedule;
 
@@ -57,6 +58,8 @@ impl LaneDecision {
 pub struct QuantumFramePlan {
     pub frame_sequence: u64,
     pub snapshot_sequence: u64,
+    pub schedule_root: u64,
+    pub scheduled_tiles: usize,
     pub mode: FrameMode,
     pub present_phase: PresentPhase,
     pub tile_budget: usize,
@@ -70,10 +73,25 @@ pub struct QuantumFramePlan {
 
 impl QuantumFramePlan {
     pub fn verify(&self, secret: u64) -> bool {
+        let lanes_are_complete = self.decisions[0].lane == LANE_LATENCY
+            && self.decisions[1].lane == LANE_COHERENCE
+            && self.decisions[2].lane == LANE_THERMAL;
+        let decisions_are_bounded = self.decisions.iter().all(|decision| {
+            decision.tile_budget != 0
+                && decision.tile_budget <= self.scheduled_tiles
+                && decision.predicted_ticks != 0
+        });
+
         self.frame_sequence != 0
             && self.snapshot_sequence != 0
+            && self.schedule_root != 0
+            && self.scheduled_tiles != 0
             && self.tile_budget != 0
+            && self.tile_budget <= self.scheduled_tiles
+            && self.predicted_render_ticks != 0
             && self.lane_votes != 0
+            && lanes_are_complete
+            && decisions_are_bounded
             && self.root == plan_root(secret, self)
     }
 }
@@ -94,33 +112,20 @@ pub enum FrameOracleError {
     InvalidSchedule,
     TimeRegression,
     SequenceRegression,
-}
-
-#[derive(Clone, Copy)]
-struct RenderSample {
-    tiles: u32,
-    ticks: u64,
-    missed: bool,
-}
-
-impl RenderSample {
-    const ZERO: Self = Self {
-        tiles: 0,
-        ticks: 0,
-        missed: false,
-    };
+    UnexpectedObservation,
+    Calibration,
 }
 
 pub struct QuantumFrameOracle {
     secret: u64,
     next_frame_sequence: u64,
     last_snapshot_sequence: u64,
+    last_planned_frame: u64,
+    last_observed_frame: u64,
     last_tick: u64,
     ticks_per_tile_q16: u64,
     jitter_q16: u64,
-    history: [RenderSample; HISTORY],
-    history_count: usize,
-    history_cursor: usize,
+    residuals: ResidualCalibrator<HISTORY>,
     missed_deadlines: u64,
 }
 
@@ -130,16 +135,23 @@ impl QuantumFrameOracle {
             return Err(FrameOracleError::InvalidSecret);
         }
 
+        let residuals = ResidualCalibrator::kernel_default(
+            1,
+            1_u64 << 48,
+            mix(secret, 0x4652_414d_455f_4346),
+        )
+        .map_err(|_| FrameOracleError::Calibration)?;
+
         Ok(Self {
             secret,
             next_frame_sequence: 1,
             last_snapshot_sequence: 0,
+            last_planned_frame: 0,
+            last_observed_frame: 0,
             last_tick: 0,
             ticks_per_tile_q16: Q16_ONE,
             jitter_q16: Q16_ONE / 4,
-            history: [RenderSample::ZERO; HISTORY],
-            history_count: 0,
-            history_cursor: 0,
+            residuals,
             missed_deadlines: 0,
         })
     }
@@ -153,7 +165,10 @@ impl QuantumFrameOracle {
         if snapshot.sequence == 0 || snapshot.epoch == 0 || snapshot.display.total_tiles == 0 {
             return Err(FrameOracleError::InvalidSnapshot);
         }
-        if schedule.scheduled == 0 || schedule.scheduled > snapshot.display.total_tiles as usize {
+        if schedule.scheduled == 0
+            || schedule.scheduled > snapshot.display.total_tiles as usize
+            || schedule.root == 0
+        {
             return Err(FrameOracleError::InvalidSchedule);
         }
         if self.last_tick != 0 && now_tick < self.last_tick {
@@ -168,7 +183,7 @@ impl QuantumFrameOracle {
         self.last_snapshot_sequence = snapshot.sequence;
         self.last_tick = now_tick;
 
-        let predicted = self.predict_ticks(schedule.scheduled);
+        let predicted = self.predict_ticks(schedule.scheduled)?;
         let budget = snapshot.display.frame_budget_ticks.max(1);
         let deadline = now_tick.saturating_add(budget);
 
@@ -191,6 +206,8 @@ impl QuantumFrameOracle {
         let mut plan = QuantumFramePlan {
             frame_sequence,
             snapshot_sequence: snapshot.sequence,
+            schedule_root: schedule.root,
+            scheduled_tiles: schedule.scheduled,
             mode,
             present_phase: phase,
             tile_budget,
@@ -202,12 +219,51 @@ impl QuantumFrameOracle {
             root: 0,
         };
         plan.root = plan_root(self.secret, &plan);
+        self.last_planned_frame = frame_sequence;
+        Ok(plan)
+    }
+
+    /// Rebinds the latest plan to the exact planner-selected schedule prefix.
+    ///
+    /// The lane decisions and budget remain unchanged; only the schedule root
+    /// and scheduled count are replaced after `QuantumTileField` materializes
+    /// the authorized prefix.
+    pub fn bind_schedule(
+        &self,
+        mut plan: QuantumFramePlan,
+        schedule: &TileSchedule,
+    ) -> Result<QuantumFramePlan, FrameOracleError> {
+        if plan.frame_sequence != self.last_planned_frame
+            || !plan.verify(self.secret)
+            || schedule.root == 0
+            || schedule.scheduled != plan.tile_budget
+        {
+            return Err(FrameOracleError::InvalidSchedule);
+        }
+
+        plan.schedule_root = schedule.root;
+        plan.scheduled_tiles = schedule.scheduled;
+        plan.tile_budget = schedule.scheduled;
+        plan.predicted_render_ticks = self.predict_ticks(schedule.scheduled)?;
+        for decision in &mut plan.decisions {
+            decision.tile_budget = decision
+                .tile_budget
+                .min(schedule.scheduled)
+                .max(1);
+            decision.predicted_ticks = self.predict_ticks(decision.tile_budget)?;
+        }
+        plan.root = plan_root(self.secret, &plan);
         Ok(plan)
     }
 
     pub fn observe(&mut self, observation: FrameObservation) -> Result<(), FrameOracleError> {
         if observation.frame_sequence == 0 || observation.rendered_tiles == 0 {
             return Err(FrameOracleError::InvalidSchedule);
+        }
+        if observation.frame_sequence != self.last_planned_frame
+            || observation.frame_sequence <= self.last_observed_frame
+        {
+            return Err(FrameOracleError::UnexpectedObservation);
         }
         if self.last_tick != 0 && observation.present_tick < self.last_tick {
             return Err(FrameOracleError::TimeRegression);
@@ -219,23 +275,27 @@ impl QuantumFrameOracle {
             .checked_div(observation.rendered_tiles as u64)
             .unwrap_or(u64::MAX);
 
-        let residual = observed_q16.abs_diff(self.ticks_per_tile_q16);
-        self.ticks_per_tile_q16 = ewma(self.ticks_per_tile_q16, observed_q16, 3);
-        self.jitter_q16 = ewma(self.jitter_q16, residual, 3);
+        let residual_q16 = observed_q16.abs_diff(self.ticks_per_tile_q16);
+        let predicted_ticks = self
+            .ticks_per_tile_q16
+            .saturating_mul(observation.rendered_tiles as u64)
+            >> 16;
+        let one_sided_residual = observation
+            .render_ticks
+            .saturating_sub(predicted_ticks);
+        self.residuals
+            .push(one_sided_residual)
+            .map_err(|_| FrameOracleError::Calibration)?;
 
-        self.history[self.history_cursor] = RenderSample {
-            tiles: observation.rendered_tiles.min(u32::MAX as usize) as u32,
-            ticks: observation.render_ticks,
-            missed: observation.missed_deadline,
-        };
-        self.history_cursor = (self.history_cursor + 1) % HISTORY;
-        self.history_count = self.history_count.saturating_add(1).min(HISTORY);
+        self.ticks_per_tile_q16 = ewma(self.ticks_per_tile_q16, observed_q16, 3);
+        self.jitter_q16 = ewma(self.jitter_q16, residual_q16, 3);
 
         if observation.missed_deadline {
             self.missed_deadlines = self.missed_deadlines.saturating_add(1);
             self.jitter_q16 = self.jitter_q16.saturating_add(Q16_ONE / 2);
         }
 
+        self.last_observed_frame = observation.frame_sequence;
         self.last_tick = observation.present_tick;
         Ok(())
     }
@@ -248,49 +308,20 @@ impl QuantumFrameOracle {
         self.ticks_per_tile_q16
     }
 
-    fn predict_ticks(&self, tiles: usize) -> u64 {
+    pub fn conformal_guard_ticks(&self) -> Result<u64, FrameOracleError> {
+        self.residuals
+            .guard()
+            .map_err(|_| FrameOracleError::Calibration)
+    }
+
+    fn predict_ticks(&self, tiles: usize) -> Result<u64, FrameOracleError> {
         let base = self
             .ticks_per_tile_q16
             .saturating_mul(tiles as u64)
             .saturating_add(self.jitter_q16.saturating_mul(2))
             >> 16;
-
-        let history_guard = self.history_guard_ticks();
-        base.saturating_add(history_guard).max(1)
-    }
-
-    fn history_guard_ticks(&self) -> u64 {
-        if self.history_count == 0 {
-            return 0;
-        }
-
-        let mut normalized = [0_u64; HISTORY];
-        let mut count = 0_usize;
-
-        for sample in self.history[..self.history_count].iter().copied() {
-            if sample.tiles == 0 {
-                continue;
-            }
-            normalized[count] = sample
-                .ticks
-                .saturating_mul(1024)
-                .checked_div(u64::from(sample.tiles))
-                .unwrap_or(u64::MAX);
-            if sample.missed {
-                normalized[count] = normalized[count].saturating_mul(2);
-            }
-            count += 1;
-        }
-
-        if count == 0 {
-            return 0;
-        }
-
-        normalized[..count].sort_unstable();
-        normalized[(count * 3 / 4).min(count - 1)]
-            .saturating_mul(self.history_count as u64)
-            .checked_div(4096)
-            .unwrap_or(0)
+        let guard = self.conformal_guard_ticks()?;
+        Ok(base.saturating_add(guard).max(1))
     }
 
     fn latency_lane(
@@ -542,6 +573,8 @@ fn ewma(current: u64, target: u64, shift: u32) -> u64 {
 fn plan_root(secret: u64, plan: &QuantumFramePlan) -> u64 {
     let mut state = mix(secret, plan.frame_sequence);
     state = mix(state, plan.snapshot_sequence);
+    state = mix(state, plan.schedule_root);
+    state = mix(state, plan.scheduled_tiles as u64);
     state = mix(state, mode_rank(plan.mode) as u64);
     state = mix(state, phase_rank(plan.present_phase) as u64);
     state = mix(state, plan.tile_budget as u64);
@@ -596,6 +629,7 @@ mod tests {
         schedule.dirty = 8;
         schedule.predicted = 8;
         schedule.critical = 2;
+        schedule.root = 7;
         schedule
     }
 
@@ -619,12 +653,36 @@ mod tests {
     }
 
     #[test]
+    fn schedule_binding_reseals_exact_prefix_evidence() {
+        let mut oracle = QuantumFrameOracle::new(0x9abc).unwrap();
+        let original = schedule();
+        let mut plan = oracle.plan(snapshot(900, 0), &original, 10).unwrap();
+        assert!(plan.tile_budget < original.scheduled);
+
+        let mut prefix = TileSchedule::empty();
+        prefix.scheduled = plan.tile_budget;
+        prefix.dirty = plan.tile_budget;
+        prefix.root = 0x55aa;
+        plan = oracle.bind_schedule(plan, &prefix).unwrap();
+
+        assert_eq!(plan.schedule_root, prefix.root);
+        assert_eq!(plan.scheduled_tiles, prefix.scheduled);
+        assert_eq!(plan.tile_budget, prefix.scheduled);
+        assert!(plan
+            .decisions
+            .iter()
+            .all(|decision| decision.tile_budget <= prefix.scheduled));
+        assert!(plan.verify(0x9abc));
+    }
+
+    #[test]
     fn observations_adapt_ticks_per_tile() {
         let mut oracle = QuantumFrameOracle::new(0x5678).unwrap();
+        let plan = oracle.plan(snapshot(0, 0), &schedule(), 10).unwrap();
         let before = oracle.ticks_per_tile_q16();
         oracle
             .observe(FrameObservation {
-                frame_sequence: 1,
+                frame_sequence: plan.frame_sequence,
                 rendered_tiles: 10,
                 render_ticks: 100,
                 missed_deadline: false,
@@ -632,5 +690,15 @@ mod tests {
             })
             .unwrap();
         assert_ne!(oracle.ticks_per_tile_q16(), before);
+        assert_eq!(
+            oracle.observe(FrameObservation {
+                frame_sequence: plan.frame_sequence,
+                rendered_tiles: 10,
+                render_ticks: 100,
+                missed_deadline: false,
+                present_tick: 101,
+            }),
+            Err(FrameOracleError::UnexpectedObservation),
+        );
     }
 }

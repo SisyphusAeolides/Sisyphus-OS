@@ -342,18 +342,21 @@ impl<'a, const SCENE: usize, const MUTATIONS: usize, const FOCUS: usize>
             });
         }
 
-        let plan = self.oracle.plan(snapshot, &schedule, render_begin_tick)?;
+        let mut plan = self.oracle.plan(snapshot, &schedule, render_begin_tick)?;
 
         if plan.tile_budget < schedule.scheduled {
-            schedule =
-                self.tiles
-                    .compile_schedule(plan.tile_budget, beam_position, self.damage_secret)?;
+            schedule = self
+                .tiles
+                .compile_schedule(plan.tile_budget, beam_position, self.damage_secret)?;
+            plan = self.oracle.bind_schedule(plan, &schedule)?;
         }
 
         self.pipeline.damage.clear_all();
         self.tiles.apply_schedule(&schedule, &mut self.pipeline);
 
-        let rendered = self.pipeline.render_dirty(shell, buffer)?;
+        let rendered = self
+            .pipeline
+            .render_schedule(shell, buffer, schedule.indices())?;
         self.aura
             .synchronize(snapshot, self.scene.root(), self.focus.root());
         self.aura.apply_schedule(buffer, self.mode, &schedule);

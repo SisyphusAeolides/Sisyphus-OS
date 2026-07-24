@@ -15,7 +15,6 @@
 // Predictive window:  use crystal period to predict next low-jitter scheduling moment
 //                     (CPU is in a "quiet" microarch state → optimal preemption point)
 
-#![allow(dead_code)]
 extern crate alloc;
 use core::sync::atomic::{AtomicU64, Ordering};
 

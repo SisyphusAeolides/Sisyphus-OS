@@ -86,5 +86,9 @@ unsafe impl GlobalAlloc for BumpAllocator {
         }
     }
 
-    unsafe fn dealloc(&self, _pointer: *mut u8, _layout: Layout) {}
+    unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
+        // Bootstrap bump allocation is monotonic. Reclamation begins only when
+        // the frame-backed allocator takes ownership after boot.
+        let _ = (pointer, layout);
+    }
 }

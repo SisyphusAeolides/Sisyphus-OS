@@ -1,3 +1,4 @@
+use sisyphus_driver_abi::gpu::GpuCompatibilityManifest;
 use sisyphus_driver_abi::hermes::{
     HERMES_STATUS_OK, HermesBootInstruction, HermesNormalizedCommand, HermesNormalizedEvent,
     HermesPciIdentity, HermesProbeEvidence, HermesTransportProfile,
@@ -20,6 +21,7 @@ pub struct MorphicHermesEntrypoint {
     pub dispatch_address: u64,
     pub authority_epoch: u64,
     pub maximum_execution_fuel: u64,
+    pub compatibility: GpuCompatibilityManifest,
 }
 
 impl MorphicHermesEntrypoint {
@@ -30,6 +32,9 @@ impl MorphicHermesEntrypoint {
             && self.dispatch_address != 0
             && self.authority_epoch != 0
             && self.maximum_execution_fuel != 0
+            && self.compatibility.valid()
+            && self.compatibility.driver_id == self.personality_id
+            && self.compatibility.vendor_id == 0x10de
     }
 }
 
@@ -111,6 +116,10 @@ impl<'a, Gate: ForeignDispatchGate + ?Sized> ForeignHermesCodec<'a, Gate> {
 impl<Gate: ForeignDispatchGate + ?Sized> HermesCodec for ForeignHermesCodec<'_, Gate> {
     fn personality_id(&self) -> u64 {
         self.entrypoint.personality_id
+    }
+
+    fn compatibility_manifest(&self) -> GpuCompatibilityManifest {
+        self.entrypoint.compatibility
     }
 
     fn match_device(

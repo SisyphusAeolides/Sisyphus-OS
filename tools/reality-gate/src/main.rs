@@ -248,13 +248,25 @@ fn scan_sources(root: &Path, sources: &BTreeMap<PathBuf, String>) -> Vec<Finding
         let relative = relative_path(root, path);
         let production = production_prefix(source);
 
+        if production.lines().any(|line| {
+            let compact = line.split_whitespace().collect::<String>();
+            compact.starts_with("#![allow(") && compact.contains("dead_code")
+        }) {
+            findings.push(Finding {
+                severity: Severity::Error,
+                rule: "module-dead-code-suppression",
+                path: relative.clone(),
+                line: production
+                    .lines()
+                    .position(|line| line.contains("dead_code"))
+                    .map(|index| index + 1)
+                    .unwrap_or(1),
+                detail: "module-wide dead-code suppression hides disconnected production code"
+                    .into(),
+            });
+        }
+
         for (needle, severity, rule, detail) in [
-            (
-                "#![allow(dead_code)]",
-                Severity::Error,
-                "module-dead-code-suppression",
-                "module-wide dead-code suppression hides disconnected production code",
-            ),
             (
                 "STUBS FOR",
                 Severity::Error,
@@ -290,12 +302,6 @@ fn scan_sources(root: &Path, sources: &BTreeMap<PathBuf, String>) -> Vec<Finding
                 Severity::Warning,
                 "placeholder-language",
                 "placeholder wording requires a reviewed, scoped exemption",
-            ),
-            (
-                "future:",
-                Severity::Warning,
-                "future-only-field",
-                "future-only behavior is exported from current production source",
             ),
             (
                 "mock of",

@@ -147,6 +147,7 @@ mod tests {
         let mut table = BootTopologyTable::<4>::new().unwrap();
         let firmware = FirmwareFramebufferEvidence {
             kind: FirmwareFramebufferKind::UefiGop,
+            physical_address: 0xe000_0000,
             width: 1024,
             height: 768,
             pitch: 4096,

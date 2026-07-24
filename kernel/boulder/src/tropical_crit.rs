@@ -7,7 +7,6 @@
 //! After n-1 tropical powers of adjacency, dist[s,t] = critical path cost.
 //! Ready queue priority = -dist[task, sink] (longer outstanding path first).
 
-#![allow(dead_code)]
 
 pub const N: usize = 16;
 pub const INF: u64 = u64::MAX / 4;
