@@ -32,7 +32,6 @@ pub mod drivers;
 pub mod er_epr_memory;
 pub mod fabric;
 pub mod fabric_weave;
-pub mod fiedler_cut;
 pub mod fs;
 pub mod futamura;
 pub mod ghost_chronicle;

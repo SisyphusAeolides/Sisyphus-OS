@@ -2,7 +2,7 @@ use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll};
 
-use slope::resonance_plane::{NexusOpcode, NexusTelemetry, ResonancePlaneClient};
+use slope::resonance_plane::{NexusOpcode, ResonancePlaneClient};
 use slope::scheduler::{self, PhaseHint, Priority};
 
 const HEAT_CRITICAL: u64 = 850_000;

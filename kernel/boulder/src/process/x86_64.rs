@@ -21,8 +21,8 @@ const ENTRY_NO_EXECUTE: u64 = 1 << 63;
 const USER_PML4_ENTRIES: usize = 256;
 const TABLE_ENTRIES: usize = 512;
 
-pub const MAXIMUM_PROCESS_PAGES: usize = 256;
-pub const MAXIMUM_OWNED_FRAMES: usize = 320;
+pub const MAXIMUM_PROCESS_PAGES: usize = 512;
+pub const MAXIMUM_OWNED_FRAMES: usize = 576;
 pub const INITIAL_USER_STACK_BASE: u64 = 0x0040_0000;
 pub const INITIAL_USER_STACK_PAGES: usize = if cfg!(test) { 112 } else { 192 };
 // Leave one mapped page below the ABI block so the entry trampoline and the

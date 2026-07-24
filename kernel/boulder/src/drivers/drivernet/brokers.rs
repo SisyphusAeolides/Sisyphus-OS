@@ -506,13 +506,13 @@ impl StrategyBroker for QuarantineBroker {
             return Err(BackendFault::new(
                 FaultCode::RollbackFault,
                 false,
-                fault.root,
+                fault.detail,
             ));
         }
         transaction.state = [0; 8];
         transaction.root = mix(
             transaction.root,
-            u64::from(stage as u8) ^ fault.root,
+            u64::from(stage as u8) ^ fault.detail,
         );
         Ok(())
     }

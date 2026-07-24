@@ -115,7 +115,7 @@ pub fn validate_doubly_stochastic(m: &[[Fp; N]; N], n: usize) -> Result<(), BvnF
 /// DFS bipartite matching on support { M_ij >= min_pos }
 fn find_perm(m: &[[Fp; N]; N], n: usize) -> Result<Perm, BvnFault> {
     let mut match_to = [0xFFu8; N]; // col -> row
-    let mut seen = [false; N];
+    let mut seen;
 
     fn dfs(
         row: usize,

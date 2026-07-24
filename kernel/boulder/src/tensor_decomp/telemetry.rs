@@ -8,7 +8,7 @@
 //! paths only write one bounded time slice.  Decomposition runs elsewhere.
 
 use super::fixed;
-use super::tensor::{DenseTensor, MAX_ORDER, TensorError, TensorShape};
+use super::tensor::{DenseTensor, TensorError, TensorShape};
 
 pub const TIME_SLOTS: usize = 8;
 pub const SUBSYSTEMS: usize = 8;

@@ -132,14 +132,12 @@ impl CausalEnvelope {
 struct ReplaySlot {
     active: bool,
     nonce: u64,
-    stamp: CausalStamp,
 }
 
 impl ReplaySlot {
     const EMPTY: Self = Self {
         active: false,
         nonce: 0,
-        stamp: CausalStamp::ZERO,
     };
 }
 
@@ -208,7 +206,6 @@ impl<const N: usize> ReplayShield<N> {
         self.slots[self.cursor] = ReplaySlot {
             active: true,
             nonce: envelope.nonce,
-            stamp: envelope.stamp,
         };
 
         self.cursor = (self.cursor + 1) % N;

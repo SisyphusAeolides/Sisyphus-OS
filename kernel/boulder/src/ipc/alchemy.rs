@@ -116,7 +116,6 @@ impl Atom {
     }
 
     fn xxhash32(data: &[u8]) -> u32 {
-        const PRIME1: u32 = 2654435761;
         const PRIME2: u32 = 2246822519;
         const PRIME3: u32 = 3266489917;
         const PRIME4: u32 = 668265263;

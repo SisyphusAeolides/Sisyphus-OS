@@ -19,7 +19,7 @@ use ::blacklab::tartarus::{
     FaultAccess, FaultDecision, FaultSnapshot, TartarusError, TartarusVoid, TombstoneRequest,
 };
 use ::blacklab::thermal::{
-    InputQuantization, SAMPLE_THERMAL_NETWORK, ThermalError, ThermalOracle, ThermalSample,
+    InputQuantization, DIAGNOSTIC_THERMAL_NETWORK, ThermalError, ThermalOracle, ThermalSample,
 };
 use ::blacklab::timeline::{CounterScale, TimelineError, WorkloadTerm, logical_delta};
 
@@ -214,7 +214,7 @@ pub fn initialize<Backend: UserAddressSpaceBackend>(
         .map_err(|_| InitializeError::Dialect)?;
 
     let thermal_oracle = ThermalOracle::new(
-        &SAMPLE_THERMAL_NETWORK,
+        &DIAGNOSTIC_THERMAL_NETWORK,
         InputQuantization {
             runnable_threads_per_unit: 1,
             semantic_heat_per_unit: 100,

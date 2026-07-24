@@ -8,6 +8,7 @@ mod quantum_runtime;
 #[global_allocator]
 static ALLOC: slope::memory::GlobalSlabHeap = slope::memory::GlobalSlabHeap::new();
 
+#[cfg(not(test))]
 use core::panic::PanicInfo;
 
 use slope::executor::OuroborosExecutor;

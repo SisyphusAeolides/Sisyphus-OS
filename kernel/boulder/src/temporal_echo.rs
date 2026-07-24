@@ -2,7 +2,7 @@ use core::cell::Cell;
 
 use aether::effect_program::PreparedEffects;
 use aether::holographic::HolographicTree;
-use aether::replay_capsule::{ReplayCapsule, ReplayCapsuleError};
+use aether::replay_capsule::ReplayCapsule;
 use aether::temporal_contract::TemporalObservation;
 
 use crate::continuity_vault::CheckpointId;
@@ -119,16 +119,12 @@ impl EchoReport {
 #[derive(Clone, Copy)]
 struct EchoRecord {
     active: bool,
-    chain_before: u64,
-    chain_after: u64,
     report: EchoReport,
 }
 
 impl EchoRecord {
     const EMPTY: Self = Self {
         active: false,
-        chain_before: 0,
-        chain_after: 0,
         report: EchoReport {
             sequence: 0,
             verdict: EchoVerdict::Stale,
@@ -250,8 +246,6 @@ impl<const N: usize, const PENDING: usize, const RECORDS: usize>
 
         state.records[cursor] = EchoRecord {
             active: true,
-            chain_before,
-            chain_after,
             report,
         };
 

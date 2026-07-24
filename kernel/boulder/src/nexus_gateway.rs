@@ -10,7 +10,6 @@ use crate::sync::SpinLock;
 
 const GHOST_COMMAND: u16 = 0x100;
 const GHOST_REPLY: u16 = 0x101;
-const GHOST_DENIED: u16 = 0x102;
 
 pub static LEASES: BootCell<LeaseLattice<256>> = BootCell::new();
 

@@ -232,7 +232,7 @@ impl<'borrow, 'authority> BlackLabDriverPlatform<'borrow, 'authority> {
 
     fn encode_broker(transaction: &mut ProbeTransaction, broker: BrokerTransaction) {
         transaction.backend_state[3] = broker.token;
-        transaction.backend_state[4..8].copy_from_slice(&broker.state);
+        transaction.backend_state[4..8].copy_from_slice(&broker.state[0..4]);
         transaction.observation_root = mix(transaction.observation_root, broker.root);
     }
 

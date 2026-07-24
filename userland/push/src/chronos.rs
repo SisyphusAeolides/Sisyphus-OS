@@ -7,10 +7,6 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 /// Speed of light in our spacetime — max CPU load = 1.0 (100%)
 const C: f64 = 1.0;
-/// Planck tick — minimum observable time unit (nanoseconds)
-const PLANCK_NS: u64 = 1;
-/// Timer wheel slots (1024 = 1024 ms granularity at 1ms per slot)
-const WHEEL_SLOTS: usize = 1024;
 /// Number of hierarchical wheel levels
 const WHEEL_LEVELS: usize = 4;
 /// Slots per level: level 0=1ms, 1=256ms, 2=65s, 3=4.6hr

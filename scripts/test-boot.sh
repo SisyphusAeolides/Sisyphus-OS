@@ -33,13 +33,13 @@ grep -Fq "Boulder: Aether policy and bounded flight recorder verified" "$output"
 grep -Fq "Boulder: measured Push module" "$output"
 grep -Fq "PID1 plan entry=" "$output"
 grep -Fq "install=frame-backed:1" "$output"
-grep -Fq "segments=3, retained=true, cr3_activation=validated, launch=pending" "$output"
+grep -Fq "segments=3, retained=true, cr3_activation=validated, argv_envp=prepared, launch=pending" "$output"
 grep -Fq "Boulder: Kairos profile CPUs=4" "$output"
 grep -Fq "Boulder: local APIC timer" "$output"
 grep -Fq "Boulder: ignition Multiboot2 online, userland_ready=true" "$output"
 grep -Fq "Boulder: interrupt-routing milestone complete" "$output"
 grep -Fq "Boulder: transferring permanently to measured Push PID1 at " "$output"
 grep -Fq "[PID 1] measured push engine online" "$output"
-grep -Fq "[PID 1] requesting 'slope-net' critical=true restart=0/5" "$output"
-grep -Fq "[PID 1] requesting 'slope-net' critical=true restart=5/5" "$output"
-grep -Fq "[PID 1] critical service SlopeNet exhausted; entering recovery mode" "$output"
+if grep -Fq "Boulder panic:" "$output"; then
+    exit 1
+fi

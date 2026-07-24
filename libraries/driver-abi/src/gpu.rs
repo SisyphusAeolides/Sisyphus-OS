@@ -186,7 +186,7 @@ impl GpuDeviceEvidence {
 
     pub fn valid(&self) -> bool {
         if self.abi_version >> 16 != GPU_PORTABLE_ABI_MAJOR
-            || self.struct_size as usize < core::mem::size_of::<Self>()
+            || (self.struct_size as usize) < core::mem::size_of::<Self>()
             || self.evidence_root == 0
         {
             return false;

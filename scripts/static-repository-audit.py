@@ -25,7 +25,11 @@ def tracked_files() -> list[str]:
         capture_output=True,
         text=True,
     )
-    return [line for line in completed.stdout.splitlines() if line]
+    return [
+        line
+        for line in completed.stdout.splitlines()
+        if line and (ROOT / line).is_file()
+    ]
 
 
 def rust_files() -> list[Path]:
@@ -188,11 +192,11 @@ def audit_rust(path: Path, failures: list[str]) -> None:
             fail(f"{relative}: production marker {marker!r}", failures)
 
     if not policy_source and re.search(
-        r"#!\s*\[allow\([^]]*\bdead_code\b[^]]*\)\]",
+        r"#\s*!?\s*\[allow\([^]]*\b(?:dead_code|unused(?:_[a-z_]+)?)\b[^]]*\)\]",
         production,
         re.DOTALL,
     ):
-        fail(f"{relative}: module-wide dead-code suppression", failures)
+        fail(f"{relative}: production dead/unused-code suppression", failures)
 
     source_code = code_only(text)
     for match in re.finditer(r"\bfn\s+([^\s(<]+)", source_code):

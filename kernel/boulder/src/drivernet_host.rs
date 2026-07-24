@@ -30,8 +30,8 @@ use crate::drivers::drivernet::model_weights::{
     MODEL_CORPUS_ROOT, MODEL_ROOT, MODEL_SCHEMA_VERSION,
 };
 use crate::drivers::drivernet::platform::{
-    BlackLabDriverPlatform, BrokerTransaction, DeviceIsolationBroker, DriverNetAuthority,
-    DriverNetClock, IsolationReceipt, PlatformError,
+    BlackLabDriverPlatform, BrokerTransaction, DeviceIsolationBroker, DriverNetClock,
+    IsolationReceipt, PlatformError,
 };
 use crate::drivers::drivernet::registry::{
     ProbeSemantic, ProbeStep, ShimDescriptor, PROBE_EVIDENCE_HEALTH,
@@ -238,7 +238,7 @@ impl DeviceIsolationBroker for BoulderIsolationBroker {
             return Err(BackendFault::new(
                 FaultCode::RollbackFault,
                 false,
-                mix(fault.root, stage as u8 as u64),
+                mix(fault.detail, stage as u8 as u64),
             ));
         }
         Ok(())
@@ -540,13 +540,13 @@ impl NativeStrategyHost for BoulderNativeHost {
             return Err(BackendFault::new(
                 FaultCode::RollbackFault,
                 false,
-                mix(fault.root, strategy.index() as u64),
+                mix(fault.detail, strategy.index() as u64),
             ));
         }
         transaction.state = [0; 8];
         transaction.root = mix(
             transaction.root,
-            u64::from(stage as u8) ^ fault.root,
+            u64::from(stage as u8) ^ fault.detail,
         );
         Ok(())
     }
@@ -725,7 +725,8 @@ pub fn resolve_drivernet<
     let driver_clock = BoulderDriverClock;
     let device_isolation_broker = BoulderIsolationBroker;
 
-    let native_strategy_host = BoulderNativeHost::new(secrets.dispatch ^ 0x4750_5550_4f52_5401);
+    let native_strategy_host =
+        BoulderNativeHost::new(secrets.dispatch ^ 0x4750_5550_4f52_5401);
     let firmware_framebuffer_host = BoulderFirmwareHost::new(
         secrets.dispatch ^ 0x4657_4449_5350_4c01,
     );

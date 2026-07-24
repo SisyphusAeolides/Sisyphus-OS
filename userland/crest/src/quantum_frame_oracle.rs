@@ -189,7 +189,7 @@ impl QuantumFrameOracle {
 
         let latency = self.latency_lane(snapshot, schedule, predicted, budget);
         let coherence = self.coherence_lane(snapshot, schedule, predicted, budget);
-        let thermal = self.thermal_lane(snapshot, schedule, predicted, budget);
+        let thermal = self.thermal_lane(snapshot, schedule, predicted);
         let decisions = [latency, coherence, thermal];
 
         let (mode, mode_votes) = majority_mode(&decisions);
@@ -422,7 +422,6 @@ impl QuantumFrameOracle {
         snapshot: QuantumSystemSnapshot,
         schedule: &TileSchedule,
         predicted: u64,
-        budget: u64,
     ) -> LaneDecision {
         let risk = snapshot.blacklab.risk;
         let degraded = snapshot.flags

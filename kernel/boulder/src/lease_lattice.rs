@@ -73,7 +73,6 @@ struct LeaseRecord {
     active: bool,
     generation: u16,
     depth: u8,
-    reserved: u8,
 
     rights: LeaseRights,
 
@@ -94,7 +93,6 @@ impl LeaseRecord {
         active: false,
         generation: 1,
         depth: 0,
-        reserved: 0,
         rights: LeaseRights(0),
         parent_slot: ROOT_PARENT,
         parent_generation: 0,
@@ -188,7 +186,6 @@ impl<const N: usize> LeaseLattice<N> {
             active: true,
             generation,
             depth: 0,
-            reserved: 0,
             rights,
             parent_slot: ROOT_PARENT,
             parent_generation: 0,
@@ -263,7 +260,6 @@ impl<const N: usize> LeaseLattice<N> {
             active: true,
             generation,
             depth: parent.depth.saturating_add(1),
-            reserved: 0,
             rights: parent.rights.intersect(rights),
             parent_slot: parent_index as u16,
             parent_generation: parent.generation,

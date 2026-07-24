@@ -250,7 +250,8 @@ fn scan_sources(root: &Path, sources: &BTreeMap<PathBuf, String>) -> Vec<Finding
 
         if production.lines().any(|line| {
             let compact = line.split_whitespace().collect::<String>();
-            compact.starts_with("#![allow(") && compact.contains("dead_code")
+            (compact.starts_with("#![allow(") || compact.starts_with("#[allow("))
+                && (compact.contains("dead_code") || compact.contains("unused"))
         }) {
             findings.push(Finding {
                 severity: Severity::Error,
@@ -261,8 +262,7 @@ fn scan_sources(root: &Path, sources: &BTreeMap<PathBuf, String>) -> Vec<Finding
                     .position(|line| line.contains("dead_code"))
                     .map(|index| index + 1)
                     .unwrap_or(1),
-                detail: "module-wide dead-code suppression hides disconnected production code"
-                    .into(),
+                detail: "production dead/unused-code suppression hides disconnected code".into(),
             });
         }
 

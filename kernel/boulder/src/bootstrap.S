@@ -162,7 +162,7 @@ kernel_p3_table:
     .skip 4096
 .balign 16
 stack_bottom:
-    .skip 65536
+    .skip 8388608
 stack_top:
 
 .global mmio_p1_table

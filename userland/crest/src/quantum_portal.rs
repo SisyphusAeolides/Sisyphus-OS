@@ -2,8 +2,8 @@ use slope::quantum_crest::{
     DESKTOP_RIGHT_CAPTURE, DESKTOP_RIGHT_FOCUS, DESKTOP_RIGHT_OBSERVE, DESKTOP_RIGHT_PRESENT,
     DESKTOP_RIGHT_RECOVER, OPCODE_ACKNOWLEDGE_PLAN, OPCODE_CAPTURE_CHECKPOINT, OPCODE_PRESENT,
     OPCODE_QUERY_OBJECT, OPCODE_RELEASE_SURFACE, OPCODE_REQUEST_RECOVERY, OPCODE_SET_FOCUS,
-    QuantumCrestPage, QuantumDesktopCommand, QuantumDesktopReply, QuantumFrameCertificate,
-    QuantumPortalError, QuantumSystemSnapshot, command_root, frame_root,
+    QuantumCrestPage, QuantumDesktopCommand, QuantumDesktopReply, QuantumPortalError,
+    QuantumSystemSnapshot, command_root, frame_root,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

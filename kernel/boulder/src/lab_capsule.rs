@@ -1,7 +1,7 @@
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use aether::blacklab_vm::{ControlField, ExecutionError, LabMetrics, LabProgram, execute, verify};
-use aether::causal_policy::{CausalPolicyBatch, CausalPolicyError, PolicyTransition};
+use aether::causal_policy::{CausalPolicyBatch, PolicyTransition};
 use aether::constellation::{ConstellationError, PolicyConstellation};
 use aether::resonance_policy::{POLICY_REPHASE, PolicyError, ResonancePolicy};
 

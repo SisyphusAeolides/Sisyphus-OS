@@ -1,4 +1,4 @@
-use crate::arch::x86_64::{inb, outb};
+use crate::arch::x86_64::outb;
 use crate::sync::SpinLock;
 
 const MASTER_COMMAND: u16 = 0x20;
@@ -98,9 +98,4 @@ pub fn end_of_interrupt(irq: u8) {
 
 unsafe fn io_wait() {
     unsafe { outb(0x80, 0) };
-}
-
-#[allow(dead_code)]
-fn read_masks() -> u16 {
-    unsafe { u16::from(inb(MASTER_DATA)) | (u16::from(inb(SLAVE_DATA)) << 8) }
 }

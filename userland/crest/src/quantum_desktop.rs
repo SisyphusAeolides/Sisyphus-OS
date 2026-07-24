@@ -18,7 +18,7 @@ use crate::quantum_portal::{PortalClientError, PresentCommand, QuantumPortalClie
 use crate::quantum_scene::{
     QuantumScene, SceneCommit, SceneError, SceneLease, SceneNode, SceneTransaction,
 };
-use crate::quantum_tile_field::{QuantumDamageError, QuantumTileField, TileSchedule};
+use crate::quantum_tile_field::{QuantumDamageError, QuantumTileField};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct QuantumDesktopSecrets {

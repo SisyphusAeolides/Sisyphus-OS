@@ -336,7 +336,6 @@ pub fn fit_cp_als(
     let initial_error = squared_error_q48(tensor, &workspace.reconstruction)?;
     let tensor_energy = tensor.frobenius_squared_q48()?.max(1);
     let mut previous_error = initial_error;
-    let mut final_error = initial_error;
     let mut completed_sweeps = 0_u16;
     let mut converged = false;
     let mut monotone = true;
@@ -358,13 +357,11 @@ pub fn fit_cp_als(
         if candidate_error > previous_error.saturating_add(slack) {
             workspace.restore(model);
             model.reconstruct_into(&mut workspace.reconstruction)?;
-            final_error = previous_error;
             monotone = false;
             break;
         }
 
         maximum_normal_residual = maximum_normal_residual.max(sweep_normal_residual);
-        final_error = candidate_error;
         completed_sweeps = sweep.saturating_add(1);
 
         let improvement = previous_error.saturating_sub(candidate_error);
@@ -380,7 +377,7 @@ pub fn fit_cp_als(
     canonicalize(model, config.diagonal_floor_q24)?;
     model.seal(secret)?;
     model.reconstruct_into(&mut workspace.reconstruction)?;
-    final_error = squared_error_q48(tensor, &workspace.reconstruction)?;
+    let final_error = squared_error_q48(tensor, &workspace.reconstruction)?;
 
     let relative_error = fixed::ratio_u128(final_error, tensor_energy)?;
     let tensor_root = tensor.root(secret)?;

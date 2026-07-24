@@ -6,7 +6,7 @@ use aether::certificate_page::CertificatePage;
 use aether::replay_capsule::ReplayCapsule;
 use aether::transition_certificate::{CertificateOutcome, TransitionCertificate};
 
-use crate::nexus_commit::{CommitError, NexusCommitEngine, apply_prepared};
+use crate::nexus_commit::CommitError;
 use aether::effect_program::{EffectIntent, EffectKind, EffectProgram};
 use aether::holographic::HolographicTree;
 use aether::nexus_wire::{NexusCommand, NexusOpcode, NexusReply, NexusStatus, NexusTelemetry};

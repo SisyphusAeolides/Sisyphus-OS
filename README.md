@@ -24,7 +24,9 @@ not happen.
 | Hermes GSP transport | Implemented foundation | Versioned wire ABI, compatibility manifests, bounded rings, deadline admission, reply tracking, fault states |
 | Crest software compositor | Implemented | Fixed-point scene evaluation, damage tiles, deterministic first-light frame |
 | Crest hardware presentation | In progress | Firmware scanout exists in Boulder; a general userland present lease is not yet complete |
+| Spectral resource geometry | Implemented | Hodge 1-skeleton, normalized-Laplacian Fiedler cut, fixed-point heat flow, periodic recomputation |
 | Foreign driver personalities | Version-scoped | Object validation and narrow service tables exist; unsupported contracts reject loading |
+| Functional-source gate | Implemented | Rejects tracked recovery debris, unfinished markers, simulated success, and production dead-code suppression |
 
 A subsystem should be described as complete only after the exact commit passes
 host tests, custom-target builds, and the relevant boot or hardware assertion.
@@ -143,6 +145,34 @@ calibration root
 certificate root
 ```
 
+## Spectral resource geometry
+
+Boulder treats resource relationships as an executable discrete geometry, not
+as decorative terminology. The Manifold orchestrator constructs a bounded
+Hodge complex from the live resource quiver and applies several independent
+operators to it:
+
+```text
+normalized graph Laplacian     Lsym = I - D^(-1/2) A D^(-1/2)
+Fiedler vector                 deterministic resource bipartition
+Hodge heat flow                bounded load diffusion
+Čech first cohomology          cycle and obstruction evidence
+tropical critical path        max-plus dependency pressure
+```
+
+The Fiedler solver uses allocation-free Q16.16 arithmetic, a deterministic
+seed, degree-weighted removal of the null mode, normalized adjacency
+iteration, and a Rayleigh quotient for algebraic connectivity. Manifold
+recomputes the partition every 32 control epochs and exports the resulting
+mask and connectivity value as actuation evidence. A bridge-cut test verifies
+that two dense regions are separated across their lightest connection.
+
+These mechanisms are classical numerical algorithms implemented in Rust. The
+quantum-prefixed Crest interfaces describe discrete observations, sealed state
+transitions, and bounded command channels; they do not claim quantum hardware.
+Future quantum algorithms belong here only when they have an executable model,
+a production consumer, explicit resource bounds, and falsifiable tests.
+
 ## GPU universality without false universality
 
 Sisyphus OS does not select a driver from a vendor ID alone. The portable GPU
@@ -244,10 +274,10 @@ resource reclamation. PID allocation alone is not treated as execution.
 Host and workspace checks:
 
 ```sh
-cargo fmt --all --check
 cargo check --workspace
 cargo test --workspace
 cargo check -p crest --features os-bin
+python3 scripts/static-repository-audit.py
 cargo run -p sisyphus-reality-gate -- \
   --root . \
   --ledger target/sisyphus-functionality-ledger.tsv
@@ -262,13 +292,22 @@ scripts/test-boot.sh
 ```
 
 The complete workflow also rejects tracked compiler archives, patch recovery
-files, module-wide dead-code suppression, unfinished macros, and explicit
-simulated-success markers.
+files, production dead-code and unused-code suppression, unfinished macros,
+and explicit simulated-success markers.
 
-## Experimental engineering rule
+## Experimental Rust from Boulder to Crest
 
-Unconventional work is welcome when it has conventional accountability.
-Every production subsystem must provide:
+Sisyphus OS is meant to look unfamiliar because its mechanisms are unusually
+composed, not because its vocabulary is mysterious. Boulder turns topology,
+cohomology, spectral partitions, service curves, compatibility proofs, and
+measured boot evidence into bounded kernel decisions. Slope carries those
+decisions across versioned contracts. Push supervises the resulting services.
+Crest converts the same discipline into scene transactions, Hilbert-ordered
+damage schedules, conformal frame plans, and deterministic presentation
+evidence.
+
+Unconventional work is welcome when it has conventional accountability. Every
+production subsystem must provide:
 
 ```text
 purpose

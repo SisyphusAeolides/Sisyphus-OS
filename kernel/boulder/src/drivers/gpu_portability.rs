@@ -324,11 +324,11 @@ pub const fn bar_address(raw_low: u32, raw_high: u32, flags: u8) -> u64 {
     if flags & BAR_PRESENT == 0 {
         0
     } else if flags & BAR_IO != 0 {
-        u64::from(raw_low & !0x3)
+        (raw_low & !0x3) as u64
     } else if flags & BAR_64BIT != 0 {
-        (u64::from(raw_high) << 32) | u64::from(raw_low & !0x0f)
+        ((raw_high as u64) << 32) | ((raw_low & !0x0f) as u64)
     } else {
-        u64::from(raw_low & !0x0f)
+        (raw_low & !0x0f) as u64
     }
 }
 

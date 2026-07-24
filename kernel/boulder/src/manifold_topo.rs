@@ -6,9 +6,8 @@
 //! cech_h1      — H¹ obstruction on the same nerve
 //! tropical_crit — max-plus critical chain on residual edges
 
-
-use crate::cluster_quiver::{Arrow, MAX_E, MAX_N, ResourceQuiver};
-use crate::hodge_cech::{FP_ONE as H_ONE, Fp as HFp, HodgeNerve, MAX_E as HMAX_E, MAX_V};
+use crate::cluster_quiver::{MAX_E, MAX_N, ResourceQuiver};
+use crate::hodge_cech::{FP_ONE as H_ONE, HodgeNerve, MAX_V};
 
 // ---------------------------------------------------------------------------
 // ZX-style quiver simplification (spider fusion + 2-cycle cancel + parallel merge)
@@ -176,52 +175,61 @@ pub fn fiedler_on_hodge(h: &HodgeNerve) -> FiedlerReport {
         };
     }
 
-    // Build degree and apply L repeatedly
-    let mut deg = [0i32; MAX_V];
+    let mut degree = [0_u32; MAX_V];
     for e in h.edges.iter().take(h.n_e) {
-        if !e.live {
+        let tail = e.tail as usize;
+        let head = e.head as usize;
+        if !e.live || tail >= n || head >= n || tail == head {
             continue;
         }
-        let w = e.weight as i32;
-        deg[e.tail as usize] = deg[e.tail as usize].saturating_add(w);
-        deg[e.head as usize] = deg[e.head as usize].saturating_add(w);
+        let weight = u32::from(e.weight);
+        degree[tail] = degree[tail].saturating_add(weight);
+        degree[head] = degree[head].saturating_add(weight);
     }
 
-    // Init mean-zero probe: +1 on even, -1 on odd
+    if degree[..n].contains(&0) {
+        return balanced_fiedler_report(n);
+    }
+
+    let mut inverse_sqrt_degree = [0_i32; MAX_V];
+    let mut sqrt_degree = [0_i32; MAX_V];
+    for index in 0..n {
+        inverse_sqrt_degree[index] = isqrt_u64((1_u64 << 32) / u64::from(degree[index])) as i32;
+        sqrt_degree[index] = isqrt_u64(u64::from(degree[index]) << 32) as i32;
+    }
+
+    // A deterministic, non-symmetric seed avoids depending on randomness while
+    // retaining a component along the lowest non-null eigenmode.
     let mut v = [0i32; MAX_V];
-    for i in 0..n {
-        v[i] = if i % 2 == 0 { H_ONE } else { -H_ONE };
+    for index in 0..n {
+        let mixed = (index as u32)
+            .wrapping_mul(0x9e37_79b9)
+            .rotate_left((index & 15) as u32)
+            ^ degree[index];
+        let magnitude = ((mixed & 0x7fff) as i32 + 1) << 1;
+        v[index] = if mixed & 0x8000_0000 == 0 {
+            magnitude
+        } else {
+            -magnitude
+        };
     }
-    project_mean_zero(&mut v, n);
+    project_null_mode(&mut v, &sqrt_degree, n);
+    normalize_l2_fp(&mut v, n);
 
-    // Power iteration on (αI - L) to get dominant of shifted L ≈ Fiedler
-    // Simpler: inverse-free Laplacian multiply + re-center, 16 steps
-    for _ in 0..16 {
-        let mut lv = [0i32; MAX_V];
-        // L v = deg⊙v - A v
-        for i in 0..n {
-            lv[i] = mul_fp(deg[i], v[i]); // deg is integer; scale
+    let mut laplacian_v = [0_i32; MAX_V];
+    for _ in 0..64 {
+        apply_normalized_laplacian(h, &v, &mut laplacian_v, &inverse_sqrt_degree, n);
+        for index in 0..n {
+            v[index] = v[index]
+                .saturating_mul(2)
+                .saturating_sub(laplacian_v[index]);
         }
-        // fix: deg is not 16.16 — treat deg as integer multiplier
-        for i in 0..n {
-            lv[i] = v[i].saturating_mul(deg[i]);
-        }
-        for e in h.edges.iter().take(h.n_e) {
-            if !e.live {
-                continue;
-            }
-            let t = e.tail as usize;
-            let h_ = e.head as usize;
-            let w = e.weight as i32;
-            if t < n && h_ < n {
-                lv[t] = lv[t].saturating_sub(v[h_].saturating_mul(w));
-                lv[h_] = lv[h_].saturating_sub(v[t].saturating_mul(w));
-            }
-        }
-        v = lv;
-        project_mean_zero(&mut v, n);
+        project_null_mode(&mut v, &sqrt_degree, n);
         normalize_l2_fp(&mut v, n);
     }
+
+    apply_normalized_laplacian(h, &v, &mut laplacian_v, &inverse_sqrt_degree, n);
+    let lambda2 = rayleigh_quotient(&v, &laplacian_v, n).max(0);
 
     let mut mask = 0u64;
     let mut n_pos = 0u8;
@@ -235,9 +243,6 @@ pub fn fiedler_on_hodge(h: &HodgeNerve) -> FiedlerReport {
         }
     }
 
-    // Rayleigh λ₂ ≈ v^T L v / v^T v  (v unit)
-    let lambda2 = rayleigh_L(h, &v, n, &deg);
-
     FiedlerReport {
         mask,
         lambda2_fp: lambda2,
@@ -246,36 +251,77 @@ pub fn fiedler_on_hodge(h: &HodgeNerve) -> FiedlerReport {
     }
 }
 
-fn project_mean_zero(v: &mut [i32; MAX_V], n: usize) {
-    let mut s = 0i64;
-    for i in 0..n {
-        s += v[i] as i64;
+fn balanced_fiedler_report(n: usize) -> FiedlerReport {
+    let left = n / 2;
+    let mut mask = 0_u64;
+    for index in 0..left {
+        mask |= 1_u64 << index;
     }
-    let mean = (s / n as i64) as i32;
-    for i in 0..n {
-        v[i] = v[i].saturating_sub(mean);
+    FiedlerReport {
+        mask,
+        lambda2_fp: 0,
+        n_pos: left as u8,
+        n_neg: (n - left) as u8,
+    }
+}
+
+fn project_null_mode(v: &mut [i32; MAX_V], null_mode: &[i32; MAX_V], n: usize) {
+    let mut numerator = 0_i128;
+    let mut denominator = 0_i128;
+    for index in 0..n {
+        numerator += i128::from(v[index]) * i128::from(null_mode[index]);
+        denominator += i128::from(null_mode[index]) * i128::from(null_mode[index]);
+    }
+    if denominator == 0 {
+        return;
+    }
+    let alpha =
+        ((numerator << 16) / denominator).clamp(i128::from(i32::MIN), i128::from(i32::MAX)) as i32;
+    for index in 0..n {
+        v[index] = v[index].saturating_sub(mul_fp(alpha, null_mode[index]));
+    }
+}
+
+fn apply_normalized_laplacian(
+    h: &HodgeNerve,
+    input: &[i32; MAX_V],
+    output: &mut [i32; MAX_V],
+    inverse_sqrt_degree: &[i32; MAX_V],
+    n: usize,
+) {
+    output[..n].copy_from_slice(&input[..n]);
+    for edge in h.edges.iter().take(h.n_e) {
+        let tail = edge.tail as usize;
+        let head = edge.head as usize;
+        if !edge.live || tail >= n || head >= n || tail == head {
+            continue;
+        }
+        let normalized_weight =
+            i64::from(mul_fp(inverse_sqrt_degree[tail], inverse_sqrt_degree[head]))
+                .saturating_mul(i64::from(edge.weight))
+                .clamp(0, i64::from(i32::MAX)) as i32;
+        output[tail] = output[tail].saturating_sub(mul_fp(normalized_weight, input[head]));
+        output[head] = output[head].saturating_sub(mul_fp(normalized_weight, input[tail]));
     }
 }
 
 fn normalize_l2_fp(v: &mut [i32; MAX_V], n: usize) {
-    let mut ss = 0i64;
-    for i in 0..n {
-        ss += (v[i] as i64) * (v[i] as i64);
+    let mut squared_norm = 0_u64;
+    for value in &v[..n] {
+        squared_norm =
+            squared_norm.saturating_add((*value as i64).unsigned_abs().saturating_pow(2));
     }
-    if ss <= 0 {
-        return;
-    }
-    // ||v|| in 16.16 ≈ sqrt(ss) with ss having 32 frac bits if v is 16.16
-    let norm = isqrt_u64(ss as u64) as i32;
+    let norm = isqrt_u64(squared_norm);
     if norm == 0 {
         return;
     }
-    for i in 0..n {
-        v[i] = (((v[i] as i64) << 16) / norm as i64) as i32;
+    for value in &mut v[..n] {
+        *value = ((i64::from(*value) << 16) / norm as i64)
+            .clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
     }
 }
 
-fn isqrt_u64(mut n: u64) -> u64 {
+fn isqrt_u64(n: u64) -> u64 {
     if n == 0 {
         return 0;
     }
@@ -292,31 +338,17 @@ fn mul_fp(a: i32, b: i32) -> i32 {
     ((a as i64 * b as i64) >> 16) as i32
 }
 
-fn rayleigh_L(h: &HodgeNerve, v: &[i32; MAX_V], n: usize, deg: &[i32; MAX_V]) -> i32 {
-    let mut num = 0i64;
-    let mut den = 0i64;
-    for i in 0..n {
-        den += (v[i] as i64) * (v[i] as i64);
+fn rayleigh_quotient(input: &[i32; MAX_V], output: &[i32; MAX_V], n: usize) -> i32 {
+    let mut numerator = 0_i128;
+    let mut denominator = 0_i128;
+    for index in 0..n {
+        numerator += i128::from(input[index]) * i128::from(output[index]);
+        denominator += i128::from(input[index]) * i128::from(input[index]);
     }
-    // v^T L v = Σ_e w (v_h - v_t)²
-    for e in h.edges.iter().take(h.n_e) {
-        if !e.live {
-            continue;
-        }
-        let t = e.tail as usize;
-        let hh = e.head as usize;
-        if t >= n || hh >= n {
-            continue;
-        }
-        let d = (v[hh] as i64) - (v[t] as i64);
-        num += (e.weight as i64) * d * d;
-    }
-    let _ = deg;
-    if den == 0 {
+    if denominator == 0 {
         return 0;
     }
-    // both num, den have scale 2^32 if v is 16.16; ratio is dimensionless in 16.16
-    ((num << 16) / den) as i32
+    ((numerator << 16) / denominator).clamp(i128::from(i32::MIN), i128::from(i32::MAX)) as i32
 }
 
 // ---------------------------------------------------------------------------
@@ -526,6 +558,36 @@ mod tests {
         assert_eq!(f.n_pos + f.n_neg, 4);
         // connected path ⇒ λ₂ > 0
         assert!(f.lambda2_fp >= 0);
+    }
+
+    #[test]
+    fn fiedler_separates_dense_regions_across_a_light_bridge() {
+        let mut h = HodgeNerve::new(6);
+        for (tail, head, weight) in [
+            (0, 1, 10),
+            (1, 2, 10),
+            (0, 2, 10),
+            (3, 4, 10),
+            (4, 5, 10),
+            (3, 5, 10),
+            (2, 3, 1),
+        ] {
+            h.add_edge(tail, head, weight).unwrap();
+        }
+
+        let report = fiedler_on_hodge(&h);
+        let mut cut_weight = 0_u32;
+        for edge in h.edges.iter().take(h.n_e).filter(|edge| edge.live) {
+            let tail_side = report.mask >> edge.tail & 1;
+            let head_side = report.mask >> edge.head & 1;
+            if tail_side != head_side {
+                cut_weight += u32::from(edge.weight);
+            }
+        }
+
+        assert_eq!(report.n_pos + report.n_neg, 6);
+        assert_eq!(cut_weight, 1);
+        assert!(report.lambda2_fp > 0);
     }
 
     #[test]

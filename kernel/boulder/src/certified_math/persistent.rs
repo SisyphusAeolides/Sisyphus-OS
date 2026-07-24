@@ -129,10 +129,6 @@ impl Column {
         }
     }
 
-    fn is_zero(self) -> bool {
-        self.limbs.iter().all(|limb| *limb == 0)
-    }
-
     fn low(self) -> Option<usize> {
         for limb_index in (0..COLUMN_LIMBS).rev() {
             let limb = self.limbs[limb_index];

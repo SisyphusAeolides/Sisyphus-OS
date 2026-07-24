@@ -235,7 +235,6 @@ impl<const DIVERGENCES: usize> RealityForge<DIVERGENCES> {
 
         match (beta, gamma) {
             (Ok(beta), Ok(gamma)) if equivalent(beta.after(), gamma.after()) => {
-                let gamma_after = gamma.after();
                 drop(gamma);
 
                 self.commit_selected(
