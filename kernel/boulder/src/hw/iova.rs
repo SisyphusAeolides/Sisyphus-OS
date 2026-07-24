@@ -126,6 +126,7 @@ pub enum IovaError {
     OverlappingReservedRanges,
     LeaseCapacity,
     AddressSpaceExhausted,
+    ExactRangeUnavailable,
     StaleLease,
     BatchOutputMismatch,
 }
@@ -211,6 +212,37 @@ impl<const LEASES: usize, const RESERVED: usize> IovaLedger<LEASES, RESERVED> {
             .position(|slot| !slot.active && slot.generation != u32::MAX)
             .ok_or(IovaError::LeaseCapacity)?;
         let range = self.first_fit(request)?;
+        let generation = self.leases[slot_index].generation + 1;
+        self.leases[slot_index] = LeaseSlot {
+            range,
+            generation,
+            active: true,
+        };
+        self.active_count += 1;
+        Ok(IovaLease::new(slot_index, generation))
+    }
+
+    /// Reserves one caller-selected range without silently relocating it.
+    /// This is required by devices whose DMA descriptors contain physical
+    /// addresses and by translated domains that intentionally use IOVA==PA.
+    pub fn reserve_exact(&mut self, range: IovaRange) -> Result<IovaLease, IovaError> {
+        if !self.aperture.contains(range)
+            || self.reserved[..self.reserved_count]
+                .iter()
+                .any(|blocker| blocker.overlaps(range))
+            || self
+                .leases
+                .iter()
+                .filter(|slot| slot.active)
+                .any(|blocker| blocker.range.overlaps(range))
+        {
+            return Err(IovaError::ExactRangeUnavailable);
+        }
+        let slot_index = self
+            .leases
+            .iter()
+            .position(|slot| !slot.active && slot.generation != u32::MAX)
+            .ok_or(IovaError::LeaseCapacity)?;
         let generation = self.leases[slot_index].generation + 1;
         self.leases[slot_index] = LeaseSlot {
             range,
@@ -375,6 +407,21 @@ mod tests {
 
         let forged = IovaLease::from_raw(replacement.raw() + (1_u64 << 32)).unwrap();
         assert_eq!(ledger.range(forged), Err(IovaError::StaleLease));
+    }
+
+    #[test]
+    fn exact_reservation_never_relocates_or_overlaps() {
+        let mut ledger: IovaLedger<4, 1> = IovaLedger::new(pages(1, 8), &[pages(3, 1)]).unwrap();
+        let exact = ledger.reserve_exact(pages(5, 1)).unwrap();
+        assert_eq!(ledger.range(exact), Ok(pages(5, 1)));
+        assert_eq!(
+            ledger.reserve_exact(pages(5, 1)),
+            Err(IovaError::ExactRangeUnavailable)
+        );
+        assert_eq!(
+            ledger.reserve_exact(pages(3, 1)),
+            Err(IovaError::ExactRangeUnavailable)
+        );
     }
 
     #[test]

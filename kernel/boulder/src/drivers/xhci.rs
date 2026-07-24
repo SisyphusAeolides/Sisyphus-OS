@@ -18,6 +18,7 @@ use crate::drivers::xhci_protocol::{
     CheckedSupportedProtocolRead, SupportedProtocolError, SupportedProtocolEvidence,
     decode_supported_protocols,
 };
+use crate::drivers::xhci_runtime::XhciRuntimeRegisters;
 use crate::drivers::xhci_takeover::{
     ApertureBindingError, ApicRelativeDeadline, ReadyHalted, RegisterIo, TakeoverConfig,
     TakeoverConfigError, TakeoverFaultClass, TakeoverMachine, TakeoverObservation, TakeoverPhase,
@@ -206,6 +207,36 @@ pub struct XhciResetReadyController {
     reset_ready_root: u64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct XhciRuntimeEvidence {
+    pub address: PciAddress,
+    pub generation: u32,
+    pub expected: PciExpectedConfiguration,
+    pub snapshot: XhciCapabilitySnapshot,
+    pub reset_ready_root: u64,
+}
+
+/// Owned handoff seed for the first operational xHCI epoch.
+///
+/// The seed deliberately keeps the live census authorization, exact BAR
+/// lease, reset proof, and protocol evidence together until a runtime either
+/// consumes all of them or returns an explicit debt. It is the bridge between
+/// reset-ready discovery and DMA/ring activation; no field is reconstructible
+/// from a PCI address alone.
+pub struct XhciRuntimeSeed {
+    evidence: XhciRuntimeEvidence,
+    bootstrap: XhciBootstrap,
+    aperture: Bar0ApertureLease,
+    ready: ReadyHalted,
+    protocols: SupportedProtocolEvidence,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum XhciRuntimeSeedError {
+    Retention(XhciRetentionError),
+    InvalidPciEvidence,
+}
+
 impl XhciResetReadyController {
     pub const fn snapshot(&self) -> XhciCapabilitySnapshot {
         self.bootstrap.snapshot
@@ -225,6 +256,96 @@ impl XhciResetReadyController {
 
     pub const fn reset_ready_root(&self) -> u64 {
         self.reset_ready_root
+    }
+
+    pub const fn generation(&self) -> u32 {
+        self.bootstrap.authorization.generation()
+    }
+
+    pub fn into_runtime_seed(self, secret: u64) -> Result<XhciRuntimeSeed, XhciRuntimeSeedError> {
+        let XhciResetReadyController {
+            bootstrap,
+            aperture,
+            ready,
+            protocols,
+            reset_ready_root,
+        } = self;
+        validate_retained_controller(&bootstrap, &aperture, &ready, &protocols, secret)
+            .map_err(XhciRuntimeSeedError::Retention)?;
+        let snapshot = bootstrap.snapshot;
+        let evidence = bootstrap.evidence;
+        let address = PciAddress::new(
+            snapshot.address.bus,
+            snapshot.address.slot,
+            snapshot.address.function,
+        )
+        .ok_or(XhciRuntimeSeedError::InvalidPciEvidence)?;
+        let expected = PciExpectedConfiguration::from_device(PciDevice {
+            address,
+            vendor_id: evidence.vendor_id,
+            device_id: evidence.device_id,
+            class_code: evidence.class_code,
+            subclass: evidence.subclass,
+            programming_interface: evidence.programming_interface,
+            revision: evidence.revision,
+            header_type: evidence.header_type,
+            interrupt_line: evidence.interrupt_line,
+            interrupt_pin: evidence.interrupt_pin,
+            command: evidence.command,
+            bar_count: evidence.bar_count,
+            raw_bars: evidence.raw_bars,
+        })
+        .ok_or(XhciRuntimeSeedError::InvalidPciEvidence)?;
+        let runtime_evidence = XhciRuntimeEvidence {
+            address,
+            generation: bootstrap.authorization.generation(),
+            expected,
+            snapshot,
+            reset_ready_root,
+        };
+        Ok(XhciRuntimeSeed {
+            evidence: runtime_evidence,
+            bootstrap,
+            aperture,
+            ready,
+            protocols,
+        })
+    }
+}
+
+impl XhciRuntimeSeed {
+    pub const fn evidence(&self) -> XhciRuntimeEvidence {
+        self.evidence
+    }
+
+    pub const fn aperture(&self) -> &Bar0ApertureLease {
+        &self.aperture
+    }
+
+    pub const fn ready(&self) -> &ReadyHalted {
+        &self.ready
+    }
+
+    pub const fn protocols(&self) -> &SupportedProtocolEvidence {
+        &self.protocols
+    }
+
+    pub fn into_parts(
+        self,
+    ) -> (
+        XhciRuntimeEvidence,
+        XhciBootstrap,
+        Bar0ApertureLease,
+        ReadyHalted,
+        SupportedProtocolEvidence,
+    ) {
+        (
+            self.evidence,
+            self.bootstrap,
+            self.aperture,
+            self.ready,
+            self.protocols,
+        )
     }
 }
 
@@ -539,6 +660,28 @@ impl RegisterIo for XhciRegisterTransport<'_, '_, '_> {
     fn write32(&mut self, offset: u32, value: u32) -> Result<(), Self::Error> {
         self.with_window(offset, core::mem::size_of::<u32>(), |window| {
             window.write_u32(0, value)
+        })
+    }
+}
+
+impl XhciRuntimeRegisters for XhciRegisterTransport<'_, '_, '_> {
+    type Error = XhciRegisterError;
+
+    fn read32(&mut self, offset: u32) -> Result<u32, Self::Error> {
+        self.with_window(offset, core::mem::size_of::<u32>(), |window| {
+            window.read_u32(0)
+        })
+    }
+
+    fn write32(&mut self, offset: u32, value: u32) -> Result<(), Self::Error> {
+        self.with_window(offset, core::mem::size_of::<u32>(), |window| {
+            window.write_u32(0, value)
+        })
+    }
+
+    fn write64(&mut self, offset: u32, value: u64) -> Result<(), Self::Error> {
+        self.with_window(offset, core::mem::size_of::<u64>(), |window| {
+            window.write_u64(0, value)
         })
     }
 }

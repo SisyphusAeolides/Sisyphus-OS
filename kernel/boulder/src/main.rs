@@ -17,8 +17,8 @@ use boulder::capability::{
 };
 use boulder::cpu::topology::{self, ExecutionClass, TopologyPolicy};
 use boulder::drivers::device_census::{
-    AUTHORITY_CLOCK, AUTHORITY_DELEGATE, AUTHORITY_MMIO, AUTHORITY_PCI_CONFIG, BootDeviceCensus,
-    DeviceState, DriverBindingManifest, EVIDENCE_CLASS_TUPLE, EVIDENCE_IDENTITY,
+    AUTHORITY_CLOCK, AUTHORITY_DELEGATE, AUTHORITY_DMA, AUTHORITY_MMIO, AUTHORITY_PCI_CONFIG,
+    BootDeviceCensus, DeviceState, DriverBindingManifest, EVIDENCE_CLASS_TUPLE, EVIDENCE_IDENTITY,
     EVIDENCE_PCI_CONFIGURATION, MAXIMUM_DISPLAY_CLAIMS, boot_device_record,
 };
 use boulder::drivers::drivernet::fingerprint::LegacyConfigurationReader;
@@ -1084,12 +1084,15 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
         revision_minimum: 0,
         revision_maximum: u8::MAX,
         required_evidence: EVIDENCE_IDENTITY | EVIDENCE_CLASS_TUPLE | EVIDENCE_PCI_CONFIGURATION,
-        requested_authority: AUTHORITY_MMIO | AUTHORITY_CLOCK | AUTHORITY_PCI_CONFIG,
+        requested_authority: AUTHORITY_MMIO
+            | AUTHORITY_DMA
+            | AUTHORITY_CLOCK
+            | AUTHORITY_PCI_CONFIG,
     };
     let xhci_claims = match device_census
         .claim_family::<{ boulder::drivers::xhci::MAXIMUM_XHCI_CONTROLLERS }>(
             xhci_route,
-            AUTHORITY_MMIO | AUTHORITY_CLOCK | AUTHORITY_PCI_CONFIG,
+            AUTHORITY_MMIO | AUTHORITY_DMA | AUTHORITY_CLOCK | AUTHORITY_PCI_CONFIG,
         ) {
         Ok(claims) => claims,
         Err(error) => {
@@ -1136,7 +1139,7 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
         let authorization = match device_census.authorize(
             claim,
             XHCI_PROBE_DRIVER_ID,
-            AUTHORITY_MMIO | AUTHORITY_CLOCK | AUTHORITY_PCI_CONFIG,
+            AUTHORITY_MMIO | AUTHORITY_DMA | AUTHORITY_CLOCK | AUTHORITY_PCI_CONFIG,
         ) {
             Ok(authorization) => authorization,
             Err(error) => {

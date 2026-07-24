@@ -298,10 +298,16 @@ the USB2/USB3 port map into the retained controller root. QEMU proves two
 protocol capabilities covering four USB2 and four USB3 ports.
 The fixed-capacity DMA arena and cycle-last command/event ring are now real
 Rust machinery with generation-bound storage, self-link/ERST geometry, exact
-completion correlation, and rollback-oriented tests. The binding remains
-deferred until that machinery is attached to the retained hardware controller,
-with interrupts and USB child enumeration, so the attached QEMU keyboard and
-tablet are not misreported as supported input devices.
+completion correlation, and rollback-oriented tests. A consuming runtime seed
+and halted-register programming bridge now retain the PCI/BAR/protocol proof
+chain through DCBAAP/CRCR/CONFIG/ERST/ERDP preparation. The binding remains
+deferred until an explicit requester identity-DMA witness, bus-master/Run-Stop
+transaction, interrupts, and USB child enumeration exist, so the attached
+QEMU keyboard and tablet are not misreported as supported input devices.
+The VT-d substrate now supports exact IOVA reservation and `map_dma_at`,
+allowing a future scoped requester domain to prove IOVA==physical mappings
+without relocating them; the default no-DMAR lane remains deliberately
+deferred.
 
 ## Formal authority bridge
 

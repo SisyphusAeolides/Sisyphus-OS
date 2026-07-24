@@ -50,9 +50,19 @@ The QEMU machine includes an xHCI controller with keyboard and tablet children;
 the boot check requires a reset-ready controller with a measured 16 KiB BAR0,
 two lease-decoded protocol bodies covering four USB2 and four USB3 ports, bus
 mastering disabled, one retained reset-ready root, and zero mutation debts.
-The fixed-capacity DMA arena and cycle-last command/event ring are covered by
-focused Rust tests, but those children remain deferred until the rings are
-bound to the retained controller, with interrupts and USB enumeration.
+The fixed-capacity DMA arena, cycle-last command/event ring, and halted
+register-programming bridge are covered by focused Rust tests, but those
+children remain deferred until an explicit requester DMA witness, bus-master
+and Run/Stop transaction, interrupts, and USB enumeration exist.
+The VT-d substrate now also has an exact-range IOVA reservation and
+`map_dma_at` path; tests prove an IOVA==physical mapping is retained and
+cannot be relocated or overlapped. The xHCI binding retains each mapping
+receipt through release debt, so a failed teardown can be retried without
+reconstructing authority. This is preparation for the scoped requester
+witness, not a claim that the default no-DMAR QEMU lane is isolated.
+VT-d construction additionally rejects nonempty context entries across every
+PCI bus before it installs the sole requester context; a stale entry on any
+bus therefore blocks activation rather than escaping the isolation check.
 
 ## Required validation on the receiving machine
 

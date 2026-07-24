@@ -980,14 +980,16 @@ fn root_table_is_empty(table: &RootEntryTable) -> bool {
 }
 
 fn context_table_is_empty(table: &ContextEntryTable) -> bool {
-    (0..32).all(|slot| {
-        (0..8).all(|function| {
-            let device = PciAddress {
-                bus: 0,
-                slot,
-                function,
-            };
-            table.entry(device).raw() == (0, 0)
+    (0..=u8::MAX).all(|bus| {
+        (0..32).all(|slot| {
+            (0..8).all(|function| {
+                let device = PciAddress {
+                    bus,
+                    slot,
+                    function,
+                };
+                table.entry(device).raw() == (0, 0)
+            })
         })
     })
 }
@@ -1340,6 +1342,24 @@ mod tests {
             4,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn construction_rejects_a_context_entry_on_any_bus() {
+        let memory = TestMemory::new();
+        let root = memory.root();
+        let tables = TestTables::new();
+        tables
+            .contexts
+            .entry(PciAddress::new(9, 1, 0).unwrap())
+            .install_second_level_translation(3, 2, root.physical_address())
+            .unwrap();
+        let failure =
+            match Backend::build(scope(), TestRegisters::new(), memory, tables, root, 7, 4) {
+                Ok(_) => panic!("a stale nonzero-bus context entry must be rejected"),
+                Err(failure) => failure,
+            };
+        assert_eq!(failure.fault(), VtdBackendBuildFault::ContextTableNotEmpty);
     }
 
     #[test]

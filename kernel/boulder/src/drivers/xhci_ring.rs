@@ -98,6 +98,7 @@ pub enum XhciRingGeometryError {
 #[derive(Debug, Eq, PartialEq)]
 pub enum XhciRingError<E> {
     InvalidSecret,
+    GenerationMismatch { expected: u32, observed: u32 },
     Geometry(XhciRingGeometryError),
     Storage(E),
     CommandBusy,
@@ -249,15 +250,39 @@ pub struct XhciRingMachine {
 }
 
 impl XhciRingMachine {
+    pub fn initialize_for_generation<S: XhciRingStorage>(
+        storage: &S,
+        expected_generation: u32,
+        secret: u64,
+    ) -> Result<Self, XhciRingError<S::Error>> {
+        Self::initialize_inner(storage, secret, Some(expected_generation))
+    }
+
     pub fn initialize<S: XhciRingStorage>(
         storage: &S,
         secret: u64,
+    ) -> Result<Self, XhciRingError<S::Error>> {
+        Self::initialize_inner(storage, secret, None)
+    }
+
+    fn initialize_inner<S: XhciRingStorage>(
+        storage: &S,
+        secret: u64,
+        expected_generation: Option<u32>,
     ) -> Result<Self, XhciRingError<S::Error>> {
         if secret == 0 {
             return Err(XhciRingError::InvalidSecret);
         }
         let command = validated_region(storage, XhciDmaPurpose::CommandRing, None)?;
         let generation = command.generation;
+        if let Some(expected) = expected_generation {
+            if expected != generation {
+                return Err(XhciRingError::GenerationMismatch {
+                    expected,
+                    observed: generation,
+                });
+            }
+        }
         let event = validated_region(storage, XhciDmaPurpose::EventRing, Some(generation))?;
         let erst = validated_region(
             storage,
@@ -946,6 +971,16 @@ mod tests {
             Err(XhciRingError::Geometry(
                 XhciRingGeometryError::RegionGenerationMismatch(XhciDmaPurpose::EventRing)
             ))
+        ));
+        assert!(storage.writes.borrow().is_empty());
+
+        let storage = MockStorage::new();
+        assert!(matches!(
+            XhciRingMachine::initialize_for_generation(&storage, 8, 9),
+            Err(XhciRingError::GenerationMismatch {
+                expected: 8,
+                observed: 7
+            })
         ));
         assert!(storage.writes.borrow().is_empty());
 

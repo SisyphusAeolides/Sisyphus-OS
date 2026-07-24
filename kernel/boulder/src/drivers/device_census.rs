@@ -363,6 +363,10 @@ impl BindingAuthorization {
         self.evidence_root
     }
 
+    pub const fn generation(&self) -> u32 {
+        self.generation
+    }
+
     pub const fn authorization_root(&self) -> u64 {
         self.authorization_root
     }

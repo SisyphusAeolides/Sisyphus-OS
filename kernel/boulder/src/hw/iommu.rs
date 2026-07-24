@@ -249,6 +249,89 @@ impl<'a> IommuDomain<'a> {
         })
     }
 
+    /// Maps a caller-selected IOVA without relocating it.  The operation is
+    /// deliberately separate from first-fit allocation so an xHCI ring can
+    /// use IOVA==physical while still being covered by an active VT-d
+    /// requester context.
+    pub fn map_dma_at(
+        &mut self,
+        device_address: u64,
+        physical_address: u64,
+        size: usize,
+        access: DmaAccess,
+    ) -> Result<DmaMappingHandle, Status> {
+        let size_u64 = u64::try_from(size).map_err(|_| STATUS_INVALID_ARGUMENT)?;
+        if !self.active || self.poisoned {
+            return Err(if self.poisoned {
+                STATUS_IO_ERROR
+            } else {
+                STATUS_INVALID_ARGUMENT
+            });
+        }
+        if size == 0
+            || device_address % IOVA_PAGE_SIZE != 0
+            || physical_address % IOVA_PAGE_SIZE != 0
+            || size_u64 % IOVA_PAGE_SIZE != 0
+            || device_address.checked_add(size_u64).is_none()
+            || physical_address.checked_add(size_u64).is_none()
+            || !access.is_valid()
+        {
+            return Err(STATUS_INVALID_ARGUMENT);
+        }
+        if self
+            .mappings
+            .iter()
+            .copied()
+            .filter(|record| record.active)
+            .any(|record| {
+                ranges_overlap(
+                    record.physical_address,
+                    record.length,
+                    physical_address,
+                    size,
+                ) || self
+                    .iovas
+                    .range(record.lease)
+                    .map(|range| ranges_overlap(range.start(), record.length, device_address, size))
+                    .unwrap_or(true)
+            })
+        {
+            return Err(STATUS_BUSY);
+        }
+        let slot = self
+            .mappings
+            .iter()
+            .position(|record| !record.active && record.generation != u32::MAX)
+            .ok_or(STATUS_BUSY)?;
+        let range = IovaRange::new(device_address, size_u64).map_err(iova_runtime_status)?;
+        let mut candidate_iovas = self.iovas;
+        let lease = candidate_iovas
+            .reserve_exact(range)
+            .map_err(iova_runtime_status)?;
+        let status = self
+            .backend
+            .map(self.handle, device_address, physical_address, size, access);
+        if status != STATUS_OK {
+            return Err(status);
+        }
+        self.iovas = candidate_iovas;
+        let generation = self.mappings[slot].generation + 1;
+        self.mappings[slot] = MappingRecord {
+            generation,
+            lease,
+            physical_address,
+            length: size,
+            access,
+            hardware_mapped: true,
+            active: true,
+        };
+        self.mapping_count += 1;
+        Ok(DmaMappingHandle {
+            slot: slot as u16,
+            generation,
+        })
+    }
+
     pub fn revoke_dma(&mut self, mapping: DmaMappingHandle) -> Status {
         if !self.active {
             return STATUS_INVALID_ARGUMENT;
@@ -410,6 +493,7 @@ fn iova_runtime_status(error: IovaError) -> Status {
     match error {
         IovaError::InvalidRange | IovaError::InvalidRequest => STATUS_INVALID_ARGUMENT,
         IovaError::LeaseCapacity | IovaError::AddressSpaceExhausted => STATUS_BUSY,
+        IovaError::ExactRangeUnavailable => STATUS_BUSY,
         IovaError::StaleLease => STATUS_NOT_FOUND,
         IovaError::InvalidCapacity
         | IovaError::ReservedCapacity
@@ -578,6 +662,35 @@ mod tests {
         assert_eq!(
             domain.mapping_info(mapping).unwrap().device_address,
             domain.iovas.aperture().start()
+        );
+        assert_eq!(domain.revoke_dma(mapping), STATUS_OK);
+        assert!(domain.release().is_ok());
+    }
+
+    #[test]
+    fn exact_mapping_proves_identity_iova_without_relocation() {
+        let backend = TestBackend::new();
+        let mut domain = isolate(&backend, 8);
+        let mapping = domain
+            .map_dma_at(
+                0x5000,
+                0x5000,
+                IOVA_PAGE_SIZE as usize,
+                DmaAccess::READ_WRITE,
+            )
+            .unwrap();
+        assert_eq!(
+            domain.mapping_info(mapping).unwrap(),
+            DmaMappingInfo {
+                device_address: 0x5000,
+                physical_address: 0x5000,
+                length: IOVA_PAGE_SIZE as usize,
+                access: DmaAccess::READ_WRITE,
+            }
+        );
+        assert_eq!(
+            domain.map_dma_at(0x5000, 0x9000, IOVA_PAGE_SIZE as usize, DmaAccess::READ,),
+            Err(STATUS_BUSY)
         );
         assert_eq!(domain.revoke_dma(mapping), STATUS_OK);
         assert!(domain.release().is_ok());

@@ -9,6 +9,8 @@ pub mod hermes_service;
 pub mod net;
 pub mod xhci;
 pub mod xhci_dma;
+pub mod xhci_iommu;
 pub mod xhci_protocol;
 pub mod xhci_ring;
+pub mod xhci_runtime;
 pub mod xhci_takeover;
