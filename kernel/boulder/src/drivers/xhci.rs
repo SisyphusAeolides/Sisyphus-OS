@@ -282,6 +282,42 @@ impl XhciResetReadyController {
         runtime_evidence_from_bootstrap(&self.bootstrap, self.reset_ready_root)
     }
 
+    /// Reconstitutes reset-ready ownership after a bounded PCI command
+    /// transaction returned the exact BAR aperture to its disabled state.
+    /// The caller cannot supply a raw BDF: all original bootstrap, reset, and
+    /// protocol witnesses must still agree with the retained runtime evidence.
+    pub fn restore_runtime_parts(
+        evidence: XhciRuntimeEvidence,
+        bootstrap: XhciBootstrap,
+        aperture: Bar0ApertureLease,
+        ready: ReadyHalted,
+        protocols: SupportedProtocolEvidence,
+        secret: u64,
+    ) -> Result<Self, XhciRuntimeSeedError> {
+        let recomputed = runtime_evidence_from_bootstrap(&bootstrap, evidence.reset_ready_root)?;
+        if recomputed != evidence {
+            return Err(XhciRuntimeSeedError::Retention(
+                XhciRetentionError::AuthorizationMismatch,
+            ));
+        }
+        let controller = Self {
+            bootstrap,
+            aperture,
+            ready,
+            protocols,
+            reset_ready_root: evidence.reset_ready_root,
+        };
+        validate_retained_controller(
+            &controller.bootstrap,
+            &controller.aperture,
+            &controller.ready,
+            &controller.protocols,
+            secret,
+        )
+        .map_err(XhciRuntimeSeedError::Retention)?;
+        Ok(controller)
+    }
+
     pub fn into_runtime_seed(self, secret: u64) -> Result<XhciRuntimeSeed, XhciRuntimeSeedError> {
         let XhciResetReadyController {
             bootstrap,

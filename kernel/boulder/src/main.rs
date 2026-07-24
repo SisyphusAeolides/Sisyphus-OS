@@ -24,8 +24,9 @@ use boulder::drivers::device_census::{
 use boulder::drivers::drivernet::fingerprint::LegacyConfigurationReader;
 use boulder::drivers::xhci::{
     XHCI_PROBE_DRIVER_ID, XhciMutationDebt, XhciProbeCensus, XhciRegisterTransport,
-    activate_reset_ready, activation_containment_root as xhci_activation_containment_root,
-    boot_xhci_port_survey, boot_xhci_snapshot, boot_xhci_summary, boot_xhci_terminal_root,
+    XhciResetReadyController, activate_reset_ready,
+    activation_containment_root as xhci_activation_containment_root, boot_xhci_port_survey,
+    boot_xhci_snapshot, boot_xhci_summary, boot_xhci_terminal_root,
     containment_root as xhci_containment_root, probe_bootstrap, publish_boot_xhci,
 };
 use boulder::drivers::xhci_dma::{
@@ -36,9 +37,9 @@ use boulder::drivers::xhci_runtime::prepare_halted_from_evidence;
 use boulder::fabric::{
     Completion, KERNEL_FABRIC, NodeCapabilities, NodeClass, WorkDescriptor, opcode,
 };
-use boulder::hw::pci;
 use boulder::hw::iommu::IommuDomain;
 use boulder::hw::iova::IovaRange;
+use boulder::hw::pci;
 use boulder::hw::vtd_backend::{VtdDmaBackend, select_requester_scope};
 use boulder::hw::vtd_memory::{DirectMapSlptMemory, DirectMapVtdTables};
 use boulder::hw::vtd_slpt::SlptPageMemory;
@@ -1240,6 +1241,7 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
                             .usb3_protocols()
                             .map(|protocol| usize::from(protocol.port_count))
                             .sum::<usize>();
+                        let mut scoped_vtd_epoch_completed = false;
                         if let Some(scope) = vtd_scope {
                             let unit = scope.unit();
                             let unit_disabled = match boulder::hw::vtd::VtdMmioRegisters::map(
@@ -1368,13 +1370,217 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
                                     xhci_secret,
                                 ) {
                                     Ok(prepared) => {
-                                        if let Err(error) = prepared.scrub_halted(&mut registers) {
+                                        // SAFETY: The common frame ledger is covered by the
+                                        // stable higher-half direct map. The VT-d adapters own
+                                        // only their allocated frames and this controller is
+                                        // still HCHalted with PCI bus mastering disabled.
+                                        let mut slpt_memory = unsafe {
+                                            DirectMapSlptMemory::<16>::new(
+                                                &frame_pool,
+                                                HIGHER_HALF_DIRECT_MAP_BASE,
+                                                EARLY_MAPPED_PHYSICAL_LIMIT,
+                                                &physical_memory,
+                                            )
+                                        };
+                                        let slpt_root = match slpt_memory.allocate_table() {
+                                            Ok(root) => root,
+                                            Err(error) => {
+                                                let _ = writeln!(
+                                                    serial,
+                                                    "Boulder: xHCI VT-d SLPT root allocation failed: {error:?}"
+                                                );
+                                                halt();
+                                            }
+                                        };
+                                        if let Err(error) = slpt_memory.zero_table(slpt_root) {
                                             let _ = writeln!(
                                                 serial,
-                                                "Boulder: xHCI reversible DMA scrub failed; retaining arena: {error:?}"
+                                                "Boulder: xHCI VT-d SLPT root initialization failed: {error:?}"
                                             );
                                             halt();
                                         }
+                                        // SAFETY: The same direct-map and frame-ledger proof
+                                        // applies to the exclusive root/context pair.
+                                        let tables = match unsafe {
+                                            DirectMapVtdTables::allocate(
+                                                &frame_pool,
+                                                HIGHER_HALF_DIRECT_MAP_BASE,
+                                                EARLY_MAPPED_PHYSICAL_LIMIT,
+                                                &physical_memory,
+                                            )
+                                        } {
+                                            Ok(tables) => tables,
+                                            Err(error) => {
+                                                let _ = writeln!(
+                                                    serial,
+                                                    "Boulder: xHCI VT-d root/context allocation failed: {error:?}"
+                                                );
+                                                halt();
+                                            }
+                                        };
+                                        let vtd_registers =
+                                            match boulder::hw::vtd::VtdMmioRegisters::map(
+                                                unit, &xhci_mmio,
+                                            ) {
+                                                Ok(registers) => registers,
+                                                Err(error) => {
+                                                    let _ = writeln!(
+                                                        serial,
+                                                        "Boulder: xHCI VT-d activation MMIO map failed: {error:?}"
+                                                    );
+                                                    halt();
+                                                }
+                                            };
+                                        let backend =
+                                            match VtdDmaBackend::<_, _, _, 16, 4, 8>::build(
+                                                scope,
+                                                vtd_registers,
+                                                slpt_memory,
+                                                tables,
+                                                slpt_root,
+                                                1,
+                                                1_000_000,
+                                            ) {
+                                                Ok(backend) => backend,
+                                                Err(failure) => {
+                                                    let _ = writeln!(
+                                                        serial,
+                                                        "Boulder: xHCI VT-d backend activation failed; retaining resources: {failure:?}"
+                                                    );
+                                                    halt();
+                                                }
+                                            };
+                                        let iova_aperture = match IovaRange::new(
+                                            0,
+                                            EARLY_MAPPED_PHYSICAL_LIMIT,
+                                        ) {
+                                            Ok(aperture) => aperture,
+                                            Err(error) => {
+                                                let _ = writeln!(
+                                                    serial,
+                                                    "Boulder: xHCI VT-d IOVA aperture rejected: {error:?}"
+                                                );
+                                                halt();
+                                            }
+                                        };
+                                        let mut domain = match IommuDomain::isolate_device(
+                                            &backend,
+                                            scope.requester(),
+                                            iova_aperture,
+                                            &[],
+                                        ) {
+                                            Ok(domain) => domain,
+                                            Err(status) => {
+                                                let _ = writeln!(
+                                                    serial,
+                                                    "Boulder: xHCI VT-d domain isolation failed; retaining backend: {status}"
+                                                );
+                                                halt();
+                                            }
+                                        };
+                                        let binding = match prepared.bind_translated_dma(
+                                            &mut domain,
+                                            &arena,
+                                            xhci_secret,
+                                        ) {
+                                            Ok(binding) if binding.mapping_count() == 4 => binding,
+                                            Ok(binding) => {
+                                                let _ = writeln!(
+                                                    serial,
+                                                    "Boulder: xHCI VT-d binding count invalid; retaining mapping authority: {}",
+                                                    binding.mapping_count(),
+                                                );
+                                                halt();
+                                            }
+                                            Err(failure) => {
+                                                let _ = writeln!(
+                                                    serial,
+                                                    "Boulder: xHCI VT-d binding failed; retaining authority: {failure:?}"
+                                                );
+                                                halt();
+                                            }
+                                        };
+                                        let binding_root = binding.root();
+                                        let domain_handle = domain.handle();
+                                        if let Err(error) = prepared.scrub_halted(&mut registers) {
+                                            let _ = writeln!(
+                                                serial,
+                                                "Boulder: xHCI reversible DMA scrub failed; retaining DMA and VT-d authority: {error:?}"
+                                            );
+                                            halt();
+                                        }
+                                        if let Err(debt) = binding.revoke(&mut domain) {
+                                            let _ = writeln!(
+                                                serial,
+                                                "Boulder: xHCI VT-d mapping revocation debt retained: {debt:?}"
+                                            );
+                                            halt();
+                                        }
+                                        if let Err(failure) = domain.release() {
+                                            let _ = writeln!(
+                                                serial,
+                                                "Boulder: xHCI VT-d domain release failed; retaining backend: status={}",
+                                                failure.status(),
+                                            );
+                                            halt();
+                                        }
+                                        let released = match backend.shutdown() {
+                                            Ok(released) => released,
+                                            Err(failure) => {
+                                                let _ = writeln!(
+                                                    serial,
+                                                    "Boulder: xHCI VT-d backend shutdown failed; retaining resources: {failure:?}"
+                                                );
+                                                halt();
+                                            }
+                                        };
+                                        if released.memory.owned_table_count() != 1 {
+                                            let _ = writeln!(
+                                                serial,
+                                                "Boulder: xHCI VT-d SLPT teardown retained unexpected table count={}",
+                                                released.memory.owned_table_count(),
+                                            );
+                                            halt();
+                                        }
+                                        let root = released.slpt.root();
+                                        let mut memory = released.memory;
+                                        if let Err(error) = memory.release_table(root) {
+                                            let _ = writeln!(
+                                                serial,
+                                                "Boulder: xHCI VT-d SLPT root release failed; retaining resources: {error:?}"
+                                            );
+                                            halt();
+                                        }
+                                        if let Err(failure) = released.tables.close() {
+                                            let _ = writeln!(
+                                                serial,
+                                                "Boulder: xHCI VT-d root/context release failed; retaining tables: {failure:?}"
+                                            );
+                                            halt();
+                                        }
+                                        let registers = match released.engine.into_registers() {
+                                            Ok(registers) => registers,
+                                            Err(_) => {
+                                                let _ = writeln!(
+                                                    serial,
+                                                    "Boulder: xHCI VT-d engine retained unexpected authority after shutdown"
+                                                );
+                                                halt();
+                                            }
+                                        };
+                                        if let Err(error) = registers.close(&xhci_mmio) {
+                                            let _ = writeln!(
+                                                serial,
+                                                "Boulder: xHCI VT-d MMIO close failed after shutdown: {error:?}"
+                                            );
+                                            halt();
+                                        }
+                                        let _ = writeln!(
+                                            serial,
+                                            "Boulder: xHCI scoped VT-d epoch enabled/mapped/revoked/released domain={} mappings=4 binding-root={:#x}",
+                                            domain_handle, binding_root,
+                                        );
+                                        scoped_vtd_epoch_completed = true;
                                         // SAFETY: scrub_halted re-proved HCHalted after
                                         // clearing every programmed address, and PCI bus
                                         // mastering has not been enabled in this epoch.
@@ -1425,6 +1631,79 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
                                 }
                             }
                         }
+                        let controller = if scoped_vtd_epoch_completed {
+                            let seed = match controller.into_runtime_seed(xhci_secret) {
+                                Ok(seed) => seed,
+                                Err(error) => {
+                                    let _ = writeln!(
+                                        serial,
+                                        "Boulder: xHCI bus-master epoch seed retention failed: {error:?}"
+                                    );
+                                    halt();
+                                }
+                            };
+                            let (evidence, bootstrap, aperture, ready, protocols) =
+                                seed.into_parts();
+                            let returned_aperture = match pci::enable_bus_master(
+                                aperture,
+                                evidence.expected,
+                                xhci_dma_authority.reborrow(),
+                                xhci_pci_configuration.reborrow(),
+                            ) {
+                                Ok(lease) => match pci::revoke_bus_master(
+                                    lease,
+                                    xhci_dma_authority.reborrow(),
+                                    xhci_pci_configuration.reborrow(),
+                                ) {
+                                    Ok(aperture) => aperture,
+                                    Err(debt) => {
+                                        let _ = writeln!(
+                                            serial,
+                                            "Boulder: xHCI bus-master revocation debt retained: {debt:?}"
+                                        );
+                                        halt();
+                                    }
+                                },
+                                Err(pci::BusMasterEnableFailure::Rejected { fault, aperture }) => {
+                                    let _ = writeln!(
+                                        serial,
+                                        "Boulder: xHCI bus-master epoch rejected without mutation: {fault:?}"
+                                    );
+                                    aperture
+                                }
+                                Err(pci::BusMasterEnableFailure::Debt(debt)) => {
+                                    let _ = writeln!(
+                                        serial,
+                                        "Boulder: xHCI bus-master enablement debt retained: {debt:?}"
+                                    );
+                                    halt();
+                                }
+                            };
+                            let controller = match XhciResetReadyController::restore_runtime_parts(
+                                evidence,
+                                bootstrap,
+                                returned_aperture,
+                                ready,
+                                protocols,
+                                xhci_secret,
+                            ) {
+                                Ok(controller) => controller,
+                                Err(error) => {
+                                    let _ = writeln!(
+                                        serial,
+                                        "Boulder: xHCI bus-master epoch restoration failed: {error:?}"
+                                    );
+                                    halt();
+                                }
+                            };
+                            let _ = writeln!(
+                                serial,
+                                "Boulder: xHCI bus-master epoch enabled/readback/revoked/restored bus-master=false"
+                            );
+                            controller
+                        } else {
+                            controller
+                        };
                         let port_survey = {
                             let mut registers =
                                 XhciRegisterTransport::measured(controller.aperture(), &xhci_mmio);

@@ -53,9 +53,14 @@ mastering disabled, one retained reset-ready root, and zero mutation debts.
 The fixed-capacity DMA arena, cycle-last command/event ring, and halted
 register-programming bridge are covered by focused Rust tests. The Q35 lane
 also freshly re-proves that the routed VT-d unit is disabled, allocates the
-real arena, programs and scrubs the halted controller, then reclaims every
-frame. It remains a reversible preparation epoch: live translated DMA,
-bus-master/Run-Stop, interrupts, and USB enumeration are still absent.
+real arena, enables its single-requester domain, maps every present controller
+DMA region (requiring a complete scratchpad pair when scratchpads exist),
+programs and scrubs the halted controller, then revokes and releases the
+domain, tables, and every frame. It remains a reversible preparation epoch: a
+persistent DMA domain, Run/Stop, interrupts, and USB enumeration are still
+absent. The same lane also performs the real PCI bus-master
+enable/readback/revoke transaction, then revalidates and restores the exact
+reset-ready controller before the port census.
 Before that transition, the QEMU boot lane performs a read-only halted-port
 census and currently observes two connected root ports; this is evidence only,
 not USB child enumeration or input-driver support.
@@ -82,9 +87,9 @@ nonzero-segment requesters explicitly until its requester and context-table
 model carries segment-aware identity end to end.
 The dedicated Q35 + Intel IOMMU lane measures QEMU's actual one-unit DMAR
 shape (seven explicit endpoints) and selects its xHCI endpoint through the
-shared-unit policy. It exercises the reversible DMA epoch above, but remains
-deferred: that epoch is not live VT-d enablement, bus mastering, Run/Stop,
-interrupt routing, or USB child enumeration.
+shared-unit policy. It exercises the reversible VT-d enable/map/revoke/release
+epoch above, but remains deferred: it is not a persistent DMA domain, bus
+mastering, Run/Stop, interrupt routing, or USB child enumeration.
 
 ## Required validation on the receiving machine
 

@@ -305,8 +305,14 @@ deferred until its live translated-DMA, bus-master/Run-Stop transaction,
 interrupts, and USB child enumeration exist, so the attached QEMU keyboard
 and tablet are not misreported as supported input devices. The Intel-IOMMU
 Q35 lane now freshly proves its routed unit disabled, allocates the real DMA
-arena, programs the halted registers, scrubs them, and reclaims every frame;
-this is a reversible proof of the data path, not controller activation.
+arena, enables a single-requester VT-d domain, maps every present controller
+DMA region, programs and scrubs the halted registers, then revokes the
+mappings and releases every domain/table/frame resource. Scratchpad backing,
+when required by a controller, is accepted only as a complete pointer-array
+and buffer pair. This is a reversible proof of the complete DMA data path. It
+also performs the exact PCI bus-master enable/readback/revoke transaction and
+restores the retained reset-ready controller; neither epoch starts the
+controller or claims USB input support.
 While still halted and before DMA, Boulder performs a bounded root-port census;
 the QEMU lane currently measures two connected ports without treating them as
 enumerated children.

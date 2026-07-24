@@ -12,12 +12,17 @@ use crate::hw::iommu::{DmaAccess, DmaMappingHandle, IommuDomain};
 use super::xhci_dma::{XhciDmaPurpose, XhciDmaRegionPhase};
 use super::xhci_ring::XhciRingStorage;
 
-const CORE_PURPOSES: [XhciDmaPurpose; 4] = [
+const BASE_PURPOSES: [XhciDmaPurpose; 4] = [
     XhciDmaPurpose::Dcbaa,
     XhciDmaPurpose::CommandRing,
     XhciDmaPurpose::EventRing,
     XhciDmaPurpose::EventRingSegmentTable,
 ];
+const SCRATCHPAD_PURPOSES: [XhciDmaPurpose; 2] = [
+    XhciDmaPurpose::ScratchpadPointerArray,
+    XhciDmaPurpose::ScratchpadBuffers,
+];
+const BINDING_REGION_CAPACITY: usize = BASE_PURPOSES.len() + SCRATCHPAD_PURPOSES.len();
 const BINDING_ROOT_DOMAIN: u64 = 0x5848_4349_5654_444d;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -31,10 +36,13 @@ pub enum XhciIommuBindingError {
     Mapping(Status),
 }
 
-/// Mapping receipts for the four regions programmed into the xHCI controller.
+/// Mapping receipts for every DMA region reachable from xHCI registers.
+///
+/// The four mandatory regions are always present. Scratchpad backing is an
+/// all-or-nothing pair: if either region exists, both must be translated.
 pub struct XhciIommuBinding {
     generation: u32,
-    mappings: [Option<DmaMappingHandle>; CORE_PURPOSES.len()],
+    mappings: [Option<DmaMappingHandle>; BINDING_REGION_CAPACITY],
     root: u64,
 }
 
@@ -158,38 +166,48 @@ pub fn bind_core_regions<S: XhciRingStorage>(
             XhciIommuBindingError::InvalidSecret
         }));
     }
-    let mut records = [None; CORE_PURPOSES.len()];
-    for (index, purpose) in CORE_PURPOSES.iter().copied().enumerate() {
-        let record = storage
-            .region(purpose)
-            .ok_or_else(|| failure(XhciIommuBindingError::MissingRegion(purpose)))?;
-        if record.phase != XhciDmaRegionPhase::Ready {
-            return Err(failure(XhciIommuBindingError::RegionNotReady(purpose)));
-        }
-        if record.generation != expected_generation {
-            return Err(failure(XhciIommuBindingError::GenerationMismatch {
-                expected: expected_generation,
-                observed: record.generation,
-            }));
-        }
-        let Some(length) = record
-            .page_count
-            .checked_mul(4096)
-            .and_then(|pages| usize::try_from(pages).ok())
-        else {
-            return Err(failure(XhciIommuBindingError::InvalidGeometry(purpose)));
-        };
-        if record.device_address_start % 4096 != 0
-            || record.physical_start % 4096 != 0
-            || length == 0
-        {
-            return Err(failure(XhciIommuBindingError::InvalidGeometry(purpose)));
-        }
-        records[index] = Some(record);
+    let mut records = [None; BINDING_REGION_CAPACITY];
+    for (index, purpose) in BASE_PURPOSES.iter().copied().enumerate() {
+        records[index] = Some(required_ready_region(
+            storage,
+            purpose,
+            expected_generation,
+        )?);
     }
 
-    let mut mappings = [None; CORE_PURPOSES.len()];
-    for (index, record) in records.iter().flatten().enumerate() {
+    let pointer_array = storage.region(SCRATCHPAD_PURPOSES[0]);
+    let buffers = storage.region(SCRATCHPAD_PURPOSES[1]);
+    match (pointer_array, buffers) {
+        (None, None) => {}
+        (Some(pointer_array), Some(buffers)) => {
+            records[BASE_PURPOSES.len()] = Some(ready_region(
+                pointer_array,
+                SCRATCHPAD_PURPOSES[0],
+                expected_generation,
+            )?);
+            records[BASE_PURPOSES.len() + 1] = Some(ready_region(
+                buffers,
+                SCRATCHPAD_PURPOSES[1],
+                expected_generation,
+            )?);
+        }
+        (Some(_), None) => {
+            return Err(failure(XhciIommuBindingError::MissingRegion(
+                SCRATCHPAD_PURPOSES[1],
+            )));
+        }
+        (None, Some(_)) => {
+            return Err(failure(XhciIommuBindingError::MissingRegion(
+                SCRATCHPAD_PURPOSES[0],
+            )));
+        }
+    }
+
+    let mut mappings = [None; BINDING_REGION_CAPACITY];
+    for (index, record) in records.iter().enumerate() {
+        let Some(record) = record else {
+            continue;
+        };
         let length = record.page_count as usize * 4096;
         match domain.map_dma_at(
             record.device_address_start,
@@ -225,6 +243,44 @@ pub fn bind_core_regions<S: XhciRingStorage>(
         mappings,
         root: if root == 0 { BINDING_ROOT_DOMAIN } else { root },
     })
+}
+
+fn required_ready_region<S: XhciRingStorage>(
+    storage: &S,
+    purpose: XhciDmaPurpose,
+    expected_generation: u32,
+) -> Result<super::xhci_dma::XhciDmaRegionRecord, XhciIommuBindFailure> {
+    let record = storage
+        .region(purpose)
+        .ok_or_else(|| failure(XhciIommuBindingError::MissingRegion(purpose)))?;
+    ready_region(record, purpose, expected_generation)
+}
+
+fn ready_region(
+    record: super::xhci_dma::XhciDmaRegionRecord,
+    purpose: XhciDmaPurpose,
+    expected_generation: u32,
+) -> Result<super::xhci_dma::XhciDmaRegionRecord, XhciIommuBindFailure> {
+    if record.phase != XhciDmaRegionPhase::Ready {
+        return Err(failure(XhciIommuBindingError::RegionNotReady(purpose)));
+    }
+    if record.generation != expected_generation {
+        return Err(failure(XhciIommuBindingError::GenerationMismatch {
+            expected: expected_generation,
+            observed: record.generation,
+        }));
+    }
+    let Some(length) = record
+        .page_count
+        .checked_mul(4096)
+        .and_then(|pages| usize::try_from(pages).ok())
+    else {
+        return Err(failure(XhciIommuBindingError::InvalidGeometry(purpose)));
+    };
+    if record.device_address_start % 4096 != 0 || record.physical_start % 4096 != 0 || length == 0 {
+        return Err(failure(XhciIommuBindingError::InvalidGeometry(purpose)));
+    }
+    Ok(record)
 }
 
 const fn failure(cause: XhciIommuBindingError) -> XhciIommuBindFailure {
@@ -299,17 +355,40 @@ mod tests {
     }
 
     struct Storage {
-        records: [super::super::xhci_dma::XhciDmaRegionRecord; CORE_PURPOSES.len()],
+        records: [Option<super::super::xhci_dma::XhciDmaRegionRecord>; BINDING_REGION_CAPACITY],
     }
 
     impl Storage {
         fn ready(generation: u32) -> Self {
             let device = PciAddress::new(0, 4, 0).unwrap();
-            let mut records = [record(XhciDmaPurpose::Dcbaa, device, generation, 0x1000); 4];
-            for (index, purpose) in CORE_PURPOSES.iter().copied().enumerate() {
-                records[index] = record(purpose, device, generation, 0x1000 * (index as u64 + 1));
+            let mut records = [None; BINDING_REGION_CAPACITY];
+            for (index, purpose) in BASE_PURPOSES.iter().copied().enumerate() {
+                records[index] = Some(record(
+                    purpose,
+                    device,
+                    generation,
+                    0x1000 * (index as u64 + 1),
+                ));
             }
             Self { records }
+        }
+
+        fn with_scratchpads(generation: u32) -> Self {
+            let device = PciAddress::new(0, 4, 0).unwrap();
+            let mut storage = Self::ready(generation);
+            storage.records[BASE_PURPOSES.len()] = Some(record(
+                XhciDmaPurpose::ScratchpadPointerArray,
+                device,
+                generation,
+                0x5000,
+            ));
+            storage.records[BASE_PURPOSES.len() + 1] = Some(record(
+                XhciDmaPurpose::ScratchpadBuffers,
+                device,
+                generation,
+                0x6000,
+            ));
+            storage
         }
     }
 
@@ -322,6 +401,7 @@ mod tests {
         ) -> Option<super::super::xhci_dma::XhciDmaRegionRecord> {
             self.records
                 .iter()
+                .flatten()
                 .copied()
                 .find(|record| record.purpose == purpose)
         }
@@ -401,6 +481,41 @@ mod tests {
         backend.fail_unmap.store(false, Ordering::Relaxed);
         debt.retry(&mut domain).unwrap();
         assert_eq!(domain.active_mapping_count(), 0);
+        assert!(domain.release().is_ok());
+    }
+
+    #[test]
+    fn complete_scratchpad_pair_is_bound_and_revoked_with_the_core_regions() {
+        let backend = Backend::new();
+        let mut domain = domain(&backend);
+        let binding =
+            bind_core_regions(&mut domain, &Storage::with_scratchpads(11), 11, 0x5eed).unwrap();
+        assert_eq!(binding.mapping_count(), 6);
+        binding.revoke(&mut domain).unwrap();
+        assert_eq!(backend.maps.load(Ordering::Relaxed), 6);
+        assert_eq!(backend.unmaps.load(Ordering::Relaxed), 6);
+        assert!(domain.release().is_ok());
+    }
+
+    #[test]
+    fn incomplete_scratchpad_pair_fails_before_any_mapping_is_created() {
+        let backend = Backend::new();
+        let mut domain = domain(&backend);
+        let device = PciAddress::new(0, 4, 0).unwrap();
+        let mut storage = Storage::ready(13);
+        storage.records[BASE_PURPOSES.len()] = Some(record(
+            XhciDmaPurpose::ScratchpadPointerArray,
+            device,
+            13,
+            0x5000,
+        ));
+        let failure = bind_core_regions(&mut domain, &storage, 13, 0x5eed).unwrap_err();
+        assert_eq!(
+            failure.cause(),
+            XhciIommuBindingError::MissingRegion(XhciDmaPurpose::ScratchpadBuffers)
+        );
+        assert!(!failure.has_release_debt());
+        assert_eq!(backend.maps.load(Ordering::Relaxed), 0);
         assert!(domain.release().is_ok());
     }
 }
