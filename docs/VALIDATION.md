@@ -40,14 +40,17 @@ Agda binary, checked both total Idris2 modules and the safe Agda privilege
 model, and emitted the attestation consumed by the kernel build.
 
 The QEMU boot assertion additionally observes the live IST stack-switch probe,
-the formal authority root, the certified Ring 3 PID1 transfer, a timer-issued
+the formal authority root, the calibrated one-shot APIC deadline owner and its
+periodic transition, the certified Ring 3 PID1 transfer, a timer-issued
 safe-point preemption receipt, and PID1's bounded recovery transition.
 It also checks the conservative all-function device census, exact xHCI tuple
 selection, retained PCI configuration evidence, and the queryable
 detected/operational/quarantined binding reconciliation before PID1 entry.
 The QEMU machine includes an xHCI controller with keyboard and tablet children;
-the boot check requires one validated controller snapshot while proving those
-children remain deferred until real USB enumeration exists.
+the boot check requires a reset-ready controller with a measured 16 KiB BAR0,
+bus mastering disabled, one retained reset-ready root, and zero mutation debts.
+Those children remain deferred until real DMA rings, interrupts, and USB
+enumeration exist.
 
 ## Required validation on the receiving machine
 

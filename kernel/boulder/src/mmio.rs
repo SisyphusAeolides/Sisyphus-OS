@@ -316,6 +316,30 @@ impl MmioWindow {
         self.length
     }
 
+    pub fn read_u8(&self, offset: usize) -> Result<u8, MmioAccessError> {
+        let pointer = self.checked_pointer::<u8>(offset)?;
+        compiler_fence(Ordering::SeqCst);
+
+        // SAFETY: checked_pointer verified the byte is inside this mapping,
+        // which remains owned by this non-Copy MmioWindow.
+        let value = unsafe { pointer.read_volatile() };
+
+        compiler_fence(Ordering::SeqCst);
+        Ok(value)
+    }
+
+    pub fn write_u8(&self, offset: usize, value: u8) -> Result<(), MmioAccessError> {
+        let pointer = self.checked_pointer::<u8>(offset)?;
+        compiler_fence(Ordering::SeqCst);
+
+        // SAFETY: checked_pointer verified the byte is inside this mapping,
+        // which remains owned by this non-Copy MmioWindow.
+        unsafe { pointer.write_volatile(value) };
+
+        compiler_fence(Ordering::SeqCst);
+        Ok(())
+    }
+
     pub fn read_u16(&self, offset: usize) -> Result<u16, MmioAccessError> {
         let pointer = self.checked_pointer::<u16>(offset)?;
         compiler_fence(Ordering::SeqCst);
@@ -383,5 +407,28 @@ impl MmioWindow {
         }
 
         Ok(address as *mut T)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn byte_lane_access_is_exact_and_bounds_checked() {
+        let mut storage = [0xa5_u8; 8];
+        let window = MmioWindow {
+            id: WindowId(0),
+            base: NonNull::new(storage.as_mut_ptr()).unwrap(),
+            length: storage.len(),
+        };
+
+        window.write_u8(3, 0x5a).unwrap();
+        assert_eq!(window.read_u8(3), Ok(0x5a));
+        assert_eq!(storage, [0xa5, 0xa5, 0xa5, 0x5a, 0xa5, 0xa5, 0xa5, 0xa5]);
+        assert_eq!(
+            window.read_u8(storage.len()),
+            Err(MmioAccessError::OutOfBounds)
+        );
     }
 }

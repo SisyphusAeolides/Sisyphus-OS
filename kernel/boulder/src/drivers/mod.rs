@@ -8,3 +8,4 @@ pub mod hermes_platform;
 pub mod hermes_service;
 pub mod net;
 pub mod xhci;
+pub mod xhci_takeover;

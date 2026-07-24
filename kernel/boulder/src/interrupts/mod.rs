@@ -14,7 +14,10 @@ use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use crate::arch::x86_64::halt;
 use crate::serial::SerialPort;
 
-pub use apic::{LocalApicInfo, LocalApicTimerInfo, TimerError};
+pub use apic::{
+    DeadlineClock, DeadlineLease, DeadlineState, LocalApicDeadlineClock, LocalApicInfo,
+    LocalApicTimerInfo, TimerError,
+};
 pub use idt::{IdtError, IdtInfo};
 pub use ioapic::{IoApicError, IoApicInfo};
 pub use irq::{KernelIrq, kernel_irq};
@@ -134,17 +137,17 @@ pub fn apic_test_hits() -> usize {
     APIC_TEST_HITS.load(Ordering::Relaxed)
 }
 
-/// Calibrates and starts Boulder's periodic local APIC timer.
+/// Calibrates the bootstrap processor's local APIC timer and retains it as a
+/// masked one-shot deadline source. The returned owner must later be consumed
+/// into periodic mode before timer interrupts are enabled.
 ///
 /// # Safety
 ///
 /// This must be called on the bootstrap CPU with interrupts disabled and with
-/// exclusive ownership of PIT channel 2.
-pub unsafe fn initialize_local_apic_timer(
-    period_milliseconds: u32,
-) -> Result<LocalApicTimerInfo, TimerError> {
+/// exclusive ownership of PIT channel 2 and the local APIC timer.
+pub unsafe fn initialize_local_apic_deadline_clock() -> Result<LocalApicDeadlineClock, TimerError> {
     APIC_TIMER_HITS.store(0, Ordering::Relaxed);
-    unsafe { apic::calibrate_and_start_timer(APIC_TIMER_VECTOR, period_milliseconds) }
+    unsafe { apic::calibrate_local_apic_deadline_clock() }
 }
 
 pub fn apic_timer_hits() -> usize {

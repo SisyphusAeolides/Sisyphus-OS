@@ -11,6 +11,7 @@ pub trait Right: sealed::Sealed {}
 pub struct FabricControl;
 pub struct PhysicalMemoryControl;
 pub struct DeviceMemoryControl;
+pub struct PciConfigurationControl;
 pub struct DmaControl;
 pub struct SchedulerControl;
 pub struct PolicyControl;
@@ -26,6 +27,7 @@ pub struct ProcessInstallControl;
 impl sealed::Sealed for FabricControl {}
 impl sealed::Sealed for PhysicalMemoryControl {}
 impl sealed::Sealed for DeviceMemoryControl {}
+impl sealed::Sealed for PciConfigurationControl {}
 impl sealed::Sealed for DmaControl {}
 impl sealed::Sealed for SchedulerControl {}
 impl sealed::Sealed for PolicyControl {}
@@ -41,6 +43,7 @@ impl sealed::Sealed for ProcessInstallControl {}
 impl Right for FabricControl {}
 impl Right for PhysicalMemoryControl {}
 impl Right for DeviceMemoryControl {}
+impl Right for PciConfigurationControl {}
 impl Right for DmaControl {}
 impl Right for SchedulerControl {}
 impl Right for PolicyControl {}

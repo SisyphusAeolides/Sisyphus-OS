@@ -1,4 +1,7 @@
+use core::marker::PhantomData;
+
 use crate::arch::x86_64::{inb, inl, outb, outl};
+use crate::capability::{Capability, InterruptsDisabled, PciConfigurationControl};
 use crate::sync::SpinLock;
 
 const CONFIG_ADDRESS: u16 = 0x0cf8;
@@ -10,7 +13,11 @@ const COMMAND_OFFSET: u8 = 0x04;
 const HEADER_OFFSET: u8 = 0x0c;
 const BAR0_OFFSET: u8 = 0x10;
 const BAR_COUNT: usize = 6;
+const COMMAND_IO_SPACE: u16 = 1 << 0;
+const COMMAND_MEMORY_SPACE: u16 = 1 << 1;
+const COMMAND_BUS_MASTER: u16 = 1 << 2;
 const COMMAND_DECODE_AND_MASTER: u16 = 0x0007;
+const ALL_BARS_RESTORED: u8 = (1 << BAR_COUNT) - 1;
 
 static CONFIGURATION_ACCESS: SpinLock<()> = SpinLock::new(());
 
@@ -267,17 +274,238 @@ pub unsafe fn write_config_u32(address: PciAddress, offset: u8, value: u32) {
     unsafe { write_configuration_u32_unlocked(address, offset, value) };
 }
 
+/// Exact retained type-0 configuration evidence checked before BAR mutation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PciExpectedConfiguration {
+    address: PciAddress,
+    vendor_id: u16,
+    device_id: u16,
+    class_code: u8,
+    subclass: u8,
+    programming_interface: u8,
+    revision: u8,
+    header_type: u8,
+    command: u16,
+    raw_bars: [u32; BAR_COUNT],
+}
+
+impl PciExpectedConfiguration {
+    pub const fn from_device(device: PciDevice) -> Option<Self> {
+        if device.vendor_id == 0
+            || device.vendor_id == INVALID_VENDOR_ID
+            || device.header_type & 0x7f != 0
+            || device.bar_count as usize != BAR_COUNT
+        {
+            return None;
+        }
+        Some(Self {
+            address: device.address,
+            vendor_id: device.vendor_id,
+            device_id: device.device_id,
+            class_code: device.class_code,
+            subclass: device.subclass,
+            programming_interface: device.programming_interface,
+            revision: device.revision,
+            header_type: device.header_type,
+            command: device.command,
+            raw_bars: device.raw_bars,
+        })
+    }
+
+    pub const fn address(&self) -> PciAddress {
+        self.address
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BarCommandState {
+    DecodeDisabled,
+    Observed(u16),
+    Unknown,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BarRestoreFault {
+    WriteFailed {
+        offset: u8,
+    },
+    ReadFailed {
+        offset: u8,
+    },
+    Mismatch {
+        offset: u8,
+        expected: u32,
+        observed: u32,
+    },
+}
+
+/// Evidence that a BAR-sizing transaction could not prove its rollback.
+///
+/// Decode is never deliberately re-enabled when this value is produced. The
+/// command state records whether that fail-closed condition was observed or
+/// whether configuration access itself made the state unknowable. The bitmap
+/// names BAR dwords whose original values were read back exactly.
+#[derive(Debug, Eq, PartialEq)]
+pub struct BarRestorationDebt {
+    address: PciAddress,
+    fault: BarRestoreFault,
+    restored_bar_mask: u8,
+    command_state: BarCommandState,
+}
+
+impl BarRestorationDebt {
+    pub const fn address(&self) -> PciAddress {
+        self.address
+    }
+
+    pub const fn fault(&self) -> BarRestoreFault {
+        self.fault
+    }
+
+    pub const fn restored_bar_mask(&self) -> u8 {
+        self.restored_bar_mask
+    }
+
+    pub const fn command_state(&self) -> BarCommandState {
+        self.command_state
+    }
+
+    pub const fn all_bars_restored(&self) -> bool {
+        self.restored_bar_mask == ALL_BARS_RESTORED
+    }
+}
+
+#[derive(Debug, Eq, PartialEq)]
 pub enum BarProbeError {
     ConfigurationAccessFailed { offset: u8 },
+    ExpectedAddressMismatch,
+    ConfigurationChanged { offset: u8 },
     DeviceAbsent,
     UnsupportedHeader { header_type: u8 },
     QuiescenceFailed { command: u16 },
     InvalidBarEncoding { index: u8 },
     Truncated64BitBar { index: u8 },
     InvalidSizeMask { index: u8 },
-    RestoreFailed { offset: u8 },
-    RestoreMismatch { offset: u8 },
+    Bar0IsIo,
+    Bar0Unassigned,
+    Bar0Misaligned { base: u64, length: u64 },
+    Bar0AddressOverflow,
+    RestorationDebt(BarRestorationDebt),
+}
+
+/// A linear proof obligation supplied by the device-specific state machine.
+///
+/// It is intentionally neither `Copy` nor `Clone`: each sizing transaction
+/// consumes one assertion that the device cannot issue DMA, interrupts, MMIO,
+/// or I/O transactions while its BARs temporarily contain sizing masks.
+pub struct BarProbeQuiescence<'authority, 'guard> {
+    address: PciAddress,
+    _configuration: Capability<'authority, PciConfigurationControl>,
+    _interrupts: InterruptsDisabled<'guard>,
+}
+
+impl<'authority, 'guard> BarProbeQuiescence<'authority, 'guard> {
+    /// Binds device quiescence to PCI-configuration authority and a local
+    /// interrupt-masking epoch.
+    ///
+    /// # Safety
+    ///
+    /// The caller must exclusively own `address`, have stopped every device DMA
+    /// engine and interrupt source, and prevent firmware or another CPU from
+    /// touching the function's decoded windows until the sizing call returns.
+    pub const unsafe fn asserted(
+        address: PciAddress,
+        configuration: Capability<'authority, PciConfigurationControl>,
+        interrupts: InterruptsDisabled<'guard>,
+    ) -> Self {
+        Self {
+            address,
+            _configuration: configuration,
+            _interrupts: interrupts,
+        }
+    }
+
+    pub const fn address(&self) -> PciAddress {
+        self.address
+    }
+}
+
+/// An exact, restored BAR0 MMIO aperture.
+///
+/// Construction is private and occurs only after the complete BAR image was
+/// restored and read back with decode disabled, followed by an exact command
+/// readback with I/O and bus mastering still disabled.
+#[derive(Debug, Eq, PartialEq)]
+pub struct Bar0ApertureLease {
+    address: PciAddress,
+    physical_base: u64,
+    length: u64,
+}
+
+impl Bar0ApertureLease {
+    pub const fn address(&self) -> PciAddress {
+        self.address
+    }
+
+    pub const fn physical_base(&self) -> u64 {
+        self.physical_base
+    }
+
+    pub const fn length(&self) -> u64 {
+        self.length
+    }
+
+    /// Derives a range that is both non-empty and wholly contained in BAR0.
+    pub fn checked_range(
+        &self,
+        offset: u64,
+        length: usize,
+    ) -> Result<Bar0ApertureRange<'_>, BarApertureBoundsError> {
+        if length == 0 {
+            return Err(BarApertureBoundsError::Empty);
+        }
+        let length_u64 = u64::try_from(length).map_err(|_| BarApertureBoundsError::Overflow)?;
+        let end = offset
+            .checked_add(length_u64)
+            .ok_or(BarApertureBoundsError::Overflow)?;
+        if end > self.length {
+            return Err(BarApertureBoundsError::OutsideAperture);
+        }
+        let physical_address = self
+            .physical_base
+            .checked_add(offset)
+            .ok_or(BarApertureBoundsError::Overflow)?;
+        Ok(Bar0ApertureRange {
+            physical_address,
+            length,
+            _lease: PhantomData,
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BarApertureBoundsError {
+    Empty,
+    Overflow,
+    OutsideAperture,
+}
+
+/// A range whose lifetime is tied to the non-copy aperture lease that checked it.
+#[derive(Debug, Eq, PartialEq)]
+pub struct Bar0ApertureRange<'lease> {
+    physical_address: u64,
+    length: usize,
+    _lease: PhantomData<&'lease Bar0ApertureLease>,
+}
+
+impl Bar0ApertureRange<'_> {
+    pub const fn physical_address(&self) -> u64 {
+        self.physical_address
+    }
+
+    pub const fn length(&self) -> usize {
+        self.length
+    }
 }
 
 trait ConfigurationSpace {
@@ -311,14 +539,22 @@ impl ConfigurationSpace for LegacyConfigurationSpace {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct BarSnapshot {
-    command: u16,
     bars: [u32; BAR_COUNT],
 }
 
-/// Sizes BAR0..BAR5 as one serialized, reversible type-0 configuration transaction.
+#[derive(Debug, Eq, PartialEq)]
+struct BarMeasurement {
+    snapshot: BarSnapshot,
+    lengths: [u64; BAR_COUNT],
+}
+
+/// Sizes BAR0..BAR5 as one serialized, fail-closed type-0 transaction.
 /// A 64-bit BAR reports its length in the low slot and zero in its consumed high slot.
+/// On success the original BAR image and memory-decode bit are restored; I/O
+/// decode and bus mastering deliberately remain disabled. Prefer
+/// [`measure_bar0_aperture`] when the caller needs an MMIO mapping authority.
 ///
 /// # Safety
 ///
@@ -331,17 +567,44 @@ struct BarSnapshot {
 pub unsafe fn bar_lengths(address: PciAddress) -> Result<[u64; BAR_COUNT], BarProbeError> {
     let _access = CONFIGURATION_ACCESS.lock();
     let mut configuration = LegacyConfigurationSpace { address };
-    probe_bar_lengths(&mut configuration)
+    probe_bar_lengths(&mut configuration, address, false, None)
+        .map(|(measurement, _)| measurement.lengths)
+}
+
+/// Consumes one caller-supplied quiescence proof and returns an exact BAR0
+/// aperture only after the sizing transaction reaches its fail-closed commit
+/// point.
+pub fn measure_bar0_aperture(
+    quiescence: BarProbeQuiescence<'_, '_>,
+    expected: PciExpectedConfiguration,
+) -> Result<Bar0ApertureLease, BarProbeError> {
+    let address = quiescence.address;
+    if expected.address != address {
+        return Err(BarProbeError::ExpectedAddressMismatch);
+    }
+    let _access = CONFIGURATION_ACCESS.lock();
+    let mut configuration = LegacyConfigurationSpace { address };
+    let (_, lease) = probe_bar_lengths(&mut configuration, address, true, Some(&expected))?;
+    lease.ok_or(BarProbeError::Bar0Unassigned)
 }
 
 fn probe_bar_lengths(
     configuration: &mut impl ConfigurationSpace,
-) -> Result<[u64; BAR_COUNT], BarProbeError> {
-    let vendor = read(configuration, 0x00)? as u16;
+    address: PciAddress,
+    require_bar0_lease: bool,
+    expected: Option<&PciExpectedConfiguration>,
+) -> Result<(BarMeasurement, Option<Bar0ApertureLease>), BarProbeError> {
+    if expected.is_some_and(|expected| expected.address != address) {
+        return Err(BarProbeError::ExpectedAddressMismatch);
+    }
+    let vendor_device = read(configuration, 0x00)?;
+    let vendor = vendor_device as u16;
     if vendor == INVALID_VENDOR_ID {
         return Err(BarProbeError::DeviceAbsent);
     }
-    let header_type = (read(configuration, HEADER_OFFSET)? >> 16) as u8;
+    let class_revision = read(configuration, 0x08)?;
+    let header = read(configuration, HEADER_OFFSET)?;
+    let header_type = (header >> 16) as u8;
     if header_type & 0x7f != 0 {
         return Err(BarProbeError::UnsupportedHeader { header_type });
     }
@@ -355,31 +618,142 @@ fn probe_bar_lengths(
     for (index, bar) in bars.iter_mut().enumerate() {
         *bar = read(configuration, bar_offset(index))?;
     }
-    let snapshot = BarSnapshot { command, bars };
-    let mut bars_may_be_modified = false;
-
-    let probe_result = (|| {
-        configuration
-            .write_command(command & !COMMAND_DECODE_AND_MASTER)
-            .map_err(|()| BarProbeError::ConfigurationAccessFailed {
-                offset: COMMAND_OFFSET,
-            })?;
-        let disabled = configuration.read_command().map_err(|()| {
-            BarProbeError::ConfigurationAccessFailed {
-                offset: COMMAND_OFFSET,
-            }
-        })?;
-        if disabled & COMMAND_DECODE_AND_MASTER != 0 {
-            return Err(BarProbeError::QuiescenceFailed { command: disabled });
-        }
-        bars_may_be_modified = true;
-        size_bars(configuration, &snapshot)
-    })();
-
-    match restore_snapshot(configuration, &snapshot, bars_may_be_modified) {
-        Ok(()) => probe_result,
-        Err(error) => Err(error),
+    if let Some(expected) = expected {
+        validate_expected_configuration(
+            expected,
+            vendor_device,
+            class_revision,
+            header_type,
+            command,
+            &bars,
+        )?;
     }
+    let snapshot = BarSnapshot { bars };
+    let disabled_command = command & !COMMAND_DECODE_AND_MASTER;
+    if configuration.write_command(disabled_command).is_err() {
+        return Err(restoration_debt(
+            address,
+            BarRestoreFault::WriteFailed {
+                offset: COMMAND_OFFSET,
+            },
+            ALL_BARS_RESTORED,
+            BarCommandState::Unknown,
+        ));
+    }
+    let disabled = match configuration.read_command() {
+        Ok(command) => command,
+        Err(()) => {
+            return Err(restoration_debt(
+                address,
+                BarRestoreFault::ReadFailed {
+                    offset: COMMAND_OFFSET,
+                },
+                ALL_BARS_RESTORED,
+                BarCommandState::Unknown,
+            ));
+        }
+    };
+    if disabled != disabled_command || disabled & COMMAND_DECODE_AND_MASTER != 0 {
+        return Err(BarProbeError::QuiescenceFailed { command: disabled });
+    }
+
+    // Conservatively treat every BAR as potentially modified once decode has
+    // been disabled. Even an encoding error or failed write takes the complete
+    // high-to-low restore and readback path.
+    let probe_result = size_bars(configuration, &snapshot);
+    let restored_bar_mask =
+        restore_and_verify_bars(configuration, address, &snapshot, disabled_command)?;
+    debug_assert_eq!(restored_bar_mask, ALL_BARS_RESTORED);
+
+    let lengths = match probe_result {
+        Ok(lengths) => lengths,
+        Err(error) => return Err(error),
+    };
+    let measurement = BarMeasurement { snapshot, lengths };
+    let bar0_lease = if require_bar0_lease {
+        Some(build_bar0_lease(address, &measurement)?)
+    } else {
+        None
+    };
+
+    // Among the three transaction-producing bits, only the original memory
+    // decode state may be restored. I/O decode and bus mastering remain off.
+    let committed_command = command & !(COMMAND_IO_SPACE | COMMAND_BUS_MASTER);
+    debug_assert_eq!(
+        committed_command & COMMAND_DECODE_AND_MASTER,
+        command & COMMAND_MEMORY_SPACE
+    );
+    if configuration.write_command(committed_command).is_err() {
+        return Err(restoration_debt(
+            address,
+            BarRestoreFault::WriteFailed {
+                offset: COMMAND_OFFSET,
+            },
+            restored_bar_mask,
+            BarCommandState::Unknown,
+        ));
+    }
+    match configuration.read_command() {
+        Ok(observed) if observed == committed_command => Ok((measurement, bar0_lease)),
+        Ok(observed) => Err(restoration_debt(
+            address,
+            BarRestoreFault::Mismatch {
+                offset: COMMAND_OFFSET,
+                expected: u32::from(committed_command),
+                observed: u32::from(observed),
+            },
+            restored_bar_mask,
+            command_state(observed),
+        )),
+        Err(()) => Err(restoration_debt(
+            address,
+            BarRestoreFault::ReadFailed {
+                offset: COMMAND_OFFSET,
+            },
+            restored_bar_mask,
+            BarCommandState::Unknown,
+        )),
+    }
+}
+
+fn validate_expected_configuration(
+    expected: &PciExpectedConfiguration,
+    vendor_device: u32,
+    class_revision: u32,
+    header_type: u8,
+    command: u16,
+    bars: &[u32; BAR_COUNT],
+) -> Result<(), BarProbeError> {
+    let expected_vendor_device =
+        (u32::from(expected.device_id) << 16) | u32::from(expected.vendor_id);
+    if vendor_device != expected_vendor_device {
+        return Err(BarProbeError::ConfigurationChanged { offset: 0x00 });
+    }
+    let expected_class_revision = (u32::from(expected.class_code) << 24)
+        | (u32::from(expected.subclass) << 16)
+        | (u32::from(expected.programming_interface) << 8)
+        | u32::from(expected.revision);
+    if class_revision != expected_class_revision {
+        return Err(BarProbeError::ConfigurationChanged { offset: 0x08 });
+    }
+    if header_type != expected.header_type {
+        return Err(BarProbeError::ConfigurationChanged {
+            offset: HEADER_OFFSET,
+        });
+    }
+    if command != expected.command {
+        return Err(BarProbeError::ConfigurationChanged {
+            offset: COMMAND_OFFSET,
+        });
+    }
+    for (index, (&observed, &retained)) in bars.iter().zip(expected.raw_bars.iter()).enumerate() {
+        if observed != retained {
+            return Err(BarProbeError::ConfigurationChanged {
+                offset: bar_offset(index),
+            });
+        }
+    }
+    Ok(())
 }
 
 fn size_bars(
@@ -482,59 +856,155 @@ fn decode_size(
     }
 }
 
-fn restore_snapshot(
+fn restore_and_verify_bars(
     configuration: &mut impl ConfigurationSpace,
+    address: PciAddress,
     snapshot: &BarSnapshot,
-    bars_may_be_modified: bool,
-) -> Result<(), BarProbeError> {
-    let mut failure = None;
-    if bars_may_be_modified {
-        // Reverse order restores the high half of every 64-bit BAR before its
-        // low half can make the pair observable again.
-        for index in (0..BAR_COUNT).rev() {
-            let offset = bar_offset(index);
-            if configuration
-                .write_u32(offset, snapshot.bars[index])
-                .is_err()
-                && failure.is_none()
-            {
-                failure = Some(BarProbeError::RestoreFailed { offset });
+    disabled_command: u16,
+) -> Result<u8, BarProbeError> {
+    let mut first_fault = None;
+
+    // Reverse order restores the high half of every 64-bit BAR before its low
+    // half can make the pair observable again. Decode remains disabled.
+    for index in (0..BAR_COUNT).rev() {
+        let offset = bar_offset(index);
+        if configuration
+            .write_u32(offset, snapshot.bars[index])
+            .is_err()
+            && first_fault.is_none()
+        {
+            first_fault = Some(BarRestoreFault::WriteFailed { offset });
+        }
+    }
+
+    match configuration.read_command() {
+        Ok(observed) if observed == disabled_command => {}
+        Ok(observed) => {
+            if first_fault.is_none() {
+                first_fault = Some(BarRestoreFault::Mismatch {
+                    offset: COMMAND_OFFSET,
+                    expected: u32::from(disabled_command),
+                    observed: u32::from(observed),
+                });
+            }
+        }
+        Err(()) => {
+            if first_fault.is_none() {
+                first_fault = Some(BarRestoreFault::ReadFailed {
+                    offset: COMMAND_OFFSET,
+                });
             }
         }
     }
-    if configuration.write_command(snapshot.command).is_err() && failure.is_none() {
-        failure = Some(BarProbeError::RestoreFailed {
-            offset: COMMAND_OFFSET,
-        });
-    }
+
+    let mut restored_bar_mask = 0_u8;
     for (index, original) in snapshot.bars.iter().copied().enumerate() {
         let offset = bar_offset(index);
         match configuration.read_u32(offset) {
-            Ok(observed) if observed == original => {}
-            Ok(_) if failure.is_none() => {
-                failure = Some(BarProbeError::RestoreMismatch { offset });
+            Ok(observed) if observed == original => restored_bar_mask |= 1 << index,
+            Ok(observed) if first_fault.is_none() => {
+                first_fault = Some(BarRestoreFault::Mismatch {
+                    offset,
+                    expected: original,
+                    observed,
+                });
             }
-            Err(()) if failure.is_none() => {
-                failure = Some(BarProbeError::RestoreFailed { offset });
+            Err(()) if first_fault.is_none() => {
+                first_fault = Some(BarRestoreFault::ReadFailed { offset });
             }
             _ => {}
         }
     }
-    match configuration.read_command() {
-        Ok(observed) if observed == snapshot.command => {}
-        Ok(_) if failure.is_none() => {
-            failure = Some(BarProbeError::RestoreMismatch {
-                offset: COMMAND_OFFSET,
-            });
+
+    // This second observation brackets every restoration readback. No memory
+    // decode is enabled until all BARs and both command observations are exact.
+    let observed_command_state = match configuration.read_command() {
+        Ok(observed) if observed == disabled_command => BarCommandState::DecodeDisabled,
+        Ok(observed) => {
+            if first_fault.is_none() {
+                first_fault = Some(BarRestoreFault::Mismatch {
+                    offset: COMMAND_OFFSET,
+                    expected: u32::from(disabled_command),
+                    observed: u32::from(observed),
+                });
+            }
+            command_state(observed)
         }
-        Err(()) if failure.is_none() => {
-            failure = Some(BarProbeError::RestoreFailed {
-                offset: COMMAND_OFFSET,
-            });
+        Err(()) => {
+            if first_fault.is_none() {
+                first_fault = Some(BarRestoreFault::ReadFailed {
+                    offset: COMMAND_OFFSET,
+                });
+            }
+            BarCommandState::Unknown
         }
-        _ => {}
+    };
+
+    match first_fault {
+        Some(fault) => Err(restoration_debt(
+            address,
+            fault,
+            restored_bar_mask,
+            observed_command_state,
+        )),
+        None => Ok(restored_bar_mask),
     }
-    failure.map_or(Ok(()), Err)
+}
+
+fn restoration_debt(
+    address: PciAddress,
+    fault: BarRestoreFault,
+    restored_bar_mask: u8,
+    command_state: BarCommandState,
+) -> BarProbeError {
+    BarProbeError::RestorationDebt(BarRestorationDebt {
+        address,
+        fault,
+        restored_bar_mask,
+        command_state,
+    })
+}
+
+const fn command_state(command: u16) -> BarCommandState {
+    if command & COMMAND_DECODE_AND_MASTER == 0 {
+        BarCommandState::DecodeDisabled
+    } else {
+        BarCommandState::Observed(command)
+    }
+}
+
+fn build_bar0_lease(
+    address: PciAddress,
+    measurement: &BarMeasurement,
+) -> Result<Bar0ApertureLease, BarProbeError> {
+    let low = measurement.snapshot.bars[0];
+    if low & 1 != 0 {
+        return Err(BarProbeError::Bar0IsIo);
+    }
+    let physical_base = match (low >> 1) & 0x3 {
+        0 => u64::from(low & 0xffff_fff0),
+        1 => u64::from(low & 0x000f_fff0),
+        2 => (u64::from(measurement.snapshot.bars[1]) << 32) | u64::from(low & 0xffff_fff0),
+        _ => return Err(BarProbeError::InvalidBarEncoding { index: 0 }),
+    };
+    let length = measurement.lengths[0];
+    if physical_base == 0 || length == 0 {
+        return Err(BarProbeError::Bar0Unassigned);
+    }
+    if physical_base & (length - 1) != 0 {
+        return Err(BarProbeError::Bar0Misaligned {
+            base: physical_base,
+            length,
+        });
+    }
+    if physical_base.checked_add(length).is_none() {
+        return Err(BarProbeError::Bar0AddressOverflow);
+    }
+    Ok(Bar0ApertureLease {
+        address,
+        physical_base,
+        length,
+    })
 }
 
 fn read(configuration: &mut impl ConfigurationSpace, offset: u8) -> Result<u32, BarProbeError> {
@@ -561,13 +1031,49 @@ const fn bar_offset(index: usize) -> u8 {
 mod tests {
     use super::*;
 
+    const TEST_ADDRESS: PciAddress = PciAddress {
+        bus: 0,
+        slot: 20,
+        function: 0,
+    };
+
+    fn probe_bar_lengths(
+        configuration: &mut impl ConfigurationSpace,
+    ) -> Result<[u64; BAR_COUNT], BarProbeError> {
+        super::probe_bar_lengths(configuration, TEST_ADDRESS, false, None)
+            .map(|(measurement, _)| measurement.lengths)
+    }
+
+    fn expected_configuration(bars: [u32; BAR_COUNT]) -> PciExpectedConfiguration {
+        PciExpectedConfiguration::from_device(PciDevice {
+            address: TEST_ADDRESS,
+            vendor_id: 0x1234,
+            device_id: 0x5678,
+            class_code: 0,
+            subclass: 0,
+            programming_interface: 0,
+            revision: 0,
+            header_type: 0,
+            interrupt_line: 0xff,
+            interrupt_pin: 0,
+            command: COMMAND_DECODE_AND_MASTER,
+            bar_count: BAR_COUNT as u8,
+            raw_bars: bars,
+        })
+        .unwrap()
+    }
+
     struct ModelConfiguration {
         values: [u32; 16],
         original: [u32; 16],
         masks: [u32; BAR_COUNT],
         fail_probe_read: Option<usize>,
         fail_restore_write: Option<usize>,
+        fail_command_write: Option<usize>,
+        command_write_count: usize,
         bar_write_while_active: bool,
+        bar_verify_while_active: bool,
+        sizing_started: bool,
         restore_order: [u8; BAR_COUNT],
         restore_count: usize,
     }
@@ -585,14 +1091,22 @@ mod tests {
                 masks,
                 fail_probe_read: None,
                 fail_restore_write: None,
+                fail_command_write: None,
+                command_write_count: 0,
                 bar_write_while_active: false,
+                bar_verify_while_active: false,
+                sizing_started: false,
                 restore_order: [u8::MAX; BAR_COUNT],
                 restore_count: 0,
             }
         }
 
-        fn restored(&self) -> bool {
-            self.values == self.original
+        fn bars_restored(&self) -> bool {
+            self.values[4..10] == self.original[4..10]
+        }
+
+        fn committed_command(&self) -> u16 {
+            self.values[1] as u16
         }
     }
 
@@ -608,6 +1122,9 @@ mod tests {
                     }
                     return Ok(self.masks[bar]);
                 }
+                if self.sizing_started && self.read_command()? & COMMAND_DECODE_AND_MASTER != 0 {
+                    self.bar_verify_while_active = true;
+                }
             }
             Ok(self.values[slot])
         }
@@ -619,6 +1136,9 @@ mod tests {
                     self.bar_write_while_active = true;
                 }
                 let slot = usize::from(offset / 4);
+                if value == u32::MAX {
+                    self.sizing_started = true;
+                }
                 if value == self.original[slot] {
                     self.restore_order[self.restore_count] = bar as u8;
                     self.restore_count += 1;
@@ -637,6 +1157,11 @@ mod tests {
         }
 
         fn write_command(&mut self, value: u16) -> Result<(), ()> {
+            let write_number = self.command_write_count;
+            self.command_write_count += 1;
+            if self.fail_command_write == Some(write_number) {
+                return Err(());
+            }
             self.values[1] = (self.values[1] & 0xffff_0000) | u32::from(value);
             Ok(())
         }
@@ -713,8 +1238,10 @@ mod tests {
         let lengths = probe_bar_lengths(&mut configuration).expect("valid BAR model probes");
 
         assert_eq!(lengths, [0x1000, 0, 0x100, 0x2_0000, 0, 0x10_0000]);
-        assert!(configuration.restored());
+        assert!(configuration.bars_restored());
+        assert_eq!(configuration.committed_command(), COMMAND_MEMORY_SPACE);
         assert!(!configuration.bar_write_while_active);
+        assert!(!configuration.bar_verify_while_active);
         assert_eq!(configuration.restore_order, [5, 4, 3, 2, 1, 0]);
     }
 
@@ -731,7 +1258,8 @@ mod tests {
                 offset: BAR0_OFFSET + 8,
             })
         );
-        assert!(configuration.restored());
+        assert!(configuration.bars_restored());
+        assert_eq!(configuration.committed_command(), 0);
         assert!(!configuration.bar_write_while_active);
     }
 
@@ -748,7 +1276,8 @@ mod tests {
                 offset: BAR0_OFFSET + 4,
             })
         );
-        assert!(configuration.restored());
+        assert!(configuration.bars_restored());
+        assert_eq!(configuration.committed_command(), 0);
         assert_eq!(configuration.restore_order, [5, 4, 3, 2, 1, 0]);
     }
 
@@ -761,11 +1290,16 @@ mod tests {
 
         assert_eq!(
             probe_bar_lengths(&mut configuration),
-            Err(BarProbeError::RestoreFailed {
-                offset: BAR0_OFFSET + 4,
-            })
+            Err(BarProbeError::RestorationDebt(BarRestorationDebt {
+                address: TEST_ADDRESS,
+                fault: BarRestoreFault::WriteFailed {
+                    offset: BAR0_OFFSET + 4,
+                },
+                restored_bar_mask: ALL_BARS_RESTORED & !(1 << 1),
+                command_state: BarCommandState::DecodeDisabled,
+            }))
         );
-        assert_eq!(configuration.values[1] as u16, COMMAND_DECODE_AND_MASTER);
+        assert_eq!(configuration.values[1] as u16, 0);
         assert_eq!(configuration.values[4], bars[0]);
         assert_eq!(configuration.restore_order, [5, 4, 3, 2, 1, 0]);
         assert!(!configuration.bar_write_while_active);
@@ -781,7 +1315,8 @@ mod tests {
             probe_bar_lengths(&mut configuration),
             Err(BarProbeError::Truncated64BitBar { index: 5 })
         );
-        assert!(configuration.restored());
+        assert!(configuration.bars_restored());
+        assert_eq!(configuration.committed_command(), 0);
     }
 
     #[test]
@@ -794,6 +1329,147 @@ mod tests {
             probe_bar_lengths(&mut configuration),
             Err(BarProbeError::InvalidSizeMask { index: 0 })
         );
-        assert!(configuration.restored());
+        assert!(configuration.bars_restored());
+        assert_eq!(configuration.committed_command(), 0);
+    }
+
+    #[test]
+    fn bar0_lease_derives_only_contained_nonempty_ranges() {
+        let bars = [0x8000_0004, 1, 0, 0, 0, 0];
+        let masks = [0xffff_f004, 0xffff_ffff, 0, 0, 0, 0];
+        let mut configuration = ModelConfiguration::with_bars(bars, masks);
+
+        let (_, lease) =
+            super::probe_bar_lengths(&mut configuration, TEST_ADDRESS, true, None).unwrap();
+        let lease = lease.expect("BAR0 lease requested");
+
+        assert_eq!(lease.address(), TEST_ADDRESS);
+        assert_eq!(lease.physical_base(), 0x0000_0001_8000_0000);
+        assert_eq!(lease.length(), 0x1000);
+        let range = lease.checked_range(0x180, 0x280).unwrap();
+        assert_eq!(range.physical_address(), 0x0000_0001_8000_0180);
+        assert_eq!(range.length(), 0x280);
+        assert_eq!(
+            lease.checked_range(0, 0),
+            Err(BarApertureBoundsError::Empty)
+        );
+        assert_eq!(
+            lease.checked_range(0xf00, 0x101),
+            Err(BarApertureBoundsError::OutsideAperture)
+        );
+        assert_eq!(configuration.committed_command(), COMMAND_MEMORY_SPACE);
+        assert!(!configuration.bar_verify_while_active);
+    }
+
+    #[test]
+    fn invalid_bar0_never_reenables_memory_decode() {
+        let bars = [0x8000_0800, 0, 0, 0, 0, 0];
+        let masks = [0xffff_f000, 0, 0, 0, 0, 0];
+        let mut configuration = ModelConfiguration::with_bars(bars, masks);
+
+        assert_eq!(
+            super::probe_bar_lengths(&mut configuration, TEST_ADDRESS, true, None),
+            Err(BarProbeError::Bar0Misaligned {
+                base: 0x8000_0800,
+                length: 0x1000,
+            })
+        );
+        assert!(configuration.bars_restored());
+        assert_eq!(configuration.committed_command(), 0);
+    }
+
+    #[test]
+    fn final_command_write_failure_returns_unknown_restoration_debt() {
+        let bars = [0x8000_0000, 0, 0, 0, 0, 0];
+        let masks = [0xffff_f000, 0, 0, 0, 0, 0];
+        let mut configuration = ModelConfiguration::with_bars(bars, masks);
+        configuration.fail_command_write = Some(1);
+
+        assert_eq!(
+            probe_bar_lengths(&mut configuration),
+            Err(BarProbeError::RestorationDebt(BarRestorationDebt {
+                address: TEST_ADDRESS,
+                fault: BarRestoreFault::WriteFailed {
+                    offset: COMMAND_OFFSET,
+                },
+                restored_bar_mask: ALL_BARS_RESTORED,
+                command_state: BarCommandState::Unknown,
+            }))
+        );
+        assert!(configuration.bars_restored());
+        assert_eq!(configuration.committed_command(), 0);
+    }
+
+    #[test]
+    fn successful_commit_preserves_nontransaction_command_controls() {
+        let bars = [0x8000_0000, 0, 0, 0, 0, 0];
+        let masks = [0xffff_f000, 0, 0, 0, 0, 0];
+        let mut configuration = ModelConfiguration::with_bars(bars, masks);
+        configuration.values[1] = 0x0407;
+        configuration.original[1] = 0x0407;
+
+        probe_bar_lengths(&mut configuration).unwrap();
+
+        assert_eq!(configuration.committed_command(), 0x0402);
+        assert!(configuration.bars_restored());
+    }
+
+    #[test]
+    fn retained_configuration_drift_causes_zero_writes() {
+        let bars = [0x8000_0000, 0, 0, 0, 0, 0];
+        let masks = [0xffff_f000, 0, 0, 0, 0, 0];
+        let expected = expected_configuration(bars);
+
+        let mut identity_drift = ModelConfiguration::with_bars(bars, masks);
+        identity_drift.values[0] = 0x5678_4321;
+        assert_eq!(
+            super::probe_bar_lengths(&mut identity_drift, TEST_ADDRESS, true, Some(&expected),),
+            Err(BarProbeError::ConfigurationChanged { offset: 0x00 })
+        );
+        assert_eq!(identity_drift.command_write_count, 0);
+        assert_eq!(identity_drift.restore_count, 0);
+
+        let mut class_drift = ModelConfiguration::with_bars(bars, masks);
+        class_drift.values[2] = 0x0c03_3001;
+        assert_eq!(
+            super::probe_bar_lengths(&mut class_drift, TEST_ADDRESS, true, Some(&expected),),
+            Err(BarProbeError::ConfigurationChanged { offset: 0x08 })
+        );
+        assert_eq!(class_drift.command_write_count, 0);
+        assert_eq!(class_drift.restore_count, 0);
+
+        let mut header_drift = ModelConfiguration::with_bars(bars, masks);
+        header_drift.values[3] = 0x0080_0000;
+        assert_eq!(
+            super::probe_bar_lengths(&mut header_drift, TEST_ADDRESS, true, Some(&expected),),
+            Err(BarProbeError::ConfigurationChanged {
+                offset: HEADER_OFFSET,
+            })
+        );
+        assert_eq!(header_drift.command_write_count, 0);
+        assert_eq!(header_drift.restore_count, 0);
+
+        let mut command_drift = ModelConfiguration::with_bars(bars, masks);
+        command_drift.values[1] = u32::from(COMMAND_MEMORY_SPACE);
+        assert_eq!(
+            super::probe_bar_lengths(&mut command_drift, TEST_ADDRESS, true, Some(&expected),),
+            Err(BarProbeError::ConfigurationChanged {
+                offset: COMMAND_OFFSET,
+            })
+        );
+        assert_eq!(command_drift.command_write_count, 0);
+        assert_eq!(command_drift.restore_count, 0);
+
+        let mut bar_drift = ModelConfiguration::with_bars(bars, masks);
+        bar_drift.values[9] = 0x1000;
+        assert_eq!(
+            super::probe_bar_lengths(&mut bar_drift, TEST_ADDRESS, true, Some(&expected)),
+            Err(BarProbeError::ConfigurationChanged {
+                offset: bar_offset(5),
+            })
+        );
+        assert_eq!(bar_drift.command_write_count, 0);
+        assert_eq!(bar_drift.restore_count, 0);
+        assert!(!bar_drift.sizing_started);
     }
 }

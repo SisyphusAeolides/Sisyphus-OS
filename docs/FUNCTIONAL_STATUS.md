@@ -22,6 +22,7 @@ Status meanings:
 | Crest frame oracle | Integrated foundation | Three policy lanes, conformal feedback, sealed plans | Hardware presentation timing feedback |
 | Crest general presentation | Fail-closed/in progress | Boulder firmware scanout is real | Capability lease, protected mapping, present receipt, device-loss recovery |
 | PID 0 authority | Integrated foundation | Epoch-bound non-process identity, atomic idle handoff, timer-issued safe-point tickets, non-termination tests | Full interrupt-context process switch |
+| APIC deadline and timer transition | Integrated | Exact PIT-divisor calibration, CPU-bound single-live-lease one-shot owner, checked ceiling conversion, wide-deadline chunking, consuming periodic transition; production xHCI takeover consumer | Promote additional early hardware transitions onto the same ownership discipline |
 | Timer safe-point preemption | Integrated foundation | APIC IRQ publication, PID/generation/epoch revalidation, bounded syscall consumption, stale-ticket rejection | Per-process XSAVE and FS/GS ownership for direct IRQ switching |
 | Measured PID 1 | Integrated foundation | Static image validation and certified Ring 3 transfer observed in QEMU | Retained process resources and general process switching |
 | CPU-local privilege entry | Integrated foundation | Per-CPU record, unique TSS binding, GS syscall entry, return leases | AP startup and per-CPU GDT/TSS/IST publication |
@@ -32,7 +33,7 @@ Status meanings:
 | Tensor and predictive control | Foundation | Bounded fixed-point implementations and queue integration | Workload comparison and target timing evidence |
 | Foreign driver personalities | Fail-closed by contract | Bounded ABI and object validation | Explicit supported-version service implementations |
 | Automatic device census | Integrated foundation | Retained all-function identity/class/command/BAR evidence, exact tuple masks, live-slot authorization, queryable terminal records, rollback-debt quarantine | ECAM/MCFG, BAR aperture lengths, USB and ACPI enumeration, retained native driver instances |
-| xHCI transport discovery | Integrated prerequisite | Real QEMU PCI function, exact xHCI-only claim, configuration revalidation, corrected scratchpad geometry, authorization-bound deferred snapshot | Firmware ownership, BAR aperture proof, controller reset, DMA rings, interrupts, port and USB child enumeration |
+| xHCI reset-ready transport | Integrated prerequisite | Retained live claim; bounded header journal, firmware/no-legacy resolution, SMI-mask readback, port-reset drain, halt, transactional exact BAR0 lease, reset-ready or mutation-debt root; QEMU proves 16 KiB and bus mastering off | Lease-backed supported-protocol parsing, DMA rings, interrupts, port and USB child enumeration |
 
 No row should be promoted solely because its source compiles. Promotion requires
 its caller, target test, resource bounds, and failure path to pass on the exact

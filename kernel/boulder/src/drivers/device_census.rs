@@ -25,6 +25,7 @@ pub const AUTHORITY_DMA: u64 = 1 << 2;
 pub const AUTHORITY_IRQ: u64 = 1 << 3;
 pub const AUTHORITY_CLOCK: u64 = 1 << 4;
 pub const AUTHORITY_PUBLISH: u64 = 1 << 5;
+pub const AUTHORITY_PCI_CONFIG: u64 = 1 << 6;
 
 const PCI_CLASS_NETWORK: u8 = 0x02;
 const PCI_CLASS_DISPLAY: u8 = 0x03;
@@ -64,6 +65,7 @@ impl DeviceFamily {
                     | AUTHORITY_IRQ
                     | AUTHORITY_CLOCK
                     | AUTHORITY_PUBLISH
+                    | AUTHORITY_PCI_CONFIG
             }
             Self::UsbHostController => {
                 AUTHORITY_DELEGATE
@@ -72,9 +74,14 @@ impl DeviceFamily {
                     | AUTHORITY_IRQ
                     | AUTHORITY_CLOCK
                     | AUTHORITY_PUBLISH
+                    | AUTHORITY_PCI_CONFIG
             }
             Self::InputController => {
-                AUTHORITY_DELEGATE | AUTHORITY_MMIO | AUTHORITY_IRQ | AUTHORITY_CLOCK
+                AUTHORITY_DELEGATE
+                    | AUTHORITY_MMIO
+                    | AUTHORITY_IRQ
+                    | AUTHORITY_CLOCK
+                    | AUTHORITY_PCI_CONFIG
             }
             Self::Other => AUTHORITY_DELEGATE,
         }

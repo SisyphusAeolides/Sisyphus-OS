@@ -16,7 +16,7 @@ not happen.
 |---|---|---|
 | Multiboot2 long-mode boot | Implemented | Memory map, modules, ACPI roots, framebuffer tag, COM1 boot trace |
 | Physical memory | Implemented | Typed reservations and bounded bitmap frame allocation |
-| Interrupt foundation | Implemented | IDT, dedicated #DF/NMI/#MC IST stacks, runtime stack-switch probe, xAPIC, I/O APIC routing, timer calibration |
+| Interrupt foundation | Implemented | IDT, dedicated #DF/NMI/#MC IST stacks, runtime stack-switch probe, xAPIC, I/O APIC routing, PIT-calibrated one-shot deadline ownership and periodic transition |
 | PID 0 execution authority | Implemented foundation | Non-process identity, epoch leases, atomic idle/reselection handoff, non-termination invariants |
 | Timer scheduling | Implemented safe-point preemption | Lock-free IRQ ticket, generation/epoch revalidation, bounded syscall consumption, stale-ticket rejection |
 | Measured PID 1 transfer | Implemented | Static ELF validation, W^X mapping, CPU-local return lease, single-use Ring 3 transition certificate |
@@ -31,7 +31,7 @@ not happen.
 | Spectral resource geometry | Implemented | Hodge 1-skeleton, normalized-Laplacian Fiedler cut, fixed-point heat flow, periodic recomputation |
 | Foreign driver personalities | Version-scoped | Object validation and narrow service tables exist; unsupported contracts reject loading |
 | Automatic device census | Implemented foundation | Retained identity/class/command/BAR evidence, exact tuple claims, live authorization, queryable terminal records |
-| xHCI transport discovery | Implemented prerequisite | xHCI-only claim, configuration revalidation, corrected geometry, authorization-bound deferred snapshot |
+| xHCI reset-ready transport | Implemented prerequisite | Retained live claim, bounded firmware handoff/halt, exact BAR0 lease, reset-ready audit root; DMA rings and USB children remain deferred |
 | Functional-source gate | Implemented | Rejects tracked recovery debris, unfinished markers, simulated success, and production dead-code suppression |
 
 A subsystem should be described as complete only after the exact commit passes
@@ -275,14 +275,25 @@ requester.
 The first USB transport step is similarly narrow and real. Boulder claims an
 xHCI-class PCI function before access, revalidates its identity, command state,
 class tuple, header type, and every BAR word against the retained census, then
-decodes BAR0 without mutating or sizing it. It maps only the capability header,
-validates the aligned capability length, BCD interface version, controller
-slots, interrupters, ports, scratchpad geometry, runtime and doorbell offsets,
-seals the observation to the live authorization, unmaps it, and retains a
-queryable snapshot. Failure containment roots bind the device and fault class.
-The binding is marked deferred because command/event
-rings and USB child enumeration are not implemented yet; attached QEMU keyboard
-and tablet devices are therefore not misreported as supported input devices.
+decodes BAR0 without pretending its length is known. A provisional one-access
+MMIO transport reads the capability header and a bounded, current-relative
+extended-capability header chain. The journal is sealed to the live,
+non-cloneable authorization; pre-aperture code does not parse capability bodies.
+
+The retained APIC deadline owner then drives a bounded takeover machine. When
+the optional USB legacy capability exists, Boulder claims firmware ownership,
+masks every legacy SMI enable and verifies the mask by readback. It waits for
+CNR to clear, drains observed port resets (all ports when no leased protocol
+body is available), and proves HCHalted. Only at that quiescent point may a
+serialized PCI transaction disable decode and bus mastering, size all BAR
+words, restore them with readback checks, and issue an exact BAR0 aperture
+lease. Every later register access is derived from that lease. Reset completion
+must re-establish CNR clear, HCHalted, and HCE clear before Boulder retains a
+reset-ready controller root; any post-mutation failure instead retains explicit
+mutation debt. QEMU currently proves a 16 KiB aperture and bus mastering off.
+The binding remains deferred because command/event rings, interrupts, and USB
+child enumeration are not implemented yet, so the attached QEMU keyboard and
+tablet are not misreported as supported input devices.
 
 ## Formal authority bridge
 
@@ -333,12 +344,21 @@ state, and generation-checked return lease. Application processors remain
 offline until their own GDT, TSS, IST, GS bases, and syscall MSRs can be
 published transactionally.
 
-The local APIC timer publishes a lock-free PID, generation, and scheduler-epoch
-ticket. Syscall safe points revalidate that ticket under the scheduler lock,
-service at most one bounded scheduling pass, and preserve the interrupted
-call's return value. This is real deferred preemption, but not yet a direct
-interrupt-frame process switch: that promotion waits for per-process XSAVE and
-FS/GS ownership plus complete interrupt return-state capture.
+Before periodic scheduling begins, Boulder calibrates the bootstrap processor's
+local APIC countdown against the exact programmed PIT divisor. A non-cloneable,
+CPU-bound owner can issue one generation-checked relative deadline at a time,
+split intervals wider than the 32-bit APIC counter without early expiry, and is
+then consumed into periodic mode. This provides the bounded early-boot clock
+needed for hardware ownership transitions; it is intentionally not advertised
+as a continuous monotonic epoch.
+
+Once periodic mode begins, the local APIC interrupt publishes a lock-free PID,
+generation, and scheduler-epoch ticket. Syscall safe points revalidate that
+ticket under the scheduler lock, service at most one bounded scheduling pass,
+and preserve the interrupted call's return value. This is real deferred
+preemption, but not yet a direct interrupt-frame process switch: that promotion
+waits for per-process XSAVE and FS/GS ownership plus complete interrupt
+return-state capture.
 
 General `spawn` and `wait` are intentionally fail-closed today. Completing them
 requires full interrupt-frame context switching, parent wakeup, exact resource

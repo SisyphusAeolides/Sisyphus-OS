@@ -11,19 +11,22 @@ use boulder::boot::acpi::{discover_dmar, discover_madt};
 use boulder::boot::multiboot2::BootInformation;
 use boulder::capability::{
     ArtifactSynthesisControl, Authority, DeviceMemoryControl, FabricControl, FaultPolicyControl,
-    LearningControl, MachineProfileControl, MemorySharingControl, PhysicalMemoryControl,
-    PolicyControl, ProcessInstallControl, ResonanceControl, UserlandImageControl,
+    LearningControl, MachineProfileControl, MemorySharingControl, PciConfigurationControl,
+    PhysicalMemoryControl, PolicyControl, ProcessInstallControl, ResonanceControl,
+    UserlandImageControl,
 };
 use boulder::cpu::topology::{self, ExecutionClass, TopologyPolicy};
 use boulder::drivers::device_census::{
-    AUTHORITY_DELEGATE, AUTHORITY_MMIO, BootDeviceCensus, DeviceState, DriverBindingManifest,
-    EVIDENCE_CLASS_TUPLE, EVIDENCE_IDENTITY, EVIDENCE_PCI_CONFIGURATION, MAXIMUM_DISPLAY_CLAIMS,
-    boot_device_record,
+    AUTHORITY_CLOCK, AUTHORITY_DELEGATE, AUTHORITY_MMIO, AUTHORITY_PCI_CONFIG, BootDeviceCensus,
+    DeviceState, DriverBindingManifest, EVIDENCE_CLASS_TUPLE, EVIDENCE_IDENTITY,
+    EVIDENCE_PCI_CONFIGURATION, MAXIMUM_DISPLAY_CLAIMS, boot_device_record,
 };
 use boulder::drivers::drivernet::fingerprint::LegacyConfigurationReader;
 use boulder::drivers::xhci::{
-    XHCI_PROBE_DRIVER_ID, XhciProbeCensus, boot_xhci_snapshot, boot_xhci_summary,
-    containment_root as xhci_containment_root, probe_read_only, publish_boot_xhci,
+    XHCI_PROBE_DRIVER_ID, XhciMutationDebt, XhciProbeCensus, activate_reset_ready,
+    activation_containment_root as xhci_activation_containment_root, boot_xhci_snapshot,
+    boot_xhci_summary, boot_xhci_terminal_root, containment_root as xhci_containment_root,
+    probe_bootstrap, publish_boot_xhci,
 };
 use boulder::fabric::{
     Completion, KERNEL_FABRIC, NodeCapabilities, NodeClass, WorkDescriptor, opcode,
@@ -646,6 +649,25 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
         );
         halt();
     }
+    // SAFETY: The self-IPI test restored disabled interrupts, and no subsystem
+    // has claimed PIT channel 2 or the local APIC timer. Retain this one-shot
+    // owner across hardware discovery so bounded takeover work can be inserted
+    // without calibrating a second, unrelated clock.
+    let mut deadline_clock = match unsafe { interrupts::initialize_local_apic_deadline_clock() } {
+        Ok(clock) => clock,
+        Err(error) => {
+            let _ = writeln!(
+                serial,
+                "Boulder: local APIC deadline calibration failed: {error:?}"
+            );
+            halt();
+        }
+    };
+    let _ = writeln!(
+        serial,
+        "Boulder: local APIC deadline clock {} Hz reserved",
+        deadline_clock.ticks_per_second()
+    );
     let cpu_topology =
         match topology::initialize(&madt, u32::from(local_apic.id), TopologyPolicy::default()) {
             Ok(info) => info,
@@ -1062,12 +1084,12 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
         revision_minimum: 0,
         revision_maximum: u8::MAX,
         required_evidence: EVIDENCE_IDENTITY | EVIDENCE_CLASS_TUPLE | EVIDENCE_PCI_CONFIGURATION,
-        requested_authority: AUTHORITY_MMIO,
+        requested_authority: AUTHORITY_MMIO | AUTHORITY_CLOCK | AUTHORITY_PCI_CONFIG,
     };
     let xhci_claims = match device_census
         .claim_family::<{ boulder::drivers::xhci::MAXIMUM_XHCI_CONTROLLERS }>(
             xhci_route,
-            AUTHORITY_MMIO,
+            AUTHORITY_MMIO | AUTHORITY_CLOCK | AUTHORITY_PCI_CONFIG,
         ) {
         Ok(claims) => claims,
         Err(error) => {
@@ -1100,6 +1122,7 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
     };
     let configuration = LegacyConfigurationReader;
     let xhci_mmio = authority.grant::<DeviceMemoryControl>();
+    let xhci_pci_configuration = authority.grant::<PciConfigurationControl>();
     for claim in xhci_claims.claims().iter().copied() {
         let address = claim.address();
         let Some(evidence) = device_census
@@ -1110,29 +1133,129 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
             let _ = writeln!(serial, "Boulder: xHCI claim lost its device evidence");
             halt();
         };
-        let authorization =
-            match device_census.authorize(claim, XHCI_PROBE_DRIVER_ID, AUTHORITY_MMIO) {
-                Ok(authorization) => authorization,
-                Err(error) => {
-                    let _ = writeln!(serial, "Boulder: xHCI live authorization failed: {error:?}");
-                    halt();
-                }
-            };
-        match probe_read_only(
+        let authorization = match device_census.authorize(
+            claim,
+            XHCI_PROBE_DRIVER_ID,
+            AUTHORITY_MMIO | AUTHORITY_CLOCK | AUTHORITY_PCI_CONFIG,
+        ) {
+            Ok(authorization) => authorization,
+            Err(error) => {
+                let _ = writeln!(serial, "Boulder: xHCI live authorization failed: {error:?}");
+                halt();
+            }
+        };
+        match probe_bootstrap(
             authorization,
             evidence,
             &configuration,
             &xhci_mmio,
             xhci_secret,
         ) {
-            Ok(snapshot) => {
-                if let Err(error) = xhci_census.insert(snapshot) {
-                    let _ = writeln!(serial, "Boulder: xHCI snapshot retention failed: {error:?}");
-                    halt();
-                }
-                if let Err(error) = device_census.defer(claim, snapshot.snapshot_root) {
-                    let _ = writeln!(serial, "Boulder: xHCI deferral failed: {error:?}");
-                    halt();
+            Ok(bootstrap) => {
+                match activate_reset_ready(
+                    bootstrap,
+                    &mut deadline_clock,
+                    &xhci_mmio,
+                    &xhci_pci_configuration,
+                    xhci_secret,
+                ) {
+                    Ok(controller) => {
+                        let snapshot = controller.snapshot();
+                        let reset_ready_root = controller.reset_ready_root();
+                        let aperture_bytes = controller.aperture().length();
+                        let legacy = controller.ready().legacy_handoff_performed();
+                        if let Err(error) = xhci_census.insert_reset_ready(controller) {
+                            let _ = writeln!(
+                                serial,
+                                "Boulder: xHCI reset-ready retention failed: {error:?}"
+                            );
+                            halt();
+                        }
+                        if let Err(error) = device_census.defer(claim, reset_ready_root) {
+                            let _ = writeln!(serial, "Boulder: xHCI deferral failed: {error:?}");
+                            halt();
+                        }
+                        let _ = writeln!(
+                            serial,
+                            "Boulder: xHCI reset-ready {:?} bar0-bytes={} legacy-handoff={} halted=true bus-master=false root={:#x}",
+                            snapshot.address, aperture_bytes, legacy, reset_ready_root,
+                        );
+                    }
+                    Err(failure) => {
+                        let snapshot = failure.snapshot();
+                        let phase = failure.phase();
+                        let debt_class = failure.debt_class();
+                        let mutated = failure.mutated();
+                        let _ = writeln!(
+                            serial,
+                            "Boulder: xHCI takeover contained {:?} phase={phase:?} mutated={mutated}: {:?}",
+                            snapshot.address,
+                            failure.error(),
+                        );
+                        let containment_root = if mutated {
+                            let (bootstrap, aperture) = failure.into_parts();
+                            let debt = match XhciMutationDebt::retain(
+                                bootstrap,
+                                aperture,
+                                phase,
+                                debt_class,
+                                xhci_secret,
+                            ) {
+                                Ok(debt) => debt,
+                                Err(error) => {
+                                    let _ = writeln!(
+                                        serial,
+                                        "Boulder: xHCI mutation debt retention failed: {error:?}"
+                                    );
+                                    halt();
+                                }
+                            };
+                            let root = match debt.debt_root(xhci_secret) {
+                                Ok(root) => root,
+                                Err(error) => {
+                                    let _ = writeln!(
+                                        serial,
+                                        "Boulder: xHCI mutation debt audit failed: {error:?}"
+                                    );
+                                    halt();
+                                }
+                            };
+                            if let Err(error) = xhci_census.insert_mutation_debt(debt) {
+                                let _ = writeln!(
+                                    serial,
+                                    "Boulder: xHCI mutation debt census failed: {error:?}"
+                                );
+                                halt();
+                            }
+                            root
+                        } else {
+                            let Some(root) = xhci_activation_containment_root(
+                                xhci_secret,
+                                snapshot,
+                                phase,
+                                debt_class,
+                                false,
+                            ) else {
+                                let _ = writeln!(
+                                    serial,
+                                    "Boulder: xHCI activation containment sealing failed"
+                                );
+                                halt();
+                            };
+                            if let Err(error) = xhci_census.insert(snapshot) {
+                                let _ = writeln!(
+                                    serial,
+                                    "Boulder: xHCI failed snapshot retention failed: {error:?}"
+                                );
+                                halt();
+                            }
+                            root
+                        };
+                        if let Err(error) = device_census.quarantine(claim, containment_root) {
+                            let _ = writeln!(serial, "Boulder: xHCI quarantine failed: {error:?}");
+                            halt();
+                        }
+                    }
                 }
             }
             Err(error) => {
@@ -1167,10 +1290,15 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
     }
     let _ = writeln!(
         serial,
-        "Boulder: xHCI capability census controllers={} ports={} slots={} deferred=true root={:#x}",
+        "Boulder: xHCI capability census controllers={} ports={} slots={} bootstrap-headers={} legacy-capable={} reset-ready={} aperture-bytes={} debt={} deferred=true root={:#x}",
         xhci_summary.controllers,
         xhci_summary.total_ports,
         xhci_summary.total_slots,
+        xhci_summary.bootstrap_headers,
+        xhci_summary.legacy_capable_controllers,
+        xhci_summary.reset_ready_controllers,
+        xhci_summary.measured_aperture_bytes,
+        xhci_summary.mutation_debts,
         xhci_summary.root,
     );
     let mut blacklab_complex =
@@ -1273,10 +1401,14 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
         };
         match boot_xhci_snapshot(address) {
             Some(snapshot)
-                if record.state == DeviceState::Deferred
-                    && record.driver_id == XHCI_PROBE_DRIVER_ID
-                    && record.authority & AUTHORITY_MMIO != 0
-                    && record.terminal_root == snapshot.snapshot_root
+                if matches!(
+                    record.state,
+                    DeviceState::Deferred | DeviceState::Quarantined
+                ) && record.driver_id == XHCI_PROBE_DRIVER_ID
+                    && record.authority
+                        & (AUTHORITY_MMIO | AUTHORITY_CLOCK | AUTHORITY_PCI_CONFIG)
+                        == (AUTHORITY_MMIO | AUTHORITY_CLOCK | AUTHORITY_PCI_CONFIG)
+                    && boot_xhci_terminal_root(address) == Some(record.terminal_root)
                     && record.evidence.evidence_root == snapshot.evidence_root
                     && snapshot.binding_root != 0 =>
             {
@@ -1366,12 +1498,13 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
         halt();
     }
 
-    // SAFETY: Interrupts remain disabled and PIT channel 2 has not been
-    // assigned to another subsystem during early boot.
-    let timer = match unsafe { interrupts::initialize_local_apic_timer(10) } {
+    let timer = match deadline_clock.start_periodic(interrupts::APIC_TIMER_VECTOR, 10) {
         Ok(timer) => timer,
-        Err(error) => {
-            let _ = writeln!(serial, "Boulder: local APIC timer failed: {error:?}");
+        Err((error, _deadline_clock)) => {
+            let _ = writeln!(
+                serial,
+                "Boulder: local APIC periodic transition failed: {error:?}"
+            );
             halt();
         }
     };

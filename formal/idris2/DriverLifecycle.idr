@@ -1,6 +1,9 @@
 module DriverLifecycle
 
 import Decidable.Equality
+import Data.Nat
+
+%hide Data.Nat.NonZero
 
 %default total
 
@@ -306,3 +309,345 @@ fallbackDecision CleanupPending = False
 public export
 sampleBinding : MatchDecision 42
 sampleBinding = verifyMatch 42 (MkRawMatch 42 9 True 787248 787248)
+
+-- xHCI initialization is a separate, geometry-indexed protocol.  Read-only
+-- capability observation establishes the offsets which the later BAR
+-- measurement must bound.  Once firmware ownership or controller state has
+-- been changed, failures become mutation debt and can only be contained.
+
+public export
+data XhciPhase
+  = XhciClaimed
+  | XhciCapabilityProvisional
+  | XhciFirmwareResolved
+  | XhciHalted
+  | XhciApertureMeasured
+  | XhciResetReady
+  | XhciOperationalDeferred
+  | XhciMutationDebt
+  | XhciQuarantined
+
+public export
+record RawXhciAuthorization where
+  constructor MkRawXhciAuthorization
+  authorizedDevice : Nat
+  authorizedGeneration : Nat
+  censusRoot : Nat
+  authorizationRoot : Nat
+  authorizationLive : Bool
+
+public export
+record LiveXhciAuthorization (device : Nat) (generation : Nat) where
+  constructor MkLiveXhciAuthorization
+  authorizedDevice : Nat
+  authorizedGeneration : Nat
+  censusRoot : Nat
+  authorizationRoot : Nat
+  deviceAgreement : device = authorizedDevice
+  generationAgreement : generation = authorizedGeneration
+  liveCensusRoot : NonZero censusRoot
+  liveAuthorizationRoot : NonZero authorizationRoot
+  livenessProof : IsTrue True
+
+public export
+data XhciAuthorizationFault
+  = XhciDeviceMismatch
+  | XhciGenerationMismatch
+  | XhciCensusRootMissing
+  | XhciAuthorizationRootMissing
+  | XhciAuthorizationExpired
+
+public export
+data XhciAuthorizationDecision : Nat -> Nat -> Type where
+  XhciAuthorizationRejected :
+    XhciAuthorizationFault ->
+    XhciAuthorizationDecision device generation
+  XhciAuthorizationAccepted :
+    LiveXhciAuthorization device generation ->
+    XhciAuthorizationDecision device generation
+
+verifyLiveXhciRoots :
+  (device : Nat) ->
+  (generation : Nat) ->
+  (censusRoot : Nat) ->
+  (authorizationRoot : Nat) ->
+  (live : Bool) ->
+  XhciAuthorizationDecision device generation
+verifyLiveXhciRoots device generation Z authorizationRoot live =
+  XhciAuthorizationRejected XhciCensusRootMissing
+verifyLiveXhciRoots device generation (S censusRoot) Z live =
+  XhciAuthorizationRejected XhciAuthorizationRootMissing
+verifyLiveXhciRoots device generation (S censusRoot) (S authorizationRoot) False =
+  XhciAuthorizationRejected XhciAuthorizationExpired
+verifyLiveXhciRoots device generation (S censusRoot) (S authorizationRoot) True =
+  XhciAuthorizationAccepted
+    (MkLiveXhciAuthorization
+      device
+      generation
+      (S censusRoot)
+      (S authorizationRoot)
+      Refl
+      Refl
+      IsSuccessor
+      IsSuccessor
+      Proven)
+
+public export
+verifyLiveXhciAuthorization :
+  (device : Nat) ->
+  (generation : Nat) ->
+  RawXhciAuthorization ->
+  XhciAuthorizationDecision device generation
+verifyLiveXhciAuthorization device generation
+  (MkRawXhciAuthorization authorizedDevice authorizedGeneration
+    censusRoot authorizationRoot live) =
+    case decEq device authorizedDevice of
+      No mismatch => XhciAuthorizationRejected XhciDeviceMismatch
+      Yes Refl =>
+        case decEq generation authorizedGeneration of
+          No mismatch => XhciAuthorizationRejected XhciGenerationMismatch
+          Yes Refl =>
+            verifyLiveXhciRoots
+              device generation censusRoot authorizationRoot live
+
+public export
+record XhciGeometry where
+  constructor MkXhciGeometry
+  capabilityEnd : Nat
+  operationalEnd : Nat
+  runtimeEnd : Nat
+  doorbellEnd : Nat
+
+public export
+record ProvisionalCapabilityReceipt
+  (device : Nat)
+  (generation : Nat)
+  (geometry : XhciGeometry) where
+    constructor MkProvisionalCapabilityReceipt
+    capabilityRoot : Nat
+    liveCapabilityRoot : NonZero capabilityRoot
+    capabilityWindowPresent : NonZero (capabilityEnd geometry)
+    operationalWindowPresent : NonZero (operationalEnd geometry)
+    runtimeWindowPresent : NonZero (runtimeEnd geometry)
+    doorbellWindowPresent : NonZero (doorbellEnd geometry)
+
+public export
+data FirmwareResolutionReceipt : Nat -> Nat -> Type where
+  FirmwareOwnershipReceipt :
+    (legacyOffset : Nat) ->
+    NonZero legacyOffset ->
+    (ownershipRoot : Nat) ->
+    NonZero ownershipRoot ->
+    FirmwareResolutionReceipt device generation
+  NoLegacyCapabilityReceipt :
+    (capabilityChainRoot : Nat) ->
+    NonZero capabilityChainRoot ->
+    FirmwareResolutionReceipt device generation
+
+public export
+record HaltReceipt (device : Nat) (generation : Nat) where
+  constructor MkHaltReceipt
+  haltRoot : Nat
+  liveHaltRoot : NonZero haltRoot
+  haltedProof : IsTrue True
+
+public export
+record MeasuredApertureReceipt
+  (device : Nat)
+  (generation : Nat)
+  (geometry : XhciGeometry) where
+    constructor MkMeasuredApertureReceipt
+    apertureBase : Nat
+    apertureBytes : Nat
+    measurementRoot : Nat
+    liveApertureBase : NonZero apertureBase
+    liveAperture : NonZero apertureBytes
+    liveMeasurementRoot : NonZero measurementRoot
+    capabilityWithinAperture : LTE (capabilityEnd geometry) apertureBytes
+    operationalWithinAperture : LTE (operationalEnd geometry) apertureBytes
+    runtimeWithinAperture : LTE (runtimeEnd geometry) apertureBytes
+    doorbellWithinAperture : LTE (doorbellEnd geometry) apertureBytes
+
+public export
+record ResetReadyReceipt (device : Nat) (generation : Nat) where
+  constructor MkResetReadyReceipt
+  resetRoot : Nat
+  liveResetRoot : NonZero resetRoot
+  controllerNotReadyCleared : IsTrue True
+  controllerRemainsHalted : IsTrue True
+
+public export
+data XhciOperationalPrerequisite
+  = DcbaaAllocationRequired
+  | CommandRingRequired
+  | EventRingRequired
+  | InterruptRouteRequired
+  | ProtocolPortRoutingRequired
+
+public export
+record DeferredOperationalReceipt (device : Nat) (generation : Nat) where
+  constructor MkDeferredOperationalReceipt
+  missingPrerequisite : XhciOperationalPrerequisite
+  deferralRoot : Nat
+  liveDeferralRoot : NonZero deferralRoot
+
+public export
+data XhciMutationFault : XhciPhase -> Type where
+  FirmwareOwnershipTimedOut :
+    XhciMutationFault XhciCapabilityProvisional
+  HaltTimedOut :
+    XhciMutationFault XhciFirmwareResolved
+  ApertureMeasurementFailed :
+    XhciMutationFault XhciHalted
+  ControllerResetTimedOut :
+    XhciMutationFault XhciApertureMeasured
+
+public export
+record XhciDebtReceipt
+  (device : Nat)
+  (generation : Nat)
+  (failedPhase : XhciPhase) where
+    constructor MkXhciDebtReceipt
+    debtRoot : Nat
+    liveDebtRoot : NonZero debtRoot
+    debtFault : XhciMutationFault failedPhase
+
+public export
+record XhciQuarantineReceipt (device : Nat) (generation : Nat) where
+  constructor MkXhciQuarantineReceipt
+  quarantineRoot : Nat
+  liveQuarantineRoot : NonZero quarantineRoot
+
+public export
+data XhciController :
+  XhciPhase -> Nat -> Nat -> Maybe XhciGeometry -> Type where
+  ClaimedXhci :
+    MatchCertificate device ->
+    LiveXhciAuthorization device generation ->
+    XhciController XhciClaimed device generation Nothing
+  ProvisionalXhci :
+    XhciController XhciClaimed device generation Nothing ->
+    ProvisionalCapabilityReceipt device generation geometry ->
+    XhciController
+      XhciCapabilityProvisional device generation (Just geometry)
+  FirmwareResolvedXhci :
+    XhciController
+      XhciCapabilityProvisional device generation (Just geometry) ->
+    FirmwareResolutionReceipt device generation ->
+    XhciController XhciFirmwareResolved device generation (Just geometry)
+  HaltedXhci :
+    XhciController XhciFirmwareResolved device generation (Just geometry) ->
+    HaltReceipt device generation ->
+    XhciController XhciHalted device generation (Just geometry)
+  ApertureMeasuredXhci :
+    XhciController XhciHalted device generation (Just geometry) ->
+    MeasuredApertureReceipt device generation geometry ->
+    XhciController XhciApertureMeasured device generation (Just geometry)
+  ResetReadyXhci :
+    XhciController XhciApertureMeasured device generation (Just geometry) ->
+    ResetReadyReceipt device generation ->
+    XhciController XhciResetReady device generation (Just geometry)
+  OperationalDeferredXhci :
+    XhciController XhciResetReady device generation (Just geometry) ->
+    DeferredOperationalReceipt device generation ->
+    XhciController XhciOperationalDeferred device generation (Just geometry)
+  MutationDebtXhci :
+    XhciController failedPhase device generation (Just geometry) ->
+    XhciDebtReceipt device generation failedPhase ->
+    XhciController XhciMutationDebt device generation (Just geometry)
+  QuarantinedXhci :
+    XhciController XhciMutationDebt device generation (Just geometry) ->
+    XhciQuarantineReceipt device generation ->
+    XhciController XhciQuarantined device generation (Just geometry)
+
+public export
+claimXhci :
+  MatchCertificate device ->
+  LiveXhciAuthorization device generation ->
+  XhciController XhciClaimed device generation Nothing
+claimXhci = ClaimedXhci
+
+public export
+observeProvisionalCapability :
+  XhciController XhciClaimed device generation Nothing ->
+  ProvisionalCapabilityReceipt device generation geometry ->
+  XhciController
+    XhciCapabilityProvisional device generation (Just geometry)
+observeProvisionalCapability = ProvisionalXhci
+
+public export
+resolveXhciFirmware :
+  XhciController
+    XhciCapabilityProvisional device generation (Just geometry) ->
+  FirmwareResolutionReceipt device generation ->
+  XhciController XhciFirmwareResolved device generation (Just geometry)
+resolveXhciFirmware = FirmwareResolvedXhci
+
+public export
+recordXhciHalted :
+  XhciController XhciFirmwareResolved device generation (Just geometry) ->
+  HaltReceipt device generation ->
+  XhciController XhciHalted device generation (Just geometry)
+recordXhciHalted = HaltedXhci
+
+public export
+measureXhciAperture :
+  XhciController XhciHalted device generation (Just geometry) ->
+  MeasuredApertureReceipt device generation geometry ->
+  XhciController XhciApertureMeasured device generation (Just geometry)
+measureXhciAperture = ApertureMeasuredXhci
+
+public export
+recordXhciResetReady :
+  XhciController XhciApertureMeasured device generation (Just geometry) ->
+  ResetReadyReceipt device generation ->
+  XhciController XhciResetReady device generation (Just geometry)
+recordXhciResetReady = ResetReadyXhci
+
+public export
+deferXhciOperational :
+  XhciController XhciResetReady device generation (Just geometry) ->
+  DeferredOperationalReceipt device generation ->
+  XhciController XhciOperationalDeferred device generation (Just geometry)
+deferXhciOperational = OperationalDeferredXhci
+
+public export
+recordXhciMutationDebt :
+  XhciController failedPhase device generation (Just geometry) ->
+  XhciDebtReceipt device generation failedPhase ->
+  XhciController XhciMutationDebt device generation (Just geometry)
+recordXhciMutationDebt = MutationDebtXhci
+
+public export
+quarantineXhciDebt :
+  XhciController XhciMutationDebt device generation (Just geometry) ->
+  XhciQuarantineReceipt device generation ->
+  XhciController XhciQuarantined device generation (Just geometry)
+quarantineXhciDebt = QuarantinedXhci
+
+public export
+data XhciRetryPermission : XhciPhase -> Type where
+  RetryFreshClaim : XhciRetryPermission XhciClaimed
+
+public export
+data XhciReleasePermission : XhciPhase -> Type where
+  ReleaseUnmutatedClaim : XhciReleasePermission XhciClaimed
+  ReleaseReadOnlyObservation :
+    XhciReleasePermission XhciCapabilityProvisional
+
+public export
+xhciDebtCannotRetry : XhciRetryPermission XhciMutationDebt -> Void
+xhciDebtCannotRetry permission impossible
+
+public export
+xhciQuarantineCannotRetry : XhciRetryPermission XhciQuarantined -> Void
+xhciQuarantineCannotRetry permission impossible
+
+public export
+xhciDebtCannotRelease : XhciReleasePermission XhciMutationDebt -> Void
+xhciDebtCannotRelease permission impossible
+
+public export
+xhciQuarantineCannotRelease :
+  XhciReleasePermission XhciQuarantined -> Void
+xhciQuarantineCannotRelease permission impossible
