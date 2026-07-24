@@ -55,15 +55,14 @@ register-programming bridge are covered by focused Rust tests. The Q35 lane
 also freshly re-proves that the routed VT-d unit is disabled, allocates the
 real arena, enables its single-requester domain, maps every present controller
 DMA region (requiring a complete scratchpad pair when scratchpads exist),
-programs and scrubs the halted controller, completes a bounded reset and
-re-observes ready, halted, HSE-free state, then revokes and releases the
-domain, tables, and every frame. It also requires one observed Run-to-Halted
-transition while bus mastering remains disabled. It remains a reversible
-preparation epoch: a persistent DMA domain, a bus-master-owned Run/Stop
-transaction, interrupts, and USB enumeration are still absent. The same lane
-also performs the real PCI bus-master
-enable/readback/revoke transaction, then revalidates and restores the exact
-reset-ready controller before the port census.
+enables PCI bus mastering, and keeps both authorities through one observed
+Run-to-Halted transition. It then scrubs the controller, completes a bounded
+reset, re-observes ready/Halted/HSE-free state, revokes bus mastering, and
+only then revokes and releases the domain, tables, and every frame. This is a
+reversible session-scoped DMA transaction, not a long-lived controller
+driver: interrupter setup, command completion, USB enumeration, and input
+support remain absent. The exact reset-ready controller is restored before
+the port census.
 The translated-DMA backend separately proves the maximum xHCI scratchpad
 profile: 1,029 mapped pages in six spans, including a 1,023-page scratchpad
 buffer span, followed by exact reverse-order revocation and backend shutdown.
@@ -94,8 +93,8 @@ model carries segment-aware identity end to end.
 The dedicated Q35 + Intel IOMMU lane measures QEMU's actual one-unit DMAR
 shape (seven explicit endpoints) and selects its xHCI endpoint through the
 shared-unit policy. It exercises the reversible VT-d enable/map/revoke/release
-epoch above, but remains deferred: it is not a persistent DMA domain, bus
-mastering, Run/Stop, interrupt routing, or USB child enumeration.
+epoch above, but remains deferred as a general driver: it has no long-lived
+DMA domain, interrupt routing, command completion, or USB child enumeration.
 
 ## Required validation on the receiving machine
 

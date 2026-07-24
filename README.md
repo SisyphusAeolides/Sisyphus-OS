@@ -300,26 +300,22 @@ The fixed-capacity DMA arena and cycle-last command/event ring are now real
 Rust machinery with generation-bound storage, self-link/ERST geometry, exact
 completion correlation, and rollback-oriented tests. A consuming runtime seed
 and halted-register programming bridge now retain the PCI/BAR/protocol proof
-chain through DCBAAP/CRCR/CONFIG/ERST/ERDP preparation. The binding remains
-deferred until its live translated-DMA, bus-master/Run-Stop transaction,
-interrupts, and USB child enumeration exist, so the attached QEMU keyboard
-and tablet are not misreported as supported input devices. The Intel-IOMMU
+chain through DCBAAP/CRCR/CONFIG/ERST/ERDP preparation. The Intel-IOMMU
 Q35 lane now freshly proves its routed unit disabled, allocates the real DMA
 arena, enables a single-requester VT-d domain, maps every present controller
-DMA region, programs and scrubs the halted registers, then revokes the
-mappings and releases every domain/table/frame resource. Before that release,
-the controller completes a bounded host-controller reset and is re-observed
-ready, halted, and HSE-free, so a faulted runtime cannot leave stale internal
-DMA state behind the external teardown proof. Scratchpad backing,
+DMA region, enables PCI bus mastering, and retains both authorities across a
+bounded Run-to-Halted session. It scrubs the runtime registers, resets the
+controller, re-observes ready/Halted/HSE-free state, revokes bus mastering,
+then revokes the mappings and releases every domain/table/frame resource.
+Scratchpad backing,
 when required by a controller, is accepted only as a complete pointer-array
 and buffer pair. The bounded VT-d ledger covers the full xHCI maximum of 1,023
 scratchpad buffers as six exact DMA spans without weakening the per-page
 translation or teardown receipts. This is a reversible proof of the complete
-DMA data path. It also performs the exact PCI bus-master
-enable/readback/revoke transaction and restores the retained reset-ready
-controller. The translated epoch also measures a bounded Run-to-Halted state
-transition followed by reset-ready recovery with bus mastering still disabled;
-it does not claim live USB DMA or input support.
+DMA data path. The exact PCI bus-master enable/readback/revoke transaction
+restores the retained reset-ready controller before the port census. No
+interrupter lifecycle, command completion, USB enumeration, or input support
+is claimed yet.
 While still halted and before DMA, Boulder performs a bounded root-port census;
 the QEMU lane currently measures two connected ports without treating them as
 enumerated children.

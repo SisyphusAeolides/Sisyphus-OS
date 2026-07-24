@@ -1230,17 +1230,26 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
                     xhci_secret,
                 ) {
                     Ok(controller) => {
-                        let snapshot = controller.snapshot();
-                        let reset_ready_root = controller.reset_ready_root();
-                        let aperture_bytes = controller.aperture().length();
-                        let legacy = controller.ready().legacy_handoff_performed();
-                        let protocol_count = controller.protocols().protocol_count();
-                        let usb2_ports = controller
+                        // This option is consumed only while a translated,
+                        // bus-master-owned runtime is live. Every successful
+                        // path must restore it from the exact returned BAR
+                        // aperture before port inspection can continue.
+                        let mut controller = Some(controller);
+                        let retained_controller = match controller.as_ref() {
+                            Some(controller) => controller,
+                            None => halt(),
+                        };
+                        let snapshot = retained_controller.snapshot();
+                        let reset_ready_root = retained_controller.reset_ready_root();
+                        let aperture_bytes = retained_controller.aperture().length();
+                        let legacy = retained_controller.ready().legacy_handoff_performed();
+                        let protocol_count = retained_controller.protocols().protocol_count();
+                        let usb2_ports = retained_controller
                             .protocols()
                             .usb2_protocols()
                             .map(|protocol| usize::from(protocol.port_count))
                             .sum::<usize>();
-                        let usb3_ports = controller
+                        let usb3_ports = retained_controller
                             .protocols()
                             .usb3_protocols()
                             .map(|protocol| usize::from(protocol.port_count))
@@ -1298,7 +1307,7 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
                                     "Boulder: xHCI reversible DMA preparation deferred: routed VT-d unit is not proven disabled"
                                 );
                             } else {
-                                let runtime_evidence = match controller
+                                let runtime_evidence = match retained_controller
                                     .runtime_evidence(xhci_secret)
                                 {
                                     Ok(evidence) => evidence,
@@ -1361,17 +1370,20 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
                                     }
                                 };
                                 let arena_root = arena.arena_root();
-                                let mut registers = XhciRegisterTransport::measured(
-                                    controller.aperture(),
-                                    &xhci_mmio,
-                                );
-                                match prepare_halted_from_evidence(
-                                    runtime_evidence,
-                                    controller.aperture().length(),
-                                    &arena,
-                                    &mut registers,
-                                    xhci_secret,
-                                ) {
+                                let prepared = {
+                                    let mut registers = XhciRegisterTransport::measured(
+                                        retained_controller.aperture(),
+                                        &xhci_mmio,
+                                    );
+                                    prepare_halted_from_evidence(
+                                        runtime_evidence,
+                                        retained_controller.aperture().length(),
+                                        &arena,
+                                        &mut registers,
+                                        xhci_secret,
+                                    )
+                                };
+                                match prepared {
                                     Ok(prepared) => {
                                         // SAFETY: The common frame ledger is covered by the
                                         // stable higher-half direct map. The VT-d adapters own
@@ -1519,6 +1531,66 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
                                         let binding_root = binding.root();
                                         let domain_handle = domain.handle();
                                         let runtime_root = prepared.runtime_root();
+                                        let owned_controller = match controller.take() {
+                                            Some(controller) => controller,
+                                            None => {
+                                                let _ = writeln!(
+                                                    serial,
+                                                    "Boulder: xHCI persistent runtime ownership was already consumed"
+                                                );
+                                                halt();
+                                            }
+                                        };
+                                        let seed = match owned_controller
+                                            .into_runtime_seed(xhci_secret)
+                                        {
+                                            Ok(seed) => seed,
+                                            Err(error) => {
+                                                let _ = writeln!(
+                                                    serial,
+                                                    "Boulder: xHCI persistent runtime seed retention failed: {error:?}"
+                                                );
+                                                halt();
+                                            }
+                                        };
+                                        let (seed_evidence, bootstrap, aperture, ready, protocols) =
+                                            seed.into_parts();
+                                        if seed_evidence != runtime_evidence {
+                                            let _ = writeln!(
+                                                serial,
+                                                "Boulder: xHCI persistent runtime evidence diverged before bus-master enable"
+                                            );
+                                            halt();
+                                        }
+                                        let bus_master = match pci::enable_bus_master(
+                                            aperture,
+                                            seed_evidence.expected,
+                                            xhci_dma_authority.reborrow(),
+                                            xhci_pci_configuration.reborrow(),
+                                        ) {
+                                            Ok(lease) => lease,
+                                            Err(pci::BusMasterEnableFailure::Rejected {
+                                                fault,
+                                                ..
+                                            }) => {
+                                                let _ = writeln!(
+                                                    serial,
+                                                    "Boulder: xHCI persistent bus-master enable rejected without mutation: {fault:?}"
+                                                );
+                                                halt();
+                                            }
+                                            Err(pci::BusMasterEnableFailure::Debt(debt)) => {
+                                                let _ = writeln!(
+                                                    serial,
+                                                    "Boulder: xHCI persistent bus-master enablement debt retained: {debt:?}"
+                                                );
+                                                halt();
+                                            }
+                                        };
+                                        let mut registers = XhciRegisterTransport::measured(
+                                            bus_master.aperture(),
+                                            &xhci_mmio,
+                                        );
                                         let halted_runtime = match prepared
                                             .start_session(&mut registers, 1_000_000)
                                         {
@@ -1574,12 +1646,50 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
                                         let reset_receipt = reset_recovered_runtime.reset_receipt();
                                         let _ = writeln!(
                                             serial,
-                                            "Boulder: xHCI reversible Run/Stop/reset epoch started/halted/reset-ready start-polls={} halt-polls={} reset-polls={} ready-polls={} root={:#x}",
+                                            "Boulder: xHCI persistent VT-d/bus-master Run/Stop/reset epoch started/halted/reset-ready start-polls={} halt-polls={} reset-polls={} ready-polls={} root={:#x}",
                                             run_stop.start_polls,
                                             run_stop.halt_polls,
                                             reset_receipt.reset_polls,
                                             reset_receipt.ready_polls,
                                             reset_receipt.root,
+                                        );
+                                        drop(registers);
+                                        let returned_aperture = match pci::revoke_bus_master(
+                                            bus_master,
+                                            xhci_dma_authority.reborrow(),
+                                            xhci_pci_configuration.reborrow(),
+                                        ) {
+                                            Ok(aperture) => aperture,
+                                            Err(debt) => {
+                                                let _ = writeln!(
+                                                    serial,
+                                                    "Boulder: xHCI persistent bus-master revocation debt retained: {debt:?}"
+                                                );
+                                                halt();
+                                            }
+                                        };
+                                        controller = Some(
+                                            match XhciResetReadyController::restore_runtime_parts(
+                                                seed_evidence,
+                                                bootstrap,
+                                                returned_aperture,
+                                                ready,
+                                                protocols,
+                                                xhci_secret,
+                                            ) {
+                                                Ok(controller) => controller,
+                                                Err(error) => {
+                                                    let _ = writeln!(
+                                                        serial,
+                                                        "Boulder: xHCI persistent runtime restoration failed: {error:?}"
+                                                    );
+                                                    halt();
+                                                }
+                                            },
+                                        );
+                                        let _ = writeln!(
+                                            serial,
+                                            "Boulder: xHCI persistent bus-master epoch enabled/readback/runtime/revoked/restored bus-master=false"
                                         );
                                         if let Err(debt) = binding.revoke(&mut domain) {
                                             let _ = writeln!(
@@ -1687,78 +1797,15 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
                                 }
                             }
                         }
-                        let controller = if vtd_scope.is_some() {
-                            let seed = match controller.into_runtime_seed(xhci_secret) {
-                                Ok(seed) => seed,
-                                Err(error) => {
-                                    let _ = writeln!(
-                                        serial,
-                                        "Boulder: xHCI bus-master epoch seed retention failed: {error:?}"
-                                    );
-                                    halt();
-                                }
-                            };
-                            let (evidence, bootstrap, aperture, ready, protocols) =
-                                seed.into_parts();
-                            let returned_aperture = match pci::enable_bus_master(
-                                aperture,
-                                evidence.expected,
-                                xhci_dma_authority.reborrow(),
-                                xhci_pci_configuration.reborrow(),
-                            ) {
-                                Ok(lease) => match pci::revoke_bus_master(
-                                    lease,
-                                    xhci_dma_authority.reborrow(),
-                                    xhci_pci_configuration.reborrow(),
-                                ) {
-                                    Ok(aperture) => aperture,
-                                    Err(debt) => {
-                                        let _ = writeln!(
-                                            serial,
-                                            "Boulder: xHCI bus-master revocation debt retained: {debt:?}"
-                                        );
-                                        halt();
-                                    }
-                                },
-                                Err(pci::BusMasterEnableFailure::Rejected { fault, aperture }) => {
-                                    let _ = writeln!(
-                                        serial,
-                                        "Boulder: xHCI bus-master epoch rejected without mutation: {fault:?}"
-                                    );
-                                    aperture
-                                }
-                                Err(pci::BusMasterEnableFailure::Debt(debt)) => {
-                                    let _ = writeln!(
-                                        serial,
-                                        "Boulder: xHCI bus-master enablement debt retained: {debt:?}"
-                                    );
-                                    halt();
-                                }
-                            };
-                            let controller = match XhciResetReadyController::restore_runtime_parts(
-                                evidence,
-                                bootstrap,
-                                returned_aperture,
-                                ready,
-                                protocols,
-                                xhci_secret,
-                            ) {
-                                Ok(controller) => controller,
-                                Err(error) => {
-                                    let _ = writeln!(
-                                        serial,
-                                        "Boulder: xHCI bus-master epoch restoration failed: {error:?}"
-                                    );
-                                    halt();
-                                }
-                            };
-                            let _ = writeln!(
-                                serial,
-                                "Boulder: xHCI bus-master epoch enabled/readback/revoked/restored bus-master=false"
-                            );
-                            controller
-                        } else {
-                            controller
+                        let controller = match controller {
+                            Some(controller) => controller,
+                            None => {
+                                let _ = writeln!(
+                                    serial,
+                                    "Boulder: xHCI controller ownership was not restored after runtime"
+                                );
+                                halt();
+                            }
                         };
                         let port_survey = {
                             let mut registers =
