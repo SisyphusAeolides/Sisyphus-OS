@@ -155,6 +155,41 @@ impl DispatchContext {
     }
 }
 
+/// A lifecycle-issued authority to cross the final kernel-to-user boundary.
+///
+/// The process identity and scheduler epoch are deliberately adjacent to the
+/// machine context. Assembly passes this object back to Rust immediately
+/// before switching TSS RSP0 and CR3, so a recycled PID or superseded
+/// scheduling decision cannot authorize a return.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(C, align(16))]
+pub struct AuthorizedUserReturn {
+    pub dispatch: DispatchContext,
+    pub pid: u32,
+    pub generation: u32,
+    pub scheduler_epoch: u64,
+}
+
+impl AuthorizedUserReturn {
+    pub const EMPTY: Self = Self {
+        dispatch: DispatchContext {
+            user: SavedUserContext::EMPTY,
+            address_space_root: 0,
+            kernel_stack_pointer: 0,
+        },
+        pid: 0,
+        generation: 0,
+        scheduler_epoch: 0,
+    };
+
+    pub const fn validate(self) -> Result<(), ContextError> {
+        if self.pid == 0 || self.generation == 0 || self.scheduler_epoch == 0 {
+            return Err(ContextError::InvalidDispatchAuthority);
+        }
+        self.dispatch.validate()
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ContextError {
     InvalidInstructionPointer,
@@ -162,6 +197,7 @@ pub enum ContextError {
     InvalidFlags,
     InvalidAddressSpaceRoot,
     InvalidKernelStackPointer,
+    InvalidDispatchAuthority,
 }
 
 pub const fn valid_user_address(address: u64) -> bool {
@@ -186,6 +222,12 @@ const _: () = assert!(core::mem::offset_of!(SavedUserContext, stack_pointer) == 
 const _: () = assert!(core::mem::size_of::<DispatchContext>() == 160);
 const _: () = assert!(core::mem::offset_of!(DispatchContext, address_space_root) == 144);
 const _: () = assert!(core::mem::offset_of!(DispatchContext, kernel_stack_pointer) == 152);
+const _: () = assert!(core::mem::size_of::<AuthorizedUserReturn>() == 176);
+const _: () = assert!(core::mem::align_of::<AuthorizedUserReturn>() == 16);
+const _: () = assert!(core::mem::offset_of!(AuthorizedUserReturn, dispatch) == 0);
+const _: () = assert!(core::mem::offset_of!(AuthorizedUserReturn, pid) == 160);
+const _: () = assert!(core::mem::offset_of!(AuthorizedUserReturn, generation) == 164);
+const _: () = assert!(core::mem::offset_of!(AuthorizedUserReturn, scheduler_epoch) == 168);
 
 #[cfg(test)]
 mod tests {
@@ -253,6 +295,21 @@ mod tests {
             }
             .validate(),
             Err(ContextError::InvalidKernelStackPointer),
+        );
+
+        assert_eq!(
+            AuthorizedUserReturn {
+                dispatch: DispatchContext {
+                    user: valid,
+                    address_space_root: 0x3000,
+                    kernel_stack_pointer: 0xffff_8000_0000_4000,
+                },
+                pid: 0,
+                generation: 1,
+                scheduler_epoch: 1,
+            }
+            .validate(),
+            Err(ContextError::InvalidDispatchAuthority),
         );
     }
 }

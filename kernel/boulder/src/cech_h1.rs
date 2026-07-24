@@ -12,7 +12,6 @@
 //! For OS: a_i = local capability stalk; if pairwise glue data is a
 //! cocycle not a coboundary, no global capability section exists.
 
-
 pub const MAX_OPENS: usize = 16;
 pub const MAX_EDGES: usize = 64;
 

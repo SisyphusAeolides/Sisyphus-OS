@@ -52,8 +52,7 @@ const STATE_INITIALIZING: u8 = 1;
 const STATE_READY: u8 = 2;
 const STATE_FAILED: u8 = 3;
 
-static INITIALIZATION_STATE: AtomicU8 =
-    AtomicU8::new(STATE_UNINITIALIZED);
+static INITIALIZATION_STATE: AtomicU8 = AtomicU8::new(STATE_UNINITIALIZED);
 static CEREBRAL_LEASE_TOKEN: AtomicU64 = AtomicU64::new(0);
 
 static MATRIX: SpinLock<KernelMatrix> = SpinLock::new(KernelMatrix::new(0));
@@ -108,23 +107,14 @@ pub fn initialize(
     let result = initialize_inner(authority);
     match result {
         Ok(token) => {
-            CEREBRAL_LEASE_TOKEN.store(
-                token.raw(),
-                Ordering::Release,
-            );
-            INITIALIZATION_STATE.store(
-                STATE_READY,
-                Ordering::Release,
-            );
+            CEREBRAL_LEASE_TOKEN.store(token.raw(), Ordering::Release);
+            INITIALIZATION_STATE.store(STATE_READY, Ordering::Release);
             Ok(token)
         }
         Err(error) => {
             CEREBRAL_LEASE_TOKEN.store(0, Ordering::Release);
             *THERMAL.lock() = None;
-            INITIALIZATION_STATE.store(
-                STATE_FAILED,
-                Ordering::Release,
-            );
+            INITIALIZATION_STATE.store(STATE_FAILED, Ordering::Release);
             Err(error)
         }
     }
@@ -135,16 +125,12 @@ fn initialize_inner(
 ) -> Result<crate::lease_lattice::LeaseToken, InitializeError> {
     CERTIFICATE_PAGE.initialize();
 
-    let boot_entropy_word =
-        <crate::arch::Active as crate::arch::Architecture>::
-            counter_sample();
+    let boot_entropy_word = <crate::arch::Active as crate::arch::Architecture>::counter_sample();
     let now_tick = boot_entropy_word;
     let lease_secret = boot_entropy_word;
 
     let leases = crate::nexus_gateway::LEASES
-        .initialize(crate::lease_lattice::LeaseLattice::new(
-            lease_secret,
-        ))
+        .initialize(crate::lease_lattice::LeaseLattice::new(lease_secret))
         .map_err(|_| InitializeError::LeaseInitialization)?;
 
     let root = leases
@@ -155,15 +141,12 @@ fn initialize_inner(
             u32::MAX,
             authority,
         )
-        .map_err(|error| {
-            InitializeError::Gateway(GatewayError::Lease(error))
-        })?;
+        .map_err(|error| InitializeError::Gateway(GatewayError::Lease(error)))?;
 
-    let cerebral_rights =
-        crate::lease_lattice::LeaseRights::OBSERVE
-            .union(crate::lease_lattice::LeaseRights::SCHEDULE)
-            .union(crate::lease_lattice::LeaseRights::RESONANCE)
-            .union(crate::lease_lattice::LeaseRights::CONTROL);
+    let cerebral_rights = crate::lease_lattice::LeaseRights::OBSERVE
+        .union(crate::lease_lattice::LeaseRights::SCHEDULE)
+        .union(crate::lease_lattice::LeaseRights::RESONANCE)
+        .union(crate::lease_lattice::LeaseRights::CONTROL);
 
     let cerebral_token = leases
         .attenuate(
@@ -196,8 +179,7 @@ pub fn runtime_state() -> RuntimeState {
     }
 }
 
-pub fn cerebral_lease_token(
-) -> Option<crate::lease_lattice::LeaseToken> {
+pub fn cerebral_lease_token() -> Option<crate::lease_lattice::LeaseToken> {
     if runtime_state() != RuntimeState::Ready {
         return None;
     }

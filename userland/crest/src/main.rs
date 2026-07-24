@@ -7,8 +7,8 @@ use core::panic::PanicInfo;
 #[global_allocator]
 static ALLOC: slope::memory::GlobalSlabHeap = slope::memory::GlobalSlabHeap::new();
 
-use crest::compositor::pipeline::{CompositorPipeline, TILE_SIZE};
 use crest::compositor::Rectangle;
+use crest::compositor::pipeline::{CompositorPipeline, TILE_SIZE};
 use crest::manifold::{DisplayMode, PixelFormat};
 use crest::obsidian::{Fixed, ObsidianShell, SdfInstruction, SdfProgram, SemanticAppNode, Vector3};
 use crest::quantum_frame_oracle::{FrameObservation, QuantumFrameOracle};

@@ -7,7 +7,6 @@
 //! Anharmonic scattering merges near-frequency IRQs (coalesce).
 //! Temperature = mean phonon occupation → storm throttle.
 
-
 pub const LATTICE_SITES: usize = 256; // vector space
 pub const MAX_PHONONS: usize = 64;
 /// 16.16 fixed point

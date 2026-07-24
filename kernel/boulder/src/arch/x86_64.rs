@@ -1,8 +1,13 @@
 use crate::arch::{Architecture, InterruptState};
 
+pub mod cpu_local;
 pub mod privilege;
 
 pub struct X86_64;
+
+pub fn current_hardware_thread_id() -> u32 {
+    <X86_64 as Architecture>::hardware_thread_id()
+}
 
 impl Architecture for X86_64 {
     const NAME: &'static str = "x86_64";

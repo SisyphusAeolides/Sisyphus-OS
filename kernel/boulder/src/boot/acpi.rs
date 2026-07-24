@@ -976,10 +976,11 @@ mod tests {
         assert_eq!(dmar.host_address_width, 48);
         assert_eq!(dmar.flags, 1);
         assert_eq!(dmar.remapping_units().len(), 2);
-        assert!(dmar
-            .explicit_endpoints_for(dmar.remapping_units()[0])
-            .unwrap()
-            .is_empty());
+        assert!(
+            dmar.explicit_endpoints_for(dmar.remapping_units()[0])
+                .unwrap()
+                .is_empty()
+        );
         assert_eq!(
             dmar.explicit_endpoints_for(dmar.remapping_units()[1]),
             Some(

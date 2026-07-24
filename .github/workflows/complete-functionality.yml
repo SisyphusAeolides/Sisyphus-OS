@@ -8,6 +8,23 @@ permissions:
   contents: read
 
 jobs:
+  formal-models:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update
+      - run: sudo apt-get install -y build-essential chezscheme libgmp-dev
+      - uses: actions/cache@v4
+        with:
+          path: target/formal/toolchains
+          key: formal-linux-x86_64-idris2-0.8.0-agda-2.8.0-v1
+      - run: scripts/bootstrap-formal-toolchains.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: formal-attestation
+          path: target/formal/verified.lock
+          if-no-files-found: error
+
   source-and-host:
     runs-on: ubuntu-latest
     steps:
@@ -33,14 +50,19 @@ jobs:
 
   bare-metal:
     runs-on: ubuntu-latest
-    needs: source-and-host
+    needs: [formal-models, source-and-host]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
         with:
+          toolchain: nightly-2026-07-20
           components: rust-src
+      - uses: actions/download-artifact@v4
+        with:
+          name: formal-attestation
+          path: target/formal
       - run: sudo apt-get update
       - run: sudo apt-get install -y qemu-system-x86 grub-pc-bin xorriso mtools
-      - run: cargo +nightly user-push
-      - run: cargo +nightly kernel
+      - run: cargo user-push
+      - run: cargo kernel
       - run: scripts/test-boot.sh

@@ -7,9 +7,9 @@
 use core::ffi::c_void;
 
 use sisyphus_driver_abi::hermes::HermesPciIdentity;
-use sisyphus_driver_abi::{Handle, IrqHandler, Status, STATUS_OK};
+use sisyphus_driver_abi::{Handle, IrqHandler, STATUS_OK, Status};
 
-use super::drivernet::fingerprint::{GpuFingerprint, BAR_64BIT, BAR_IO, BAR_PRESENT};
+use super::drivernet::fingerprint::{BAR_64BIT, BAR_IO, BAR_PRESENT, GpuFingerprint};
 use super::hermes_gsp::{
     DmaPurpose, DmaRegion as HermesDmaRegion, HermesFault, HermesPlatform,
     MmioWindow as HermesMmioWindow,

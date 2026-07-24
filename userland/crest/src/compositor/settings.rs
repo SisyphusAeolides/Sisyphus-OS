@@ -119,10 +119,10 @@ impl Default for KeybindSettings {
             (ShellAction::FocusNext, 15, ALT),              // Alt+Tab
             (ShellAction::FocusPrev, 15, ALT | SHIFT),      // Alt+Shift+Tab
             (ShellAction::CloseApp, 16, ALT),               // Alt+Q
-            (ShellAction::ToggleFullscreen, 33, 0),         // F (no modifier; deterministic default binding)
-            (ShellAction::Screenshot, 99, 0),               // PrintScreen
-            (ShellAction::WorkspaceNext, 78, SUPER),        // Super+Right
-            (ShellAction::WorkspacePrev, 75, SUPER),        // Super+Left
+            (ShellAction::ToggleFullscreen, 33, 0), // F (no modifier; deterministic default binding)
+            (ShellAction::Screenshot, 99, 0),       // PrintScreen
+            (ShellAction::WorkspaceNext, 78, SUPER), // Super+Right
+            (ShellAction::WorkspacePrev, 75, SUPER), // Super+Left
             (ShellAction::VolumeUp, 115, 0),
             (ShellAction::VolumeDown, 114, 0),
             (ShellAction::BrightnessUp, 232, 0),

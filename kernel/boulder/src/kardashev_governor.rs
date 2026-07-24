@@ -16,7 +16,6 @@
 //!   - drivernet strategy demotion under Type 0
 //!   - ghost chronicle civilization events
 
-
 /// 16.16 fixed point
 pub type Fp = u32;
 pub const FP_ONE: Fp = 0x1_0000;

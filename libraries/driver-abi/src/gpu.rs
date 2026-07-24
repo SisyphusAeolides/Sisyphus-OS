@@ -1,7 +1,6 @@
 pub const GPU_PORTABLE_ABI_MAJOR: u32 = 1;
 pub const GPU_PORTABLE_ABI_MINOR: u32 = 0;
-pub const GPU_PORTABLE_ABI_VERSION: u32 =
-    (GPU_PORTABLE_ABI_MAJOR << 16) | GPU_PORTABLE_ABI_MINOR;
+pub const GPU_PORTABLE_ABI_VERSION: u32 = (GPU_PORTABLE_ABI_MAJOR << 16) | GPU_PORTABLE_ABI_MINOR;
 
 pub const GPU_BAR_COUNT: usize = 6;
 
@@ -192,8 +191,7 @@ impl GpuDeviceEvidence {
             return false;
         }
 
-        let firmware_flag =
-            self.topology_flags & GPU_TOPOLOGY_FIRMWARE_SURFACE != 0;
+        let firmware_flag = self.topology_flags & GPU_TOPOLOGY_FIRMWARE_SURFACE != 0;
         if firmware_flag != self.firmware_surface.usable() {
             return false;
         }
@@ -204,17 +202,13 @@ impl GpuDeviceEvidence {
                 if bar.physical_address == 0 || bar.length == 0 {
                     return false;
                 }
-            } else if bar.physical_address != 0
-                || bar.length != 0
-                || bar.flags != 0
-            {
+            } else if bar.physical_address != 0 || bar.length != 0 || bar.flags != 0 {
                 return false;
             }
         }
 
         self.identity.vendor_id != 0
-            && (self.identity.vendor_id != 0xffff
-                || self.firmware_surface.usable())
+            && (self.identity.vendor_id != 0xffff || self.firmware_surface.usable())
     }
 }
 
@@ -282,8 +276,7 @@ impl GpuCompatibilityManifest {
     };
 
     pub const fn valid(self) -> bool {
-        let firmware_mode = self.firmware_policy
-            & (GPU_FIRMWARE_REQUIRED | GPU_FIRMWARE_FORBIDDEN);
+        let firmware_mode = self.firmware_policy & (GPU_FIRMWARE_REQUIRED | GPU_FIRMWARE_FORBIDDEN);
 
         self.abi_version >> 16 == GPU_PORTABLE_ABI_MAJOR
             && self.struct_size as usize >= core::mem::size_of::<Self>()
@@ -292,8 +285,7 @@ impl GpuCompatibilityManifest {
             && self.required_topology & self.forbidden_topology == 0
             && self.required_features & self.optional_features == 0
             && self.required_bar_mask & !0x3f == 0
-            && firmware_mode
-                != (GPU_FIRMWARE_REQUIRED | GPU_FIRMWARE_FORBIDDEN)
+            && firmware_mode != (GPU_FIRMWARE_REQUIRED | GPU_FIRMWARE_FORBIDDEN)
     }
 }
 
@@ -394,8 +386,8 @@ pub fn evaluate_compatibility(
         &mut missing,
     );
 
-    let required_topology = evidence.topology_flags & manifest.required_topology
-        == manifest.required_topology;
+    let required_topology =
+        evidence.topology_flags & manifest.required_topology == manifest.required_topology;
     obligation(
         required_topology,
         GPU_OBLIGATION_TOPOLOGY,
@@ -407,8 +399,7 @@ pub fn evaluate_compatibility(
     }
 
     obligation(
-        evidence.observed_features & manifest.required_features
-            == manifest.required_features,
+        evidence.observed_features & manifest.required_features == manifest.required_features,
         GPU_OBLIGATION_FEATURES,
         &mut satisfied,
         &mut missing,
@@ -419,8 +410,7 @@ pub fn evaluate_compatibility(
         let required = manifest.required_bar_mask & (1 << index) != 0;
         let minimum = manifest.minimum_bar_lengths[index];
         if required
-            && (!evidence.bars[index].usable_mmio()
-                || evidence.bars[index].length < minimum)
+            && (!evidence.bars[index].usable_mmio() || evidence.bars[index].length < minimum)
         {
             bars_match = false;
         }
@@ -478,12 +468,7 @@ pub fn evaluate_compatibility(
     proof
 }
 
-fn obligation(
-    condition: bool,
-    bit: u64,
-    satisfied: &mut u64,
-    missing: &mut u64,
-) {
+fn obligation(condition: bool, bit: u64, satisfied: &mut u64, missing: &mut u64) {
     if condition {
         *satisfied |= bit;
     } else {

@@ -11,7 +11,6 @@
 //!
 //! Output: reduced node count → cheaper tropical_crit / fiedler input.
 
-
 pub const MAX_SPIDERS: usize = 48;
 pub const MAX_WIRES: usize = 96;
 pub const PHASE_MOD: u16 = 360; // degrees; use 2 for GF(2) phases

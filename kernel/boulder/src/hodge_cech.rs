@@ -14,7 +14,6 @@
 //! Heat flow on 0-cochains balances load across the cover.
 //! Harmonic 1-forms (Δ₁ α = 0) are cycle fluxes with no triangular sources.
 
-
 pub const MAX_V: usize = 32;
 pub const MAX_E: usize = 64;
 pub const MAX_F: usize = 48; // 2-simplices (triangles)

@@ -1,8 +1,8 @@
 use core::ffi::c_void;
 use sisyphus_driver_abi::{
-    abi_major, DeviceInfo, DriverDescriptor, DriverEntryFn, KernelApi, Status, ABI_MAJOR,
-    ABI_VERSION, CAP_ALLOC, CAP_CLOCK, CAP_DEVICE_PUBLISH, CAP_DMA, CAP_IRQ, CAP_LOG, CAP_MMIO,
-    CAP_SLEEP, STATUS_OK,
+    ABI_MAJOR, ABI_VERSION, CAP_ALLOC, CAP_CLOCK, CAP_DEVICE_PUBLISH, CAP_DMA, CAP_IRQ, CAP_LOG,
+    CAP_MMIO, CAP_SLEEP, DeviceInfo, DriverDescriptor, DriverEntryFn, KernelApi, STATUS_OK, Status,
+    abi_major,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -210,7 +210,7 @@ mod tests {
     use core::ffi::c_void;
     use core::sync::atomic::{AtomicUsize, Ordering};
     use sisyphus_driver_abi::{
-        DeviceInfo, DriverDescriptor, KernelApi, ABI_VERSION, BUS_PLATFORM, CAP_IRQ, CAP_LOG,
+        ABI_VERSION, BUS_PLATFORM, CAP_IRQ, CAP_LOG, DeviceInfo, DriverDescriptor, KernelApi,
         STATUS_BUSY, STATUS_OK,
     };
 

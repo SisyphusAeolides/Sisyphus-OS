@@ -1,10 +1,13 @@
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 pub mod spectral_router;
 #[cfg(target_os = "none")]
-use crate::arch::x86_64::active_page_table_root;
+use crate::arch::x86_64::{active_page_table_root, cpu_local, current_hardware_thread_id};
 #[cfg(target_os = "none")]
-use crate::mmio::{direct_map_address, EARLY_MAPPED_PHYSICAL_LIMIT};
-use crate::process::context::{ContextError, DispatchContext, SavedUserContext};
+use crate::mmio::{EARLY_MAPPED_PHYSICAL_LIMIT, direct_map_address};
+use crate::process::context::{AuthorizedUserReturn, ContextError};
+use crate::process::lifecycle::ScheduledProcess;
+#[cfg(target_os = "none")]
+use crate::process::{lifecycle::LifecycleError, preemption};
 #[cfg(target_os = "none")]
 use crate::serial::SerialPort;
 
@@ -41,20 +44,21 @@ static LAST_YIELD_HINT: AtomicU64 = AtomicU64::new(0);
 static WRITE_HITS: AtomicUsize = AtomicUsize::new(0);
 static EXIT_REQUESTS: AtomicUsize = AtomicUsize::new(0);
 
-/// The syscall entry frame is the same complete register image retained by
-/// the process lifecycle scheduler.
-pub type SyscallFrame = SavedUserContext;
+/// The syscall entry frame combines the complete user register image with the
+/// generation and epoch authority selected by the lifecycle scheduler.
+pub type SyscallFrame = AuthorizedUserReturn;
 
 /// Replaces a syscall return frame with a lifecycle-selected process. The
 /// caller must activate the returned CR3 and kernel stack before returning to
 /// user mode.
 pub fn install_scheduled_return(
     frame: &mut SyscallFrame,
-    context: DispatchContext,
-) -> Result<DispatchContext, ContextError> {
-    context.validate()?;
-    *frame = context.user;
-    Ok(context)
+    scheduled: ScheduledProcess,
+) -> Result<AuthorizedUserReturn, ContextError> {
+    let authority = scheduled.authorized_return();
+    authority.validate()?;
+    *frame = authority;
+    Ok(authority)
 }
 
 pub fn dispatch(number: usize, arguments: [usize; 6]) -> isize {
@@ -146,39 +150,323 @@ extern "C" fn boulder_syscall_dispatch(frame: *mut SyscallFrame) {
     let Some(frame) = (unsafe { frame.as_mut() }) else {
         crate::arch::x86_64::halt();
     };
-    if frame.validate().is_err() {
+    if validate_active_machine_entry().is_err() {
+        crate::arch::x86_64::halt();
+    }
+    if frame.dispatch.user.validate().is_err() {
         crate::arch::x86_64::halt();
     }
 
-    let number = frame.rax as usize;
-    let arguments = frame.syscall_arguments();
-    let result = match number {
-        grimoire::SYS_WRITE => write_from_user(arguments),
+    let number = frame.dispatch.user.rax as usize;
+    let arguments = frame.dispatch.user.syscall_arguments();
+    let scheduled = match number {
         grimoire::SYS_YIELD => {
             LAST_YIELD_HINT.store(arguments[0], Ordering::Release);
             YIELD_HITS.fetch_add(1, Ordering::AcqRel);
-            0
+            let scheduled = if let Some(ticket) = preemption::take_at_safe_point() {
+                let mut saved = frame.dispatch.user;
+                saved.set_syscall_result(0);
+                match crate::process::lifecycle::schedule_preempt(saved, ticket.authority) {
+                    Ok(scheduled) => {
+                        report_timer_preemption_service(ticket);
+                        Ok(scheduled)
+                    }
+                    Err(LifecycleError::StalePreemptionAuthority) => {
+                        preemption::record_stale();
+                        crate::process::lifecycle::schedule_yield(saved)
+                    }
+                    Err(error) => Err(error),
+                }
+            } else {
+                crate::process::lifecycle::schedule_yield(frame.dispatch.user)
+            };
+            match scheduled {
+                Ok(scheduled) => scheduled,
+                Err(_) => crate::arch::x86_64::halt(),
+            }
         }
         grimoire::SYS_EXIT => {
             EXIT_REQUESTS.fetch_add(1, Ordering::AcqRel);
-            match crate::process::lifecycle::exit_current(arguments[0] as isize) {
-                Ok(()) => 0,
-                Err(_) => ERROR_INVALID_ARGUMENT,
+            preemption::retire_superseded();
+            match crate::process::lifecycle::schedule_exit(arguments[0] as isize) {
+                Ok(crate::process::lifecycle::ScheduleDecision::User(scheduled)) => scheduled,
+                Ok(crate::process::lifecycle::ScheduleDecision::Pid0(mut idle)) => loop {
+                    // SAFETY: SYSCALL entered with interrupts masked and the
+                    // inherited kernel mapping retains this frame. STI's
+                    // one-instruction shadow makes HLT atomic with respect to
+                    // maskable wakeups; CLI restores the serialized return
+                    // boundary before lifecycle state is inspected.
+                    unsafe {
+                        core::arch::asm!("sti", "hlt", "cli", options(nostack));
+                    }
+                    match crate::process::lifecycle::schedule_from_pid0(idle) {
+                        Ok(crate::process::lifecycle::ScheduleDecision::User(scheduled)) => {
+                            break scheduled;
+                        }
+                        Ok(crate::process::lifecycle::ScheduleDecision::Pid0(next)) => idle = next,
+                        Err(_) => crate::arch::x86_64::halt(),
+                    }
+                },
+                Err(_) => {
+                    crate::arch::x86_64::halt();
+                }
             }
         }
-        grimoire::SYS_SPAWN | grimoire::SYS_WAIT => ERROR_NOT_IMPLEMENTED,
-        grimoire::SYS_DISP_QUERY => kairos_query_to_user(arguments),
-        grimoire::SYS_DISP_LEASE => kairos_abi_to_user(arguments),
-        grimoire::SYS_NEXUS_TELEMETRY => nexus_telemetry_to_user(arguments),
-
-        grimoire::SYS_NEXUS_CONTROL => nexus_control_from_user(arguments),
-
-        grimoire::SYS_NEXUS_ENTANGLE | grimoire::SYS_NEXUS_STATS | grimoire::SYS_NEXUS_POLICY => {
-            dispatch_scalar_nexus(number, arguments)
+        _ => {
+            let result = match number {
+                grimoire::SYS_WRITE => write_from_user(arguments),
+                grimoire::SYS_SPAWN | grimoire::SYS_WAIT => ERROR_NOT_IMPLEMENTED,
+                grimoire::SYS_DISP_QUERY => kairos_query_to_user(arguments),
+                grimoire::SYS_DISP_LEASE => kairos_abi_to_user(arguments),
+                grimoire::SYS_NEXUS_TELEMETRY => nexus_telemetry_to_user(arguments),
+                grimoire::SYS_NEXUS_CONTROL => nexus_control_from_user(arguments),
+                grimoire::SYS_NEXUS_ENTANGLE
+                | grimoire::SYS_NEXUS_STATS
+                | grimoire::SYS_NEXUS_POLICY => dispatch_scalar_nexus(number, arguments),
+                _ => ERROR_NOT_IMPLEMENTED,
+            };
+            let mut saved = frame.dispatch.user;
+            saved.set_syscall_result(result);
+            let scheduled = if let Some(ticket) = preemption::take_at_safe_point() {
+                match crate::process::lifecycle::schedule_preempt(saved, ticket.authority) {
+                    Ok(scheduled) => {
+                        report_timer_preemption_service(ticket);
+                        Ok(scheduled)
+                    }
+                    Err(LifecycleError::StalePreemptionAuthority) => {
+                        preemption::record_stale();
+                        crate::process::lifecycle::resume_current(saved)
+                    }
+                    Err(error) => Err(error),
+                }
+            } else {
+                crate::process::lifecycle::resume_current(saved)
+            };
+            match scheduled {
+                Ok(scheduled) => scheduled,
+                Err(_) => crate::arch::x86_64::halt(),
+            }
         }
-        _ => ERROR_NOT_IMPLEMENTED,
     };
-    frame.set_syscall_result(result);
+    // Timer IRQ work is consumed outside interrupt context. One pass keeps
+    // syscall-exit latency bounded while ensuring periodic requests have a
+    // production safe-point caller.
+    let _ = crate::nexus_deferred::run_deferred(1);
+    if install_scheduled_return(frame, scheduled).is_err() {
+        crate::arch::x86_64::halt();
+    }
+}
+
+#[cfg(target_os = "none")]
+fn report_timer_preemption_service(ticket: preemption::PreemptionTicket) {
+    if preemption::record_serviced() {
+        let statistics = preemption::statistics();
+        let mut serial = unsafe { SerialPort::initialize(COM1) };
+        let _ = core::fmt::Write::write_fmt(
+            &mut serial,
+            format_args!(
+                "Boulder: timer preemption safe-point serviced pid={}:{} epoch={} tick={} irq={} published={} coalesced={}\n",
+                ticket.authority.handle.pid,
+                ticket.authority.handle.generation,
+                ticket.authority.scheduler_epoch,
+                ticket.requested_tick,
+                statistics.irq_requests,
+                statistics.published,
+                statistics.coalesced,
+            ),
+        );
+    }
+}
+
+#[cfg(any(target_os = "none", test))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct TaskStateDescriptor {
+    base: u64,
+    limit: u64,
+}
+
+#[cfg(any(target_os = "none", test))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TaskStateDescriptorError {
+    NotSystemSegment,
+    NotTaskStateSegment,
+    NotPresent,
+    Truncated,
+    InvalidBase,
+}
+
+#[cfg(target_os = "none")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MachineDispatchError {
+    TaskState(TaskStateDescriptorError),
+    CpuLocal(cpu_local::CpuLocalError),
+    TaskStateWriteFailed,
+}
+
+/// Decodes an x86-64 16-byte available/active TSS descriptor. Keeping this
+/// transformation pure makes the architecture boundary independently
+/// testable without executing privileged instructions.
+#[cfg(any(target_os = "none", test))]
+fn decode_task_state_descriptor(
+    low: u64,
+    high: u64,
+) -> Result<TaskStateDescriptor, TaskStateDescriptorError> {
+    if low & (1 << 44) != 0 {
+        return Err(TaskStateDescriptorError::NotSystemSegment);
+    }
+    if !matches!((low >> 40) & 0xf, 0x9 | 0xb) {
+        return Err(TaskStateDescriptorError::NotTaskStateSegment);
+    }
+    if low & (1 << 47) == 0 {
+        return Err(TaskStateDescriptorError::NotPresent);
+    }
+
+    let base = ((low >> 16) & 0xffff)
+        | ((low >> 32) & 0xff) << 16
+        | ((low >> 56) & 0xff) << 24
+        | (high & 0xffff_ffff) << 32;
+    let mut limit = (low & 0xffff) | ((low >> 48) & 0xf) << 16;
+    if low & (1 << 55) != 0 {
+        limit = (limit << 12) | 0xfff;
+    }
+    // A 64-bit TSS architecturally occupies 104 bytes. RSP0 lies near the
+    // beginning, but accepting a shorter segment would bless malformed CPU
+    // privilege state.
+    if limit < 103 {
+        return Err(TaskStateDescriptorError::Truncated);
+    }
+    if base < crate::process::context::KERNEL_ADDRESS_MINIMUM {
+        return Err(TaskStateDescriptorError::InvalidBase);
+    }
+    Ok(TaskStateDescriptor { base, limit })
+}
+
+#[cfg(target_os = "none")]
+#[repr(C, packed)]
+struct DescriptorTablePointer {
+    limit: u16,
+    base: u64,
+}
+
+#[cfg(target_os = "none")]
+fn active_task_state_descriptor() -> Result<TaskStateDescriptor, TaskStateDescriptorError> {
+    let mut table = DescriptorTablePointer { limit: 0, base: 0 };
+    let selector: u16;
+    // SAFETY: SGDT and STR only snapshot descriptor state already owned by
+    // this CPU. The packed destination has the architectural ten-byte shape.
+    unsafe {
+        core::arch::asm!(
+            "sgdt [{}]",
+            in(reg) core::ptr::addr_of_mut!(table),
+            options(nostack, preserves_flags),
+        );
+        core::arch::asm!(
+            "str {selector:x}",
+            selector = out(reg) selector,
+            options(nomem, nostack, preserves_flags),
+        );
+    }
+    if selector & 0x4 != 0 {
+        return Err(TaskStateDescriptorError::NotTaskStateSegment);
+    }
+    let offset = usize::from(selector & !0x7);
+    if offset
+        .checked_add(15)
+        .is_none_or(|last| last > usize::from(table.limit))
+    {
+        return Err(TaskStateDescriptorError::Truncated);
+    }
+    if table.base < crate::process::context::KERNEL_ADDRESS_MINIMUM {
+        return Err(TaskStateDescriptorError::InvalidBase);
+    }
+
+    let descriptor = table.base as *const u8;
+    // SAFETY: The loaded GDTR bounds check above proves both descriptor words
+    // are inside the active GDT. The GDT is 8-byte aligned and immutable after
+    // bootstrap publication.
+    let low = unsafe { descriptor.add(offset).cast::<u64>().read_volatile() };
+    let high = unsafe { descriptor.add(offset + 8).cast::<u64>().read_volatile() };
+    decode_task_state_descriptor(low, high)
+}
+
+#[cfg(target_os = "none")]
+fn task_state_rsp0(tss: TaskStateDescriptor) -> u64 {
+    // SAFETY: Descriptor validation proves the complete architectural TSS is
+    // present. Per-byte volatile reads preserve packed-field semantics without
+    // imposing alignment Rust cannot derive from an arbitrary TSS descriptor.
+    let mut bytes = [0_u8; 8];
+    for (index, byte) in bytes.iter_mut().enumerate() {
+        // SAFETY: RSP0 occupies bytes 4..12 of every validated 64-bit TSS.
+        *byte = unsafe { (tss.base as *const u8).add(4 + index).read_volatile() };
+    }
+    u64::from_le_bytes(bytes)
+}
+
+#[cfg(target_os = "none")]
+fn write_task_state_rsp0(tss: TaskStateDescriptor, rsp0: u64) {
+    for (index, byte) in rsp0.to_le_bytes().into_iter().enumerate() {
+        // SAFETY: RSP0 occupies bytes 4..12 of every validated 64-bit TSS.
+        // Syscall entry has IF masked, so hardware cannot consume a partial
+        // value before publication and readback complete.
+        unsafe {
+            (tss.base as *mut u8).add(4 + index).write_volatile(byte);
+        }
+    }
+}
+
+#[cfg(target_os = "none")]
+fn validate_active_machine_entry() -> Result<(), MachineDispatchError> {
+    let tss = active_task_state_descriptor().map_err(MachineDispatchError::TaskState)?;
+    cpu_local::validate_machine_entry(current_hardware_thread_id(), tss.base, task_state_rsp0(tss))
+        .map(|_| ())
+        .map_err(MachineDispatchError::CpuLocal)
+}
+
+#[cfg(target_os = "none")]
+fn activate_machine_dispatch(authority: AuthorizedUserReturn) -> Result<(), MachineDispatchError> {
+    let tss = active_task_state_descriptor().map_err(MachineDispatchError::TaskState)?;
+    let current_rsp0 = task_state_rsp0(tss);
+    let stack = authority.dispatch.kernel_stack_pointer;
+    let return_lease =
+        cpu_local::prepare_return(current_hardware_thread_id(), tss.base, current_rsp0, stack)
+            .map_err(MachineDispatchError::CpuLocal)?;
+    // SAFETY: The lifecycle authority was revalidated immediately before this
+    // call. CPU-local preparation proved this exact TSS and old RSP0 match the
+    // entry generation. Interrupts remain masked across publication.
+    write_task_state_rsp0(tss, stack);
+    if task_state_rsp0(tss) != stack {
+        return Err(MachineDispatchError::TaskStateWriteFailed);
+    }
+    cpu_local::commit_return(return_lease, tss.base, stack)
+        .map_err(MachineDispatchError::CpuLocal)?;
+    // SAFETY: The lifecycle and CPU-local generations are committed, the new
+    // TSS RSP0 was read back, and the target hierarchy retains this entry
+    // frame through its inherited higher-half kernel mapping.
+    unsafe {
+        core::arch::asm!(
+            "mov cr3, {root}",
+            root = in(reg) authority.dispatch.address_space_root,
+            options(nostack, preserves_flags),
+        );
+    }
+    Ok(())
+}
+
+/// Final generation-safe architecture activation called from the assembly
+/// return gate. Any stale, malformed, or superseded authority halts rather
+/// than returning through attacker-selected registers or address-space state.
+#[cfg(target_os = "none")]
+#[unsafe(no_mangle)]
+extern "C" fn boulder_syscall_activate(frame: *const SyscallFrame) {
+    let Some(authority) = (unsafe { frame.as_ref() }).copied() else {
+        crate::arch::x86_64::halt();
+    };
+    let Ok(scheduled) = crate::process::lifecycle::authorize_user_return(authority) else {
+        crate::arch::x86_64::halt();
+    };
+    if scheduled.authorized_return() != authority || activate_machine_dispatch(authority).is_err() {
+        crate::arch::x86_64::halt();
+    }
 }
 
 #[cfg(any(target_os = "none", test))]
@@ -509,25 +797,77 @@ fn nexus_telemetry_to_user(arguments: [u64; 6]) -> isize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::process::context::{DispatchContext, SavedUserContext};
+    use crate::process::lifecycle::ProcessHandle;
 
     #[test]
     fn scheduled_context_overwrites_the_complete_syscall_return_frame() {
-        let mut frame = SavedUserContext::initial(0x2000, 0x8000);
-        frame.r15 = 1;
-        frame.rbx = 2;
-        frame.rax = grimoire::SYS_YIELD as u64;
+        let mut frame = AuthorizedUserReturn::EMPTY;
+        frame.dispatch.user = SavedUserContext::initial(0x2000, 0x8000);
+        frame.dispatch.user.r15 = 1;
+        frame.dispatch.user.rbx = 2;
+        frame.dispatch.user.rax = grimoire::SYS_YIELD as u64;
 
         let mut next_user = SavedUserContext::initial(0x3000, 0x9000);
         next_user.r15 = 0x15;
         next_user.rbx = 0xb;
-        let next = DispatchContext {
-            user: next_user,
-            address_space_root: 0x4000,
-            kernel_stack_pointer: 0xffff_8000_0000_8000,
+        let next = ScheduledProcess {
+            handle: ProcessHandle {
+                pid: 7,
+                generation: 11,
+            },
+            context: DispatchContext {
+                user: next_user,
+                address_space_root: 0x4000,
+                kernel_stack_pointer: 0xffff_8000_0000_8000,
+            },
+            scheduler_epoch: 19,
         };
 
-        assert_eq!(install_scheduled_return(&mut frame, next), Ok(next));
-        assert_eq!(frame, next_user);
+        assert_eq!(
+            install_scheduled_return(&mut frame, next),
+            Ok(next.authorized_return())
+        );
+        assert_eq!(frame, next.authorized_return());
+    }
+
+    fn encoded_tss_descriptor(base: u64, limit: u32, present: bool, kind: u64) -> (u64, u64) {
+        let mut low = u64::from(limit & 0xffff)
+            | (base & 0xffff) << 16
+            | ((base >> 16) & 0xff) << 32
+            | (kind & 0xf) << 40
+            | (u64::from(limit >> 16) & 0xf) << 48
+            | ((base >> 24) & 0xff) << 56;
+        if present {
+            low |= 1 << 47;
+        }
+        (low, base >> 32)
+    }
+
+    #[test]
+    fn task_state_descriptor_decode_rejects_non_tss_privilege_state() {
+        let base = 0xffff_8000_1234_5000;
+        let (low, high) = encoded_tss_descriptor(base, 103, true, 0xb);
+        assert_eq!(
+            decode_task_state_descriptor(low, high),
+            Ok(TaskStateDescriptor { base, limit: 103 })
+        );
+
+        let (not_present, high) = encoded_tss_descriptor(base, 103, false, 0xb);
+        assert_eq!(
+            decode_task_state_descriptor(not_present, high),
+            Err(TaskStateDescriptorError::NotPresent)
+        );
+        let (wrong_kind, high) = encoded_tss_descriptor(base, 103, true, 0x2);
+        assert_eq!(
+            decode_task_state_descriptor(wrong_kind, high),
+            Err(TaskStateDescriptorError::NotTaskStateSegment)
+        );
+        let (truncated, high) = encoded_tss_descriptor(base, 11, true, 0x9);
+        assert_eq!(
+            decode_task_state_descriptor(truncated, high),
+            Err(TaskStateDescriptorError::Truncated)
+        );
     }
 
     fn mapped_entry(physical: u64) -> u64 {

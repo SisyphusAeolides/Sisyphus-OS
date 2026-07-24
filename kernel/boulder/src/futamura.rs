@@ -11,7 +11,6 @@
 //! This is partial evaluation, not JIT codegen: we emit a residual
 //! descriptor the assembly stub interprets in a tight straight-line form.
 
-
 pub const MAX_SYS: usize = 64;
 pub const MAX_RESIDUAL: usize = 48;
 

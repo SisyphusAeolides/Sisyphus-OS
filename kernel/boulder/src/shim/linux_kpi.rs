@@ -3,13 +3,14 @@ use core::mem::{align_of, size_of};
 use core::ptr;
 #[cfg(test)]
 use core::sync::atomic::AtomicUsize;
-use core::sync::atomic::{compiler_fence, AtomicPtr, Ordering};
+use core::sync::atomic::{AtomicPtr, Ordering, compiler_fence};
 
-use sisyphus_driver_abi::{KernelApi, ABI_VERSION, CAP_ALLOC, CAP_LOG, LOG_ERROR, STATUS_OK};
+use sisyphus_driver_abi::{ABI_VERSION, CAP_ALLOC, CAP_LOG, KernelApi, LOG_ERROR, STATUS_OK};
 
 const ALLOCATION_MAGIC: u64 = 0x4b50_4941_4c4c_4f43;
 const MAXIMUM_LOG_MESSAGE: usize = 4096;
 const GFP_ZERO: u32 = 0x100;
+const E2BIG: isize = 7;
 const ZERO_SIZE_ADDRESS: usize = 16;
 const MAXIMUM_QUARANTINED_ALLOCATIONS: usize = 16;
 
@@ -369,10 +370,236 @@ pub unsafe extern "C" fn kfree_sensitive(pointer: *const c_void) {
     let pointer = pointer.cast_mut();
     if let Some((_, metadata)) = allocation_metadata(pointer) {
         let length = metadata.allocation_size - size_of::<AllocationHeader>();
-        unsafe { pointer.write_bytes(0, length) };
-        compiler_fence(Ordering::SeqCst);
+        unsafe { linux_memzero_explicit(pointer, length) };
     }
     unsafe { kfree(pointer) };
+}
+
+/// Copies `length` bytes between non-overlapping kernel buffers.
+///
+/// # Safety
+///
+/// `source` and `destination` must identify readable and writable regions of
+/// at least `length` bytes. The regions must not overlap.
+pub unsafe extern "C" fn linux_memcpy(
+    destination: *mut c_void,
+    source: *const c_void,
+    length: usize,
+) -> *mut c_void {
+    unsafe {
+        ptr::copy_nonoverlapping(source.cast::<u8>(), destination.cast::<u8>(), length);
+    }
+    destination
+}
+
+/// Copies `length` bytes while preserving Linux `memmove` overlap semantics.
+///
+/// # Safety
+///
+/// `source` and `destination` must identify readable and writable regions of
+/// at least `length` bytes.
+pub unsafe extern "C" fn linux_memmove(
+    destination: *mut c_void,
+    source: *const c_void,
+    length: usize,
+) -> *mut c_void {
+    unsafe { ptr::copy(source.cast::<u8>(), destination.cast::<u8>(), length) };
+    destination
+}
+
+/// Fills exactly `length` bytes and returns the original destination.
+///
+/// # Safety
+///
+/// `destination` must identify a writable region of at least `length` bytes.
+pub unsafe extern "C" fn linux_memset(
+    destination: *mut c_void,
+    value: c_int,
+    length: usize,
+) -> *mut c_void {
+    unsafe { destination.cast::<u8>().write_bytes(value as u8, length) };
+    destination
+}
+
+/// Compares byte strings using the unsigned-byte ordering used by Linux.
+///
+/// # Safety
+///
+/// Both pointers must identify readable regions of at least `length` bytes.
+pub unsafe extern "C" fn linux_memcmp(
+    left: *const c_void,
+    right: *const c_void,
+    length: usize,
+) -> c_int {
+    for index in 0..length {
+        let left_byte = unsafe { left.cast::<u8>().add(index).read() };
+        let right_byte = unsafe { right.cast::<u8>().add(index).read() };
+        if left_byte != right_byte {
+            return c_int::from(left_byte) - c_int::from(right_byte);
+        }
+    }
+    0
+}
+
+/// Finds the first byte equal to `value` in a bounded memory region.
+///
+/// # Safety
+///
+/// `source` must identify a readable region of at least `length` bytes.
+pub unsafe extern "C" fn linux_memchr(
+    source: *const c_void,
+    value: c_int,
+    length: usize,
+) -> *mut c_void {
+    let needle = value as u8;
+    for index in 0..length {
+        let candidate = unsafe { source.cast::<u8>().add(index) };
+        if unsafe { candidate.read() } == needle {
+            return candidate.cast_mut().cast();
+        }
+    }
+    ptr::null_mut()
+}
+
+/// Returns the length of a null-terminated kernel string.
+///
+/// # Safety
+///
+/// `string` must identify a readable null-terminated byte string.
+pub unsafe extern "C" fn linux_strlen(string: *const c_char) -> usize {
+    let mut length = 0;
+    while unsafe { string.cast::<u8>().add(length).read() } != 0 {
+        length += 1;
+    }
+    length
+}
+
+/// Returns the length of a kernel string without reading beyond `maximum`.
+///
+/// # Safety
+///
+/// `string` must identify at least `maximum` readable bytes unless a null byte
+/// occurs earlier.
+pub unsafe extern "C" fn linux_strnlen(string: *const c_char, maximum: usize) -> usize {
+    let mut length = 0;
+    while length < maximum && unsafe { string.cast::<u8>().add(length).read() } != 0 {
+        length += 1;
+    }
+    length
+}
+
+/// Compares null-terminated strings using unsigned-byte ordering.
+///
+/// # Safety
+///
+/// Both pointers must identify readable null-terminated byte strings.
+pub unsafe extern "C" fn linux_strcmp(left: *const c_char, right: *const c_char) -> c_int {
+    let mut index = 0;
+    loop {
+        let left_byte = unsafe { left.cast::<u8>().add(index).read() };
+        let right_byte = unsafe { right.cast::<u8>().add(index).read() };
+        if left_byte != right_byte || left_byte == 0 {
+            return c_int::from(left_byte) - c_int::from(right_byte);
+        }
+        index += 1;
+    }
+}
+
+/// Compares at most `maximum` bytes of two null-terminated strings.
+///
+/// # Safety
+///
+/// Both pointers must remain readable until `maximum` bytes have been checked
+/// or a null byte is encountered.
+pub unsafe extern "C" fn linux_strncmp(
+    left: *const c_char,
+    right: *const c_char,
+    maximum: usize,
+) -> c_int {
+    for index in 0..maximum {
+        let left_byte = unsafe { left.cast::<u8>().add(index).read() };
+        let right_byte = unsafe { right.cast::<u8>().add(index).read() };
+        if left_byte != right_byte || left_byte == 0 {
+            return c_int::from(left_byte) - c_int::from(right_byte);
+        }
+    }
+    0
+}
+
+/// Copies a string into a bounded destination using Linux `strscpy` rules.
+/// Returns the copied length or `-E2BIG` after writing a terminating null byte
+/// when the source does not fit.
+///
+/// # Safety
+///
+/// `source` must be readable through its terminating null byte or the first
+/// `capacity` bytes. `destination` must identify `capacity` writable bytes.
+pub unsafe extern "C" fn linux_strscpy(
+    destination: *mut c_char,
+    source: *const c_char,
+    capacity: usize,
+) -> isize {
+    if capacity == 0 {
+        return -E2BIG;
+    }
+    for index in 0..capacity {
+        let byte = unsafe { source.cast::<u8>().add(index).read() };
+        if byte == 0 {
+            unsafe { destination.cast::<u8>().add(index).write(0) };
+            return index as isize;
+        }
+        if index + 1 == capacity {
+            unsafe { destination.cast::<u8>().add(index).write(0) };
+            return -E2BIG;
+        }
+        unsafe { destination.cast::<u8>().add(index).write(byte) };
+    }
+    unreachable!()
+}
+
+/// Clears memory with volatile writes so the operation remains observable to
+/// later code even when the allocation is about to be released.
+///
+/// # Safety
+///
+/// `destination` must identify a writable region of at least `length` bytes.
+pub unsafe extern "C" fn linux_memzero_explicit(destination: *mut c_void, length: usize) {
+    for index in 0..length {
+        unsafe { destination.cast::<u8>().add(index).write_volatile(0) };
+    }
+    compiler_fence(Ordering::SeqCst);
+}
+
+/// Allocates an owned copy of a null-terminated string.
+///
+/// # Safety
+///
+/// A non-null `source` must identify a readable null-terminated byte string.
+pub unsafe extern "C" fn kstrdup(source: *const c_char, flags: u32) -> *mut c_char {
+    if source.is_null() {
+        return ptr::null_mut();
+    }
+    let length = unsafe { linux_strlen(source) };
+    unsafe { kmemdup_nul(source, length, flags) }
+}
+
+/// Allocates an owned null-terminated copy after reading at most `maximum`
+/// source bytes.
+///
+/// # Safety
+///
+/// A non-null `source` must remain readable through the first null byte or
+/// `maximum` bytes.
+pub unsafe extern "C" fn kstrndup(
+    source: *const c_char,
+    maximum: usize,
+    flags: u32,
+) -> *mut c_char {
+    if source.is_null() {
+        return ptr::null_mut();
+    }
+    let length = unsafe { linux_strnlen(source, maximum) };
+    unsafe { kmemdup_nul(source, length, flags) }
 }
 
 /// Emits a literal, null-terminated format string through the kernel logger.
@@ -498,6 +725,10 @@ fn api_supports_subset(api: &KernelApi) -> bool {
 pub(crate) static TEST_INSTALL_LOCK: crate::sync::SpinLock<()> = crate::sync::SpinLock::new(());
 #[cfg(test)]
 static TEST_DEALLOCATE_FAILURES: AtomicUsize = AtomicUsize::new(0);
+#[cfg(test)]
+static TEST_ALLOCATE_FAILURES: AtomicUsize = AtomicUsize::new(0);
+#[cfg(test)]
+static TEST_LIVE_ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
 
 #[cfg(test)]
 unsafe extern "C" fn test_allocate(
@@ -510,6 +741,14 @@ unsafe extern "C" fn test_allocate(
     if out_pointer.is_null() {
         return sisyphus_driver_abi::STATUS_INVALID_ARGUMENT;
     }
+    if TEST_ALLOCATE_FAILURES
+        .try_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
+            remaining.checked_sub(1)
+        })
+        .is_ok()
+    {
+        return sisyphus_driver_abi::STATUS_NO_MEMORY;
+    }
     let Ok(layout) = core::alloc::Layout::from_size_align(size, alignment) else {
         return sisyphus_driver_abi::STATUS_INVALID_ARGUMENT;
     };
@@ -519,6 +758,7 @@ unsafe extern "C" fn test_allocate(
     }
     unsafe { allocation.cast::<u8>().write_bytes(0xa5, size) };
     unsafe { out_pointer.write(allocation) };
+    TEST_LIVE_ALLOCATIONS.fetch_add(1, Ordering::AcqRel);
     STATUS_OK
 }
 
@@ -544,6 +784,8 @@ unsafe extern "C" fn test_deallocate(
         return sisyphus_driver_abi::STATUS_INVALID_ARGUMENT;
     }
     unsafe { alloc::alloc::dealloc(pointer.cast::<u8>(), layout) };
+    let previous = TEST_LIVE_ALLOCATIONS.fetch_sub(1, Ordering::AcqRel);
+    assert_ne!(previous, 0, "test allocator live-count underflow");
     STATUS_OK
 }
 
@@ -702,6 +944,110 @@ mod tests {
             kfree(grown);
             kfree(string.cast());
         }
+    }
+
+    #[test]
+    fn linux_byte_and_string_substrate_matches_kernel_observables() {
+        let source = [0_u8, 1, 2, 0xfe, 4, 5];
+        let mut copied = [0xa5_u8; 6];
+        let returned = unsafe {
+            linux_memcpy(
+                copied.as_mut_ptr().cast(),
+                source.as_ptr().cast(),
+                source.len(),
+            )
+        };
+        assert_eq!(returned, copied.as_mut_ptr().cast());
+        assert_eq!(copied, source);
+        assert_eq!(
+            unsafe { linux_memcmp(copied.as_ptr().cast(), source.as_ptr().cast(), source.len()) },
+            0
+        );
+        assert_eq!(
+            unsafe { linux_memcmp([0xff_u8].as_ptr().cast(), [1_u8].as_ptr().cast(), 1,) },
+            254
+        );
+        assert_eq!(
+            unsafe { linux_memchr(copied.as_ptr().cast(), 0xfe, copied.len()) }.addr(),
+            copied.as_ptr().addr() + 3
+        );
+        assert!(unsafe { linux_memchr(copied.as_ptr().cast(), 9, copied.len()) }.is_null());
+
+        let mut overlap = [0_u8, 1, 2, 3, 4, 5, 6, 7];
+        unsafe {
+            linux_memmove(
+                overlap.as_mut_ptr().add(2).cast(),
+                overlap.as_ptr().cast(),
+                6,
+            )
+        };
+        assert_eq!(overlap, [0, 1, 0, 1, 2, 3, 4, 5]);
+        unsafe { linux_memset(overlap.as_mut_ptr().cast(), 0x1a5, overlap.len()) };
+        assert_eq!(overlap, [0xa5; 8]);
+
+        assert_eq!(unsafe { linux_strlen(c"quantum".as_ptr()) }, 7);
+        assert_eq!(unsafe { linux_strnlen(c"quantum".as_ptr(), 4) }, 4);
+        assert_eq!(unsafe { linux_strnlen(c"quantum".as_ptr(), 12) }, 7);
+        assert_eq!(unsafe { linux_strcmp(c"ion".as_ptr(), c"ion".as_ptr()) }, 0);
+        assert!(unsafe { linux_strcmp(c"ion".as_ptr(), c"iron".as_ptr()) } < 0);
+        assert_eq!(
+            unsafe { linux_strncmp(c"driver-a".as_ptr(), c"driver-b".as_ptr(), 7) },
+            0
+        );
+        assert!(unsafe { linux_strncmp(c"driver-a".as_ptr(), c"driver-b".as_ptr(), 8) } < 0);
+
+        let mut exact = [0x55_i8; 8];
+        assert_eq!(
+            unsafe { linux_strscpy(exact.as_mut_ptr(), c"boulder".as_ptr(), exact.len()) },
+            7
+        );
+        assert_eq!(exact.map(|byte| byte as u8), *b"boulder\0");
+        let mut truncated = [0x55_i8; 4];
+        assert_eq!(
+            unsafe { linux_strscpy(truncated.as_mut_ptr(), c"boulder".as_ptr(), truncated.len(),) },
+            -E2BIG
+        );
+        assert_eq!(truncated.map(|byte| byte as u8), *b"bou\0");
+        let untouched = truncated;
+        assert_eq!(
+            unsafe { linux_strscpy(truncated.as_mut_ptr(), c"ignored".as_ptr(), 0) },
+            -E2BIG
+        );
+        assert_eq!(truncated, untouched);
+
+        let mut secret = [0x7b_u8; 32];
+        unsafe { linux_memzero_explicit(secret.as_mut_ptr().cast(), secret.len()) };
+        assert_eq!(secret, [0; 32]);
+    }
+
+    #[test]
+    fn owned_string_allocation_failure_rolls_back_without_a_live_object() {
+        let _lock = TEST_INSTALL_LOCK.lock();
+        let _ = unsafe { uninstall() };
+        TEST_ALLOCATE_FAILURES.store(0, Ordering::Release);
+        TEST_DEALLOCATE_FAILURES.store(0, Ordering::Release);
+        assert_eq!(TEST_LIVE_ALLOCATIONS.load(Ordering::Acquire), 0);
+        assert_eq!(unsafe { install(&TEST_KERNEL_API) }, Ok(()));
+        let _installed = InstalledApi;
+
+        assert!(unsafe { kstrdup(ptr::null(), 0) }.is_null());
+        assert!(unsafe { kstrndup(ptr::null(), 9, 0) }.is_null());
+        TEST_ALLOCATE_FAILURES.store(1, Ordering::Release);
+        assert!(unsafe { kstrdup(c"rollback".as_ptr(), 0) }.is_null());
+        assert_eq!(TEST_LIVE_ALLOCATIONS.load(Ordering::Acquire), 0);
+
+        let complete = unsafe { kstrdup(c"hermes".as_ptr(), 0) };
+        let bounded = unsafe { kstrndup(c"singularity".as_ptr(), 4, 0) };
+        assert!(!complete.is_null());
+        assert!(!bounded.is_null());
+        assert_eq!(unsafe { linux_strcmp(complete, c"hermes".as_ptr()) }, 0);
+        assert_eq!(unsafe { linux_strcmp(bounded, c"sing".as_ptr()) }, 0);
+        assert_eq!(TEST_LIVE_ALLOCATIONS.load(Ordering::Acquire), 2);
+        unsafe {
+            kfree(complete.cast());
+            kfree(bounded.cast());
+        }
+        assert_eq!(TEST_LIVE_ALLOCATIONS.load(Ordering::Acquire), 0);
     }
 
     #[test]

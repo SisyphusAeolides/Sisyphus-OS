@@ -2,18 +2,17 @@ use sisyphus_driver_abi::gpu::{
     GPU_BAR_64BIT, GPU_BAR_COUNT, GPU_BAR_IO, GPU_BAR_PREFETCHABLE, GPU_BAR_PRESENT,
     GPU_FIRMWARE_PRESERVE_BOOT_SURFACE, GPU_FIRMWARE_REQUIRED, GPU_PORTABLE_ABI_VERSION,
     GPU_TOPOLOGY_BOOT_DISPLAY, GPU_TOPOLOGY_FIRMWARE_SURFACE, GPU_TOPOLOGY_HOTPLUG,
-    GPU_TOPOLOGY_INVENTORY_COMPLETE, GPU_TOPOLOGY_IOMMU_ISOLATED,
-    GPU_TOPOLOGY_IOMMU_PRESENT, GPU_TOPOLOGY_VIRTUAL_MACHINE, GpuBarEvidence,
-    GpuCompatibilityManifest, GpuCompatibilityProof, GpuDeviceEvidence, GpuDriverClass,
-    GpuFirmwareSurface, GpuPciIdentity, evaluate_compatibility,
+    GPU_TOPOLOGY_INVENTORY_COMPLETE, GPU_TOPOLOGY_IOMMU_ISOLATED, GPU_TOPOLOGY_IOMMU_PRESENT,
+    GPU_TOPOLOGY_VIRTUAL_MACHINE, GpuBarEvidence, GpuCompatibilityManifest, GpuCompatibilityProof,
+    GpuDeviceEvidence, GpuDriverClass, GpuFirmwareSurface, GpuPciIdentity, evaluate_compatibility,
 };
 
 use super::drivernet::fingerprint::{
-    BAR_64BIT, BAR_IO, BAR_PREFETCHABLE, BAR_PRESENT, GpuFingerprint,
-    TOPOLOGY_BOOT_DISPLAY, TOPOLOGY_CONFIG_INCOMPLETE, TOPOLOGY_FIRMWARE_FRAMEBUFFER,
-    TOPOLOGY_HOTPLUG_PORT, TOPOLOGY_INVENTORY_OVERFLOW, TOPOLOGY_IOMMU_ISOLATED,
-    TOPOLOGY_IOMMU_PRESENT, TOPOLOGY_VIRTUAL_MACHINE, VENDOR_AMD, VENDOR_INTEL,
-    VENDOR_NVIDIA, VENDOR_VIRTIO, VENDOR_VMWARE,
+    BAR_64BIT, BAR_IO, BAR_PREFETCHABLE, BAR_PRESENT, GpuFingerprint, TOPOLOGY_BOOT_DISPLAY,
+    TOPOLOGY_CONFIG_INCOMPLETE, TOPOLOGY_FIRMWARE_FRAMEBUFFER, TOPOLOGY_HOTPLUG_PORT,
+    TOPOLOGY_INVENTORY_OVERFLOW, TOPOLOGY_IOMMU_ISOLATED, TOPOLOGY_IOMMU_PRESENT,
+    TOPOLOGY_VIRTUAL_MACHINE, VENDOR_AMD, VENDOR_INTEL, VENDOR_NVIDIA, VENDOR_VIRTIO,
+    VENDOR_VMWARE,
 };
 use super::drivernet::model::DriverStrategy;
 
@@ -115,16 +114,12 @@ impl GpuPortabilityResolver {
 
 pub fn manifest_for(strategy: DriverStrategy) -> Option<GpuCompatibilityManifest> {
     match strategy {
-        DriverStrategy::HermesNvidia => Some(native_manifest(
-            HERMES_DRIVER_ID,
-            VENDOR_NVIDIA,
-            2_000,
-        )),
-        DriverStrategy::AmdDisplay => Some(native_manifest(
-            AMD_DISPLAY_DRIVER_ID,
-            VENDOR_AMD,
-            1_800,
-        )),
+        DriverStrategy::HermesNvidia => {
+            Some(native_manifest(HERMES_DRIVER_ID, VENDOR_NVIDIA, 2_000))
+        }
+        DriverStrategy::AmdDisplay => {
+            Some(native_manifest(AMD_DISPLAY_DRIVER_ID, VENDOR_AMD, 1_800))
+        }
         DriverStrategy::IntelDisplay => Some(native_manifest(
             INTEL_DISPLAY_DRIVER_ID,
             VENDOR_INTEL,
@@ -145,11 +140,7 @@ pub fn manifest_for(strategy: DriverStrategy) -> Option<GpuCompatibilityManifest
     }
 }
 
-fn native_manifest(
-    driver_id: u64,
-    vendor_id: u16,
-    priority: u16,
-) -> GpuCompatibilityManifest {
+fn native_manifest(driver_id: u64, vendor_id: u16, priority: u16) -> GpuCompatibilityManifest {
     let mut minimum_bar_lengths = [0_u64; GPU_BAR_COUNT];
     minimum_bar_lengths[0] = 4096;
 
@@ -184,11 +175,7 @@ fn native_manifest(
     }
 }
 
-fn paravirtual_manifest(
-    driver_id: u64,
-    vendor_id: u16,
-    priority: u16,
-) -> GpuCompatibilityManifest {
+fn paravirtual_manifest(driver_id: u64, vendor_id: u16, priority: u16) -> GpuCompatibilityManifest {
     let mut manifest = native_manifest(driver_id, vendor_id, priority);
     manifest.driver_class = GpuDriverClass::Paravirtual;
     manifest.required_topology = GPU_TOPOLOGY_VIRTUAL_MACHINE;
@@ -270,9 +257,7 @@ pub fn portable_evidence(fingerprint: &GpuFingerprint) -> GpuDeviceEvidence {
     if fingerprint.topology_flags & TOPOLOGY_HOTPLUG_PORT != 0 {
         topology |= GPU_TOPOLOGY_HOTPLUG;
     }
-    if fingerprint.topology_flags
-        & (TOPOLOGY_INVENTORY_OVERFLOW | TOPOLOGY_CONFIG_INCOMPLETE)
-        == 0
+    if fingerprint.topology_flags & (TOPOLOGY_INVENTORY_OVERFLOW | TOPOLOGY_CONFIG_INCOMPLETE) == 0
     {
         topology |= GPU_TOPOLOGY_INVENTORY_COMPLETE;
     }
@@ -345,8 +330,7 @@ fn mix(mut state: u64, word: u64) -> u64 {
 mod tests {
     use super::*;
     use crate::drivers::drivernet::fingerprint::{
-        BAR_64BIT, BAR_PRESENT, BarEvidence, FirmwareFramebufferEvidence,
-        FirmwareFramebufferKind,
+        BAR_64BIT, BAR_PRESENT, BarEvidence, FirmwareFramebufferEvidence, FirmwareFramebufferKind,
     };
 
     #[test]
@@ -364,10 +348,12 @@ mod tests {
         fingerprint.evidence_root = 9;
 
         let resolver = GpuPortabilityResolver::new(17).unwrap();
-        assert!(resolver
-            .prove(DriverStrategy::HermesNvidia, &fingerprint)
-            .unwrap()
-            .accepted());
+        assert!(
+            resolver
+                .prove(DriverStrategy::HermesNvidia, &fingerprint)
+                .unwrap()
+                .accepted()
+        );
 
         fingerprint.topology_flags = 0;
         assert!(matches!(
@@ -394,9 +380,11 @@ mod tests {
         fingerprint.evidence_root = 11;
 
         let resolver = GpuPortabilityResolver::new(19).unwrap();
-        assert!(resolver
-            .prove(DriverStrategy::FirmwareFramebuffer, &fingerprint)
-            .unwrap()
-            .accepted());
+        assert!(
+            resolver
+                .prove(DriverStrategy::FirmwareFramebuffer, &fingerprint)
+                .unwrap()
+                .accepted()
+        );
     }
 }

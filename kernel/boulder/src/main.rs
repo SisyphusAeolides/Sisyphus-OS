@@ -16,19 +16,24 @@ use boulder::capability::{
 };
 use boulder::cpu::topology::{self, ExecutionClass, TopologyPolicy};
 use boulder::fabric::{
-    opcode, Completion, NodeCapabilities, NodeClass, WorkDescriptor, KERNEL_FABRIC,
+    Completion, KERNEL_FABRIC, NodeCapabilities, NodeClass, WorkDescriptor, opcode,
 };
 use boulder::hw::pci;
 use boulder::ignition::{BootProtocol, IgnitionSequence};
 use boulder::interrupts;
 use boulder::memory::frame_pool::PhysicalFramePool;
 use boulder::mmio::{
-    direct_map_address, kernel_mmio, EARLY_MAPPED_PHYSICAL_LIMIT, HIGHER_HALF_DIRECT_MAP_BASE,
-    KERNEL_VIRTUAL_BASE,
+    EARLY_MAPPED_PHYSICAL_LIMIT, HIGHER_HALF_DIRECT_MAP_BASE, KERNEL_VIRTUAL_BASE,
+    direct_map_address, kernel_mmio,
 };
 use boulder::process::install::UserAddressSpaceBackend;
+use boulder::process::lifecycle::{self, ProcessLaunch};
 use boulder::process::x86_64::{
     DirectMapFrameMemory, FrameBackedAddressSpace, INITIAL_USER_STACK_PAGES,
+};
+use boulder::ring_authority::{
+    DomainDescriptor, DomainRegistry, DomainRole, HardwareAuthority, TransitionFrontier,
+    TransitionGate,
 };
 use boulder::serial::SerialPort;
 use boulder::shim::{
@@ -206,7 +211,17 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
 
     // SAFETY: Bootstrap assembly enters with interrupts disabled and installs
     // the GDT selector expected by Boulder's interrupt gates.
-    unsafe { interrupts::initialize() };
+    let idt_info = match unsafe { interrupts::initialize() } {
+        Ok(info) => info,
+        Err(error) => {
+            let _ = writeln!(serial, "Boulder: interrupt tables failed: {error:?}");
+            halt();
+        }
+    };
+    if !interrupts::trigger_ist_probe() {
+        let _ = writeln!(serial, "Boulder: IST runtime probe failed");
+        halt();
+    }
     interrupts::trigger_breakpoint();
     if interrupts::breakpoint_hits() != 1 {
         let _ = writeln!(serial, "Boulder: breakpoint exception test failed");
@@ -215,8 +230,15 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
     let (local_apic, x2apic) = interrupts::apic_capabilities();
     let _ = writeln!(
         serial,
-        "Boulder: IDT active, local APIC={}, x2APIC={}",
-        local_apic, x2apic
+        "Boulder: IDT active, IST runtime probe verified, DF/NMI/MC={}@{:#x}/{}@{:#x}/{}@{:#x}, local APIC={}, x2APIC={}",
+        idt_info.double_fault_ist,
+        idt_info.fault_stacks.double_fault.top,
+        idt_info.non_maskable_interrupt_ist,
+        idt_info.fault_stacks.non_maskable_interrupt.top,
+        idt_info.machine_check_ist,
+        idt_info.fault_stacks.machine_check.top,
+        local_apic,
+        x2apic
     );
 
     let kernel_start = core::ptr::addr_of!(__kernel_start) as usize;
@@ -1221,12 +1243,136 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
         ignition_summary.protocol, ignition_summary.userland_ready
     );
     let _ = writeln!(serial, "Boulder: interrupt-routing milestone complete");
+
+    let formal_attestation = boulder::formal_attestation::FormalAttestation::current();
+    if !formal_attestation.validate() {
+        let _ = writeln!(serial, "Boulder: formal authority attestation rejected");
+        halt();
+    }
     let _ = writeln!(
         serial,
-        "Boulder: transferring permanently to measured Push PID1 at {:#x}",
-        pid1_info.entry_point,
+        "Boulder: Idris/Agda authority root {:#x} bound to PID1",
+        formal_attestation.authority_root,
+    );
+
+    let mut image_measurement_root = 0_u64;
+    for (index, chunk) in PUSH_EXPECTED_SHA256.chunks_exact(8).enumerate() {
+        let word = u64::from_le_bytes([
+            chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6], chunk[7],
+        ]);
+        image_measurement_root ^= word.rotate_left((index as u32) * 13);
+    }
+    image_measurement_root = image_measurement_root.max(1);
+    let capability_root = (image_measurement_root
+        ^ blacklab.evolution_generation.rotate_left(29)
+        ^ blacklab.next_epoch.rotate_left(47)
+        ^ formal_attestation.authority_root.rotate_left(7)
+        ^ u64::from(blacklab.pid1_install_generation))
+    .max(1);
+    let pid1_launch = ProcessLaunch {
+        address_space_root: pid1_root,
+        entry_point: pid1_info.entry_point,
+        user_stack_pointer: pid1_stack,
+        kernel_stack_pointer: privilege_info.kernel_stack_top as u64,
+        image_measurement_root,
+        capability_root,
+        service_class: 1,
+        priority: u8::MAX,
+    };
+    let pid1_handle = match lifecycle::register_init(pid1_launch) {
+        Ok(handle) => handle,
+        Err(error) => {
+            let _ = writeln!(
+                serial,
+                "Boulder: measured PID1 registration failed: {error:?}"
+            );
+            halt();
+        }
+    };
+    let pid1_snapshot = match lifecycle::mark_running(pid1_handle) {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            let _ = writeln!(
+                serial,
+                "Boulder: measured PID1 activation failed: {error:?}"
+            );
+            halt();
+        }
+    };
+    if pid1_snapshot.launch != pid1_launch
+        || lifecycle::current_handle() != Some(pid1_handle)
+        || pid1_handle.pid != lifecycle::INIT_PID
+    {
+        let _ = writeln!(
+            serial,
+            "Boulder: measured PID1 authority publication failed"
+        );
+        halt();
+    }
+    let mut ring_registry = match DomainRegistry::<4>::new(kernel_page_table_root.as_u64()) {
+        Ok(registry) => registry,
+        Err(error) => {
+            let _ = writeln!(
+                serial,
+                "Boulder: privilege-domain registry failed: {error:?}"
+            );
+            halt();
+        }
+    };
+    let pid1_domain = match ring_registry.register(DomainDescriptor {
+        role: DomainRole::UserProcess,
+        address_space_root: pid1_root,
+        authority: HardwareAuthority::NONE,
+    }) {
+        Ok(domain) => domain,
+        Err(error) => {
+            let _ = writeln!(serial, "Boulder: PID1 Ring 3 domain failed: {error:?}");
+            halt();
+        }
+    };
+    let mut ring_frontier = match TransitionFrontier::new(
+        privilege_info.logical_cpu_id,
+        privilege_info.cpu_generation,
+        kernel_page_table_root.as_u64(),
+    ) {
+        Ok(frontier) => frontier,
+        Err(error) => {
+            let _ = writeln!(
+                serial,
+                "Boulder: privilege transition frontier failed: {error:?}"
+            );
+            halt();
+        }
+    };
+    let _ = writeln!(
+        serial,
+        "Boulder: transferring to measured Push PID1 authority {}:{} through Ring 3 domain {}:{} at {:#x}, measurement={:#x}",
+        pid1_handle.pid,
+        pid1_handle.generation,
+        pid1_domain.slot(),
+        pid1_domain.generation(),
+        pid1_snapshot.launch.entry_point,
+        pid1_snapshot.launch.image_measurement_root,
     );
     interrupts::disable();
+    let transition_lease =
+        match ring_frontier.prepare(&mut ring_registry, pid1_domain, TransitionGate::Iretq) {
+            Ok(lease) => lease,
+            Err(error) => {
+                let _ = writeln!(serial, "Boulder: PID1 Ring 3 preparation failed: {error:?}");
+                halt();
+            }
+        };
+    let observed_kernel_root = unsafe { active_page_table_root() };
+    let committed_transition =
+        match ring_frontier.commit(&ring_registry, &transition_lease, observed_kernel_root) {
+            Ok(transition) => transition,
+            Err(error) => {
+                let _ = ring_frontier.abort(&mut ring_registry, transition_lease);
+                let _ = writeln!(serial, "Boulder: PID1 Ring 3 commit failed: {error:?}");
+                halt();
+            }
+        };
     // SAFETY: Push's measured W^X image, retained hierarchy, and RW+NX stack
     // remain owned by `process_backend`, all kernel entry mappings are
     // inherited, and this terminal transfer intentionally abandons the
@@ -1235,7 +1381,7 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
         privilege::enter_user_process(
             pid1_info.entry_point as usize,
             pid1_stack as usize,
-            pid1_root,
+            committed_transition,
         )
     } {
         let _ = writeln!(

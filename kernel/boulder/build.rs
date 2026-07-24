@@ -11,6 +11,32 @@ fn run(command: &mut Command, description: &str) {
 }
 
 fn main() {
+    let manifest_directory = PathBuf::from(
+        env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is set by Cargo"),
+    );
+    let workspace = manifest_directory.join("../..");
+    let driver_lifecycle = workspace.join("formal/idris2/DriverLifecycle.idr");
+    let package_transaction = workspace.join("formal/idris2/PackageTransaction.idr");
+    let privilege_rings = workspace.join("formal/agda/PrivilegeRings.agda");
+    let driver_digest = measured_source(&driver_lifecycle);
+    let package_digest = measured_source(&package_transaction);
+    let privilege_digest = measured_source(&privilege_rings);
+    println!("cargo:rerun-if-changed={}", driver_lifecycle.display());
+    println!("cargo:rerun-if-changed={}", package_transaction.display());
+    println!("cargo:rerun-if-changed={}", privilege_rings.display());
+    println!(
+        "cargo:rustc-env=SISYPHUS_DRIVER_PROOF_SHA256={}",
+        encode_sha256(driver_digest)
+    );
+    println!(
+        "cargo:rustc-env=SISYPHUS_PACKAGE_PROOF_SHA256={}",
+        encode_sha256(package_digest)
+    );
+    println!(
+        "cargo:rustc-env=SISYPHUS_PRIVILEGE_PROOF_SHA256={}",
+        encode_sha256(privilege_digest)
+    );
+
     println!("cargo:rerun-if-changed=linker.ld");
     println!("cargo:rerun-if-changed=src/bootstrap.S");
     println!("cargo:rerun-if-changed=src/interrupts/stubs.S");
@@ -21,6 +47,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=AR");
 
     if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("none") {
+        verify_formal_attestation(&workspace, driver_digest, package_digest, privilege_digest);
         let linker_script = PathBuf::from(
             env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is set by Cargo"),
         )
@@ -31,10 +58,6 @@ fn main() {
         );
         println!("cargo:rustc-link-arg-bin=boulder=--gc-sections");
 
-        let workspace = PathBuf::from(
-            env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is set by Cargo"),
-        )
-        .join("../..");
         let push_image = workspace.join("target/x86_64-sisyphus-user/release/push");
         println!("cargo:rerun-if-changed={}", push_image.display());
         let bytes = fs::read(&push_image).unwrap_or_else(|error| {
@@ -94,6 +117,54 @@ fn main() {
 
     println!("cargo:rustc-link-search=native={}", out_dir.display());
     println!("cargo:rustc-link-lib=static=reference_driver");
+}
+
+fn measured_source(path: &Path) -> [u8; 32] {
+    let bytes = fs::read(path)
+        .unwrap_or_else(|error| panic!("failed to read formal source {}: {error}", path.display()));
+    assert!(
+        !bytes.is_empty(),
+        "formal source {} is empty",
+        path.display()
+    );
+    sha256(&bytes)
+}
+
+fn encode_sha256(digest: [u8; 32]) -> String {
+    let mut encoded = String::with_capacity(64);
+    for byte in digest {
+        use std::fmt::Write as _;
+        write!(encoded, "{byte:02x}").expect("writing to String cannot fail");
+    }
+    encoded
+}
+
+fn verify_formal_attestation(
+    workspace: &Path,
+    driver_digest: [u8; 32],
+    package_digest: [u8; 32],
+    privilege_digest: [u8; 32],
+) {
+    let path = workspace.join("target/formal/verified.lock");
+    println!("cargo:rerun-if-changed={}", path.display());
+    let actual = fs::read_to_string(&path).unwrap_or_else(|error| {
+        panic!(
+            "failed to read {}: {error}; run scripts/check-formal-models.sh before cargo kernel",
+            path.display()
+        )
+    });
+    let expected = format!(
+        "format=1\nidris2_version=0.8.0\nagda_version=2.8.0\n\
+driver_lifecycle_sha256={}\npackage_transaction_sha256={}\n\
+privilege_rings_sha256={}\n",
+        encode_sha256(driver_digest),
+        encode_sha256(package_digest),
+        encode_sha256(privilege_digest),
+    );
+    assert_eq!(
+        actual, expected,
+        "formal attestation is stale or contradictory; rerun scripts/check-formal-models.sh"
+    );
 }
 
 fn elf_entry_file_offset(bytes: &[u8]) -> usize {

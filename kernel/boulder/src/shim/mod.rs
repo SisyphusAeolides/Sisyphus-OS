@@ -40,7 +40,7 @@ mod tests {
     use sisyphus_driver_abi::gpu::{
         GpuCompatibilityManifest, GpuCompatibilityProof, GpuDeviceEvidence,
     };
-    use sisyphus_driver_abi::{DeviceInfo, DriverDescriptor, KernelApi, BUS_PLATFORM, STATUS_OK};
+    use sisyphus_driver_abi::{BUS_PLATFORM, DeviceInfo, DriverDescriptor, KernelApi, STATUS_OK};
 
     use super::{
         AbyssAllocator, ClockService, DeviceService, DmaAllocation, DmaService, DriverHost,

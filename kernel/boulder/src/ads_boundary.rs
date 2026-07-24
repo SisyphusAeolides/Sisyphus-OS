@@ -13,7 +13,6 @@
 //!
 //! If bulk reconstruction (Ryu–Takayanagi style cut) fails integrity → drop.
 
-
 pub const BULK_MAX: usize = 4096;
 pub const BOUNDARY_MAX: usize = 256; // holographic screen radius
 pub const HOLOGRAPHIC_WORDS: usize = 8; // 256-bit boundary hash

@@ -1,10 +1,10 @@
 use core::{mem::size_of, ptr};
 
 use abyss::frame::FrameAllocatorError;
-use abyss::paging::{PhysicalAddress, PAGE_SIZE};
+use abyss::paging::{PAGE_SIZE, PhysicalAddress};
 
 #[cfg(target_os = "none")]
-use crate::arch::x86_64::{active_page_table_root, load_page_table_root, X86_64};
+use crate::arch::x86_64::{X86_64, active_page_table_root, load_page_table_root};
 #[cfg(target_os = "none")]
 use crate::capability::InterruptGuard;
 use crate::capability::{Capability, PhysicalMemoryControl, ProcessInstallControl};
@@ -1248,24 +1248,20 @@ fn page_indices<MemoryError>(address: u64) -> Result<[usize; 4], FrameBackedErro
 
 const fn next_generation(generation: u32) -> u32 {
     let next = generation.wrapping_add(1);
-    if next == 0 {
-        1
-    } else {
-        next
-    }
+    if next == 0 { 1 } else { next }
 }
 
 #[cfg(test)]
 mod tests {
     use alloc::boxed::Box;
     use blacklab::oureboros::{
-        measure_recipe, FractalCatalog, FractalClass, FractalRecipe, FractalSeed,
-        TargetArchitecture, MINIMAL_X86_64_ELF_BYTES,
+        FractalCatalog, FractalClass, FractalRecipe, FractalSeed, MINIMAL_X86_64_ELF_BYTES,
+        TargetArchitecture, measure_recipe,
     };
 
     use crate::capability::{Authority, ProcessInstallControl, UserlandImageControl};
     use crate::process::image::prepare_user_image;
-    use crate::process::install::{install_user_image, InstallError};
+    use crate::process::install::{InstallError, install_user_image};
 
     use super::*;
 

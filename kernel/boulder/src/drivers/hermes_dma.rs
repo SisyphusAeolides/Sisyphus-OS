@@ -7,12 +7,12 @@
 //! deliberately removes any multi-page physical-contiguity requirement.
 
 use core::ptr::{self, NonNull};
-use core::sync::atomic::{fence, Ordering};
+use core::sync::atomic::{Ordering, fence};
 
-use abyss::paging::{PhysicalAddress, PAGE_SIZE};
+use abyss::paging::{PAGE_SIZE, PhysicalAddress};
 use sisyphus_driver_abi::{
-    Handle, Status, STATUS_BUSY, STATUS_INVALID_ARGUMENT, STATUS_IO_ERROR, STATUS_NOT_FOUND,
-    STATUS_OK,
+    Handle, STATUS_BUSY, STATUS_INVALID_ARGUMENT, STATUS_IO_ERROR, STATUS_NOT_FOUND, STATUS_OK,
+    Status,
 };
 
 use super::hermes_gsp::DmaPurpose;

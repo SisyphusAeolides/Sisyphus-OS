@@ -8,12 +8,14 @@ mod pic;
 pub mod synaptic;
 
 use core::fmt::Write;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::mem::size_of;
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use crate::arch::x86_64::halt;
 use crate::serial::SerialPort;
 
 pub use apic::{LocalApicInfo, LocalApicTimerInfo, TimerError};
+pub use idt::{IdtError, IdtInfo};
 pub use ioapic::{IoApicError, IoApicInfo};
 pub use irq::{KernelIrq, kernel_irq};
 
@@ -29,6 +31,8 @@ static BREAKPOINT_HITS: AtomicUsize = AtomicUsize::new(0);
 static USER_PROBE_HITS: AtomicUsize = AtomicUsize::new(0);
 static APIC_TEST_HITS: AtomicUsize = AtomicUsize::new(0);
 static APIC_TIMER_HITS: AtomicUsize = AtomicUsize::new(0);
+static IST_PROBE_ACTIVE: AtomicBool = AtomicBool::new(false);
+static IST_PROBE_HITS: AtomicUsize = AtomicUsize::new(0);
 
 #[repr(C)]
 pub struct InterruptFrame {
@@ -59,10 +63,11 @@ pub struct InterruptFrame {
 /// # Safety
 ///
 /// This must be called once on the bootstrap CPU before interrupts are enabled.
-pub unsafe fn initialize() {
+pub unsafe fn initialize() -> Result<IdtInfo, IdtError> {
     unsafe {
-        idt::initialize();
+        let info = idt::initialize()?;
         pic::initialize();
+        Ok(info)
     }
 }
 
@@ -76,6 +81,23 @@ pub fn disable() {
 
 pub fn trigger_breakpoint() {
     unsafe { core::arch::asm!("int3", options(nomem, nostack)) };
+}
+
+/// Exercises the NMI descriptor's IST switch once from Ring 0.
+///
+/// This is a software-vector bootstrap probe: it verifies the IDT/TSS stack
+/// switch without manufacturing a real non-maskable hardware event.
+pub fn trigger_ist_probe() -> bool {
+    if IST_PROBE_ACTIVE
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return false;
+    }
+    let before = IST_PROBE_HITS.load(Ordering::Acquire);
+    unsafe { core::arch::asm!("int 2") };
+    !IST_PROBE_ACTIVE.load(Ordering::Acquire)
+        && IST_PROBE_HITS.load(Ordering::Acquire) == before.saturating_add(1)
 }
 
 pub fn breakpoint_hits() -> usize {
@@ -155,6 +177,37 @@ extern "C" fn boulder_interrupt_dispatch(frame: *mut InterruptFrame) -> usize {
         halt();
     };
     match frame.vector {
+        2 if IST_PROBE_ACTIVE.swap(false, Ordering::AcqRel) => {
+            let frame_start = frame as *mut InterruptFrame as u64;
+            let frame_end = frame_start
+                .checked_add(size_of::<InterruptFrame>() as u64)
+                .and_then(|end| end.checked_add(2 * size_of::<usize>() as u64));
+            if frame_end.is_none_or(|end| {
+                !crate::arch::x86_64::privilege::active_ist_range_is_contained(
+                    crate::arch::x86_64::privilege::NMI_IST_INDEX,
+                    frame_start,
+                    end,
+                )
+            }) {
+                halt();
+            }
+            IST_PROBE_HITS.fetch_add(1, Ordering::Release);
+        }
+        2 | 8 | 18 => {
+            let mut serial = unsafe { SerialPort::initialize(COM1) };
+            let class = match frame.vector {
+                2 => "non-maskable interrupt",
+                8 => "double fault",
+                18 => "machine check",
+                _ => unreachable!(),
+            };
+            let _ = writeln!(
+                serial,
+                "Boulder contained {class}: vector={} error={:#x} rip={:#x}",
+                frame.vector, frame.error_code, frame.instruction_pointer
+            );
+            halt();
+        }
         3 => {
             if frame.code_segment & 3 == 3 {
                 let user_code_segment = frame.code_segment;
@@ -208,6 +261,7 @@ extern "C" fn boulder_interrupt_dispatch(frame: *mut InterruptFrame) -> usize {
             let wall_tick = <crate::arch::Active as crate::arch::Architecture>::counter_sample();
 
             crate::nexus_deferred::request_from_irq(wall_tick);
+            crate::process::preemption::request_from_timer_irq(wall_tick);
 
             apic::end_of_interrupt();
         }

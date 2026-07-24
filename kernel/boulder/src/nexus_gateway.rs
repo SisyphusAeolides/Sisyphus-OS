@@ -85,13 +85,17 @@ impl<const GRANTS: usize, const REPLAY: usize, const LOG: usize, const HISTORY: 
         // We use handle as quota as it's the only sensible mapping if we don't return a new handle,
         // or we just issue a default quota. Let's use 1000 or handle as u32.
         let quota = if handle > 0 { handle as u32 } else { 1000 };
-        let _ = leases.issue_root(rights, 0, expires_tick, quota, authority).map_err(GatewayError::Lease)?;
+        let _ = leases
+            .issue_root(rights, 0, expires_tick, quota, authority)
+            .map_err(GatewayError::Lease)?;
         Ok(())
     }
 
     pub fn revoke_grant(&self, handle: u64, authority: &Capability<'_, ResonanceRight>) -> bool {
         if let Some(leases) = LEASES.get() {
-            leases.revoke(LeaseToken::from_raw(handle), authority).is_ok()
+            leases
+                .revoke(LeaseToken::from_raw(handle), authority)
+                .is_ok()
         } else {
             false
         }

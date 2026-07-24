@@ -21,20 +21,27 @@ Reference-driver command:
 scripts/check-driver-abi.sh
 ```
 
-## Tooling unavailable in the reconstruction environment
+## Formal authority gate
 
-The environment did not contain:
+The bare-metal build consumes `target/formal/verified.lock`. Produce it with:
 
-```text
-rustc
-cargo
-rustfmt
-QEMU
-GRUB image tooling
+```sh
+scripts/bootstrap-formal-toolchains.sh
 ```
 
-Therefore Rust compilation, Rust tests, custom-target construction, and boot
-success are not claimed by this report.
+The bootstrap verifies pinned release hashes before executing Idris2 0.8.0 and
+Agda 2.8.0. `scripts/check-formal-models.sh` rejects unresolved holes, unsafe
+escape hatches, compiler-version drift, generated files in `formal/`, and any
+source digest that is not represented by the emitted attestation.
+
+A clean-room bootstrap was also exercised from an empty temporary prefix: it
+self-hosted the pinned Idris2 compiler through Chez Scheme, verified the pinned
+Agda binary, checked both total Idris2 modules and the safe Agda privilege
+model, and emitted the attestation consumed by the kernel build.
+
+The QEMU boot assertion additionally observes the live IST stack-switch probe,
+the formal authority root, the certified Ring 3 PID1 transfer, a timer-issued
+safe-point preemption receipt, and PID1's bounded recovery transition.
 
 ## Required validation on the receiving machine
 
@@ -43,12 +50,13 @@ Run in this order:
 ```sh
 python3 scripts/static-repository-audit.py
 scripts/check-driver-abi.sh
+scripts/check-formal-models.sh
 cargo fmt --all --check
 cargo check --workspace
 cargo test --workspace
 cargo check -p crest --features os-bin
-cargo +nightly user-push
-cargo +nightly kernel
+cargo user-push
+cargo kernel
 scripts/test-boot.sh
 ```
 

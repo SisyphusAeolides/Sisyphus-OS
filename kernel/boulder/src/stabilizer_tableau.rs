@@ -11,7 +11,6 @@
 //! Mutation Δ allowed iff for every generator h: ⟨h, Δ⟩ = 0 when phase locked,
 //! else syndrome bit fires → Noether/policy reject.
 
-
 pub const N_MAX: usize = 64; // bit width
 pub const M_MAX: usize = 64; // number of stabilizers
 

@@ -1,12 +1,11 @@
 use crate::boot::multiboot2::{
-    FRAMEBUFFER_FORMAT_RGB565, FRAMEBUFFER_FORMAT_XBGR8888,
-    FRAMEBUFFER_FORMAT_XRGB8888,
+    FRAMEBUFFER_FORMAT_RGB565, FRAMEBUFFER_FORMAT_XBGR8888, FRAMEBUFFER_FORMAT_XRGB8888,
 };
 use crate::capability::{Capability, DeviceMemoryControl};
 use crate::drivers::drivernet::fingerprint::FirmwareFramebufferEvidence;
 use crate::mmio::{MmioAccessError, MmioWindow};
 use crate::sync::SpinLock;
-use sisyphus_driver_abi::{Status, STATUS_OK};
+use sisyphus_driver_abi::{STATUS_OK, Status};
 
 pub const MAXIMUM_FIRMWARE_DISPLAYS: usize = 4;
 
@@ -245,17 +244,11 @@ pub fn inspect(
     FIRMWARE_DISPLAYS.lock().inspect(evidence, secret)
 }
 
-pub fn retain(
-    object: u64,
-    secret: u64,
-) -> Result<FirmwareDisplaySnapshot, FirmwareDisplayError> {
+pub fn retain(object: u64, secret: u64) -> Result<FirmwareDisplaySnapshot, FirmwareDisplayError> {
     FIRMWARE_DISPLAYS.lock().retain(object, secret)
 }
 
-pub fn release(
-    object: u64,
-    secret: u64,
-) -> Result<FirmwareDisplaySnapshot, FirmwareDisplayError> {
+pub fn release(object: u64, secret: u64) -> Result<FirmwareDisplaySnapshot, FirmwareDisplayError> {
     FIRMWARE_DISPLAYS.lock().release(object, secret)
 }
 
@@ -317,11 +310,7 @@ impl FirmwareDisplayMapping {
         self.window.length()
     }
 
-    pub fn read_pixel(
-        &self,
-        x: u32,
-        y: u32,
-    ) -> Result<FirmwareColor, FirmwareDisplayError> {
+    pub fn read_pixel(&self, x: u32, y: u32) -> Result<FirmwareColor, FirmwareDisplayError> {
         let (snapshot, local_offset) = self.pixel_location(x, y)?;
         match snapshot.evidence.format {
             FRAMEBUFFER_FORMAT_XRGB8888 => {
@@ -397,10 +386,7 @@ impl FirmwareDisplayMapping {
         y: u32,
     ) -> Result<(FirmwareDisplaySnapshot, usize), FirmwareDisplayError> {
         let snapshot = snapshot(self.object)
-            .filter(|snapshot| {
-                snapshot.generation == self.generation
-                    && snapshot.retain_count != 0
-            })
+            .filter(|snapshot| snapshot.generation == self.generation && snapshot.retain_count != 0)
             .ok_or(FirmwareDisplayError::StaleObject)?;
         if x >= snapshot.evidence.width || y >= snapshot.evidence.height {
             return Err(FirmwareDisplayError::PixelOutOfBounds);
@@ -428,8 +414,7 @@ impl FirmwareDisplayMapping {
         if end > self.window.length() as u64 {
             return Err(FirmwareDisplayError::PixelOutOfBounds);
         }
-        let local = usize::try_from(local)
-            .map_err(|_| FirmwareDisplayError::AddressOverflow)?;
+        let local = usize::try_from(local).map_err(|_| FirmwareDisplayError::AddressOverflow)?;
         Ok((snapshot, local))
     }
 
@@ -471,14 +456,8 @@ pub fn render_boot_signature(
     let length_u64 = u64::from(snapshot.evidence.pitch)
         .checked_mul(u64::from(stripe_height))
         .ok_or(FirmwareDisplayError::AddressOverflow)?;
-    let length = usize::try_from(length_u64)
-        .map_err(|_| FirmwareDisplayError::AddressOverflow)?;
-    let mapping = FirmwareDisplayMapping::map_span(
-        object,
-        0,
-        length,
-        authority,
-    )?;
+    let length = usize::try_from(length_u64).map_err(|_| FirmwareDisplayError::AddressOverflow)?;
+    let mapping = FirmwareDisplayMapping::map_span(object, 0, length, authority)?;
 
     let render_result = render_signature_pixels(
         &mapping,
@@ -490,9 +469,7 @@ pub fn render_boot_signature(
 
     match (render_result, close_status) {
         (Err(error), _) => Err(error),
-        (Ok(_), status) if status != STATUS_OK => {
-            Err(FirmwareDisplayError::Unmap(status))
-        }
+        (Ok(_), status) if status != STATUS_OK => Err(FirmwareDisplayError::Unmap(status)),
         (Ok(report), _) => Ok(FirmwareBootSignatureReport {
             object,
             generation: snapshot.generation,
@@ -553,10 +530,7 @@ fn render_signature_pixels(
     })
 }
 
-fn normalize_color(
-    color: FirmwareColor,
-    format: u32,
-) -> FirmwareColor {
+fn normalize_color(color: FirmwareColor, format: u32) -> FirmwareColor {
     match format {
         FRAMEBUFFER_FORMAT_RGB565 => FirmwareColor {
             red: expand_5(color.red >> 3),
@@ -567,12 +541,7 @@ fn normalize_color(
     }
 }
 
-fn signature_color(
-    x: u32,
-    y: u32,
-    width: u32,
-    height: u32,
-) -> FirmwareColor {
+fn signature_color(x: u32, y: u32, width: u32, height: u32) -> FirmwareColor {
     let width = width.max(1);
     let height = height.max(1);
     let horizontal = x.saturating_mul(255) / width;
@@ -607,9 +576,7 @@ const fn expand_6(value: u8) -> u8 {
     (value << 2) | (value >> 4)
 }
 
-fn validate_evidence(
-    evidence: FirmwareFramebufferEvidence,
-) -> Result<(), FirmwareDisplayError> {
+fn validate_evidence(evidence: FirmwareFramebufferEvidence) -> Result<(), FirmwareDisplayError> {
     if !evidence.usable() {
         return Err(FirmwareDisplayError::InvalidEvidence);
     }
@@ -642,10 +609,7 @@ fn validate_evidence(
     Ok(())
 }
 
-fn evidence_domain_tag(
-    secret: u64,
-    evidence: FirmwareFramebufferEvidence,
-) -> u64 {
+fn evidence_domain_tag(secret: u64, evidence: FirmwareFramebufferEvidence) -> u64 {
     let mut state = mix(secret, evidence.physical_address);
     state = mix(state, evidence.byte_length);
     state = mix(

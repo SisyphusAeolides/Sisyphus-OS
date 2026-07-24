@@ -4,7 +4,6 @@
 //! x'_k = (∏_{i→k} x_i + ∏_{k→j} x_j) / x_k
 //! Quiver: add composites, reverse incident, cancel 2-cycles.
 
-
 pub const MAX_N: usize = 16;
 pub const MAX_E: usize = 64;
 pub type Fp = u32;

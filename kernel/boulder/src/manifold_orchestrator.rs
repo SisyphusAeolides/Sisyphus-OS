@@ -12,7 +12,6 @@
 //! Boot:  boot_after_drivernet(pci, drivernet, serial)
 //! Tick:  tick(now_tsc) -> Option<Actuation>
 
-
 use crate::cluster_quiver::{
     ClusterFault, FP_ONE as Q_ONE, Fp as QFp, MAX_N, NodeKind, ResourceQuiver,
 };
@@ -731,11 +730,16 @@ pub fn tick(now_tsc: u64) -> Option<Actuation> {
                             Ok(certified) => {
                                 // Enforce KKT/Syndrome proofs for genuine kernel resource management
                                 act.fair_class = certified.actuation.queue_class as u16;
-                                
+
                                 // 11. Integrate with Black-Lab history (Mnemosyne)
-                                // We don't have a global Mnemosyne instance yet, but we can write 
+                                // We don't have a global Mnemosyne instance yet, but we can write
                                 // the certified roots to GhostChronicle for telemetry.
-                                orch.record(now_tsc, orch_kind::MANIFOLD_BOOT, certified.actuation.root, certified.actuation.stabilizer_root);
+                                orch.record(
+                                    now_tsc,
+                                    orch_kind::MANIFOLD_BOOT,
+                                    certified.actuation.root,
+                                    certified.actuation.stabilizer_root,
+                                );
                             }
                             Err(_) => {
                                 // Actuation rejected by proofs.

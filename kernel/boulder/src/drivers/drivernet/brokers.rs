@@ -510,10 +510,7 @@ impl StrategyBroker for QuarantineBroker {
             ));
         }
         transaction.state = [0; 8];
-        transaction.root = mix(
-            transaction.root,
-            u64::from(stage as u8) ^ fault.detail,
-        );
+        transaction.root = mix(transaction.root, u64::from(stage as u8) ^ fault.detail);
         Ok(())
     }
 }

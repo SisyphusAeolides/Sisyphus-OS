@@ -8,6 +8,13 @@
 compile_commands.json
 kernel/boulder/scratch.rs
 
+/formal/idris2/build/
+/formal/idris2/*.ttc
+/formal/idris2/**/*.ttc
+/formal/agda/_build/
+/formal/agda/*.agdai
+/formal/agda/**/*.agdai
+
 *.orig
 *.rej
 *~

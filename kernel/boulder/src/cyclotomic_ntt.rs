@@ -8,7 +8,6 @@
 //!
 //! Verified: NTT round-trip + circular convolution theorem.
 
-
 pub const N: usize = 64;
 pub const P: u32 = 193;
 pub const OMEGA: u32 = 125;

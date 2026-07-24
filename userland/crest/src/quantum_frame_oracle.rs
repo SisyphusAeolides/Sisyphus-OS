@@ -135,12 +135,9 @@ impl QuantumFrameOracle {
             return Err(FrameOracleError::InvalidSecret);
         }
 
-        let residuals = ResidualCalibrator::kernel_default(
-            1,
-            1_u64 << 48,
-            mix(secret, 0x4652_414d_455f_4346),
-        )
-        .map_err(|_| FrameOracleError::Calibration)?;
+        let residuals =
+            ResidualCalibrator::kernel_default(1, 1_u64 << 48, mix(secret, 0x4652_414d_455f_4346))
+                .map_err(|_| FrameOracleError::Calibration)?;
 
         Ok(Self {
             secret,
@@ -246,10 +243,7 @@ impl QuantumFrameOracle {
         plan.tile_budget = schedule.scheduled;
         plan.predicted_render_ticks = self.predict_ticks(schedule.scheduled)?;
         for decision in &mut plan.decisions {
-            decision.tile_budget = decision
-                .tile_budget
-                .min(schedule.scheduled)
-                .max(1);
+            decision.tile_budget = decision.tile_budget.min(schedule.scheduled).max(1);
             decision.predicted_ticks = self.predict_ticks(decision.tile_budget)?;
         }
         plan.root = plan_root(self.secret, &plan);
@@ -280,9 +274,7 @@ impl QuantumFrameOracle {
             .ticks_per_tile_q16
             .saturating_mul(observation.rendered_tiles as u64)
             >> 16;
-        let one_sided_residual = observation
-            .render_ticks
-            .saturating_sub(predicted_ticks);
+        let one_sided_residual = observation.render_ticks.saturating_sub(predicted_ticks);
         self.residuals
             .push(one_sided_residual)
             .map_err(|_| FrameOracleError::Calibration)?;
@@ -667,10 +659,11 @@ mod tests {
         assert_eq!(plan.schedule_root, prefix.root);
         assert_eq!(plan.scheduled_tiles, prefix.scheduled);
         assert_eq!(plan.tile_budget, prefix.scheduled);
-        assert!(plan
-            .decisions
-            .iter()
-            .all(|decision| decision.tile_budget <= prefix.scheduled));
+        assert!(
+            plan.decisions
+                .iter()
+                .all(|decision| decision.tile_budget <= prefix.scheduled)
+        );
         assert!(plan.verify(0x9abc));
     }
 

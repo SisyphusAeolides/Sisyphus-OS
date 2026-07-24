@@ -1,4 +1,3 @@
-
 const NUM_BLOCKS: usize = 256;
 const ACTIVATION_THRESHOLD: u8 = 1;
 

@@ -9,7 +9,6 @@
 //! locally reversible. Commit drops witnesses (irreversible erase).
 //! Abort runs inverses; witnesses are consumed, not guessed.
 
-
 pub const TAPE_CAP: usize = 256;
 pub const WITNESS_WORDS: usize = 4;
 

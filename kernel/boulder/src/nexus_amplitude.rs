@@ -14,14 +14,8 @@ pub struct Amplitude {
 
 impl Amplitude {
     pub const ZERO: Self = Self { re: 0, im: 0 };
-    pub const ONE: Self = Self {
-        re: 1 << 16,
-        im: 0,
-    };
-    pub const I: Self = Self {
-        re: 0,
-        im: 1 << 16,
-    };
+    pub const ONE: Self = Self { re: 1 << 16, im: 0 };
+    pub const I: Self = Self { re: 0, im: 1 << 16 };
 
     #[inline(always)]
     pub const fn new(re: i32, im: i32) -> Self {
@@ -34,14 +28,10 @@ impl Amplitude {
         let im = i128::from(self.im);
         let energy = re
             .checked_mul(re)
-            .and_then(|left| {
-                im.checked_mul(im)
-                    .and_then(|right| left.checked_add(right))
-            })
+            .and_then(|left| im.checked_mul(im).and_then(|right| left.checked_add(right)))
             .unwrap_or(i128::from(u64::MAX) << 16);
 
-        u64::try_from((energy >> 16).min(i128::from(u64::MAX)))
-            .unwrap_or(u64::MAX)
+        u64::try_from((energy >> 16).min(i128::from(u64::MAX))).unwrap_or(u64::MAX)
     }
 
     #[inline(always)]
@@ -51,21 +41,12 @@ impl Amplitude {
         let br = i64::from(other.re);
         let bi = i64::from(other.im);
 
-        let real = ar
-            .saturating_mul(br)
-            .saturating_sub(ai.saturating_mul(bi))
-            >> 16;
-        let imaginary = ar
-            .saturating_mul(bi)
-            .saturating_add(ai.saturating_mul(br))
-            >> 16;
+        let real = ar.saturating_mul(br).saturating_sub(ai.saturating_mul(bi)) >> 16;
+        let imaginary = ar.saturating_mul(bi).saturating_add(ai.saturating_mul(br)) >> 16;
 
         Self {
-            re: real.clamp(i64::from(i32::MIN), i64::from(i32::MAX))
-                as i32,
-            im: imaginary
-                .clamp(i64::from(i32::MIN), i64::from(i32::MAX))
-                as i32,
+            re: real.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
+            im: imaginary.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
         }
     }
 
@@ -114,9 +95,6 @@ mod tests {
             Amplitude::new(1, 1).collapse_if_weak(1_000),
             Amplitude::ZERO,
         );
-        assert_eq!(
-            Amplitude::ONE.collapse_if_weak(1),
-            Amplitude::ONE,
-        );
+        assert_eq!(Amplitude::ONE.collapse_if_weak(1), Amplitude::ONE,);
     }
 }

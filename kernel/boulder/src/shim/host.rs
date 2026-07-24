@@ -2,9 +2,9 @@ use core::alloc::Layout;
 use core::ffi::c_void;
 use core::ptr::NonNull;
 use sisyphus_driver_abi::{
-    DeviceInfo, Handle, IrqHandler, KernelApi, Status, ABI_VERSION, CAP_ALLOC, CAP_CLOCK,
-    CAP_DEVICE_PUBLISH, CAP_DMA, CAP_IRQ, CAP_LOG, CAP_MMIO, CAP_SLEEP, STATUS_INVALID_ARGUMENT,
-    STATUS_OK, STATUS_UNSUPPORTED,
+    ABI_VERSION, CAP_ALLOC, CAP_CLOCK, CAP_DEVICE_PUBLISH, CAP_DMA, CAP_IRQ, CAP_LOG, CAP_MMIO,
+    CAP_SLEEP, DeviceInfo, Handle, IrqHandler, KernelApi, STATUS_INVALID_ARGUMENT, STATUS_OK,
+    STATUS_UNSUPPORTED, Status,
 };
 
 use super::services::DriverServices;

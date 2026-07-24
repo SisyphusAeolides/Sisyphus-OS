@@ -16,8 +16,12 @@ not happen.
 |---|---|---|
 | Multiboot2 long-mode boot | Implemented | Memory map, modules, ACPI roots, framebuffer tag, COM1 boot trace |
 | Physical memory | Implemented | Typed reservations and bounded bitmap frame allocation |
-| Interrupt foundation | Implemented | IDT, PIC fallback, xAPIC, I/O APIC routing, timer calibration |
-| Measured PID 1 transfer | Implemented | Static ELF validation, W^X mapping, retained user stack, Ring 3 entry |
+| Interrupt foundation | Implemented | IDT, dedicated #DF/NMI/#MC IST stacks, runtime stack-switch probe, xAPIC, I/O APIC routing, timer calibration |
+| PID 0 execution authority | Implemented foundation | Non-process identity, epoch leases, atomic idle/reselection handoff, non-termination invariants |
+| Timer scheduling | Implemented safe-point preemption | Lock-free IRQ ticket, generation/epoch revalidation, bounded syscall consumption, stale-ticket rejection |
+| Measured PID 1 transfer | Implemented | Static ELF validation, W^X mapping, CPU-local return lease, single-use Ring 3 transition certificate |
+| Ring-domain authority | Implemented foundation | Unique non-kernel CR3s, valid IRETQ/SYSRETQ matrix, scoped Ring 1 hardware grants, PID1 production consumer |
+| Formal authority models | Implemented | Total Idris2 lifecycle/package models, safe Agda privilege model, hash-bound build and PID1 authority attestation |
 | General process creation | Fail-closed | Lifecycle registry exists; `spawn` and `wait` remain unavailable until retained address-space ownership and context switching are complete |
 | Firmware display | Implemented | Multiboot framebuffer evidence, retained object, bounded MMIO mapping, write/read verification |
 | Native GPU activation | Fail-closed | Compatibility proof and probe evidence exist; activation requires real generation-specific BAR, DMA, interrupt, reset, and firmware backends |
@@ -34,9 +38,10 @@ host tests, custom-target builds, and the relevant boot or hardware assertion.
 ## Architecture
 
 ```text
-                           measured boot image
-                                  │
-                                  ▼
+                 checked Idris2/Agda models     measured boot image
+                            │                          │
+                            └────────────┬─────────────┘
+                                         ▼
 ┌──────────────────────────────── BOULDER ────────────────────────────────┐
 │ Multiboot2  ACPI  PCI  memory  interrupts  syscalls  capabilities      │
 │      │       │    │      │         │          │           │            │
@@ -86,6 +91,10 @@ userland/
 
 tools/
   reality-gate/ source functionality ledger and façade detection
+
+formal/
+  idris2/       total driver-lifecycle and package-transaction models
+  agda/         safe privilege-ring and transition model
 ```
 
 ## Black-lab control mathematics
@@ -249,7 +258,33 @@ allocation, interrupt, and unwind contracts. Unresolved contracts reject the
 module. Cross-ABI thunks must prove register, stack, floating-point, and unwind
 translation before executable use.
 
+## Formal authority bridge
+
+The dependent-type models are build inputs, not essays. Idris2 checks total
+driver lifecycle and package transaction witnesses without holes or totality
+escape hatches. Agda checks the privilege-ring transition model under `--safe`
+and `--without-K`, without postulates or imported libraries.
+
+The checker emits an attestation containing the exact SHA-256 root of each
+accepted source. A bare-metal Boulder build fails if that attestation is absent,
+stale, built by a different pinned compiler version, or contradicts the current
+sources. The kernel embeds the three roots, validates their combined authority
+root at boot, and folds it into PID1's capability root. This binds the running
+authority to the exact typechecked models; it does not claim automatic theorem
+extraction into Rust.
+
+The privilege model also makes the long-mode boundary explicit: Ring 1 and
+Ring 2 must use address-space roots distinct from Ring 0, `SYSRETQ` may return
+only to Ring 3, and direct hardware grants belong only to a bounded Ring 1
+domain. Boulder's fixed-capacity domain registry and single-use transition
+certificates mirror those constraints in the runtime path.
+
 ## Process model
+
+Boulder represents PID 0 as a non-process execution authority with a nonzero,
+epoch-bound identity. It cannot acquire a user-return lease, terminate, be
+reaped, or alias a reused process generation. The idle wake path either renews
+PID0 atomically or transfers authority to a runnable user process.
 
 Boulder can install and enter the measured Push image as PID 1. The lifecycle
 registry is fixed-capacity and generation-checked; it admits a runnable process
@@ -264,10 +299,23 @@ capability root
 service class and priority
 ```
 
+Syscall entry no longer uses global scratch stacks or a global saved user RSP.
+The BSP owns a registered CPU-local record, unique TSS binding, entry nesting
+state, and generation-checked return lease. Application processors remain
+offline until their own GDT, TSS, IST, GS bases, and syscall MSRs can be
+published transactionally.
+
+The local APIC timer publishes a lock-free PID, generation, and scheduler-epoch
+ticket. Syscall safe points revalidate that ticket under the scheduler lock,
+service at most one bounded scheduling pass, and preserve the interrupted
+call's return value. This is real deferred preemption, but not yet a direct
+interrupt-frame process switch: that promotion waits for per-process XSAVE and
+FS/GS ownership plus complete interrupt return-state capture.
+
 General `spawn` and `wait` are intentionally fail-closed today. Completing them
-requires retained per-process address spaces, kernel stacks, saved trap
-contexts, timer-driven selection, CR3/TSS switching, parent wakeup, and exact
-resource reclamation. PID allocation alone is not treated as execution.
+requires full interrupt-frame context switching, parent wakeup, exact resource
+reclamation, and application-processor startup. PID allocation alone is not
+treated as execution.
 
 ## Build and validation
 
@@ -283,11 +331,27 @@ cargo run -p sisyphus-reality-gate -- \
   --ledger target/sisyphus-functionality-ledger.tsv
 ```
 
-Bare-metal checks require nightly and `rust-src`:
+The formal toolchains and Rust nightly are exact-version pinned. On Linux
+x86_64, the bootstrap command downloads hash-verified Idris2 and Agda releases,
+builds Idris2 with Chez Scheme, checks all models, and emits the build
+attestation:
 
 ```sh
-cargo +nightly user-push
-cargo +nightly kernel
+scripts/bootstrap-formal-toolchains.sh
+```
+
+If the pinned compilers are already installed, run the narrower gate directly:
+
+```sh
+scripts/check-formal-models.sh
+```
+
+Bare-metal checks use `nightly-2026-07-20` and `rust-src` from
+`rust-toolchain.toml`:
+
+```sh
+cargo user-push
+cargo kernel
 scripts/test-boot.sh
 ```
 

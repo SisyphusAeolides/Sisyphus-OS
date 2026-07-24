@@ -1058,6 +1058,22 @@ mod tests {
             linux_kpi::kmalloc as *const () as usize as u64
         );
         assert!(image[16..].iter().all(|byte| *byte == 0));
+
+        let mut string_module = relocatable_module(R_X86_64_64);
+        string_module[STRING_OFFSET + 7..STRING_OFFSET + 14].copy_from_slice(b"strscpy");
+        let string_plan = ForeignElfLoadPlan::preflight(
+            &string_module,
+            OsPersonality::Linux(LinuxVersion::V6_1),
+            IMAGE_BASE,
+            b"entry",
+        )
+        .unwrap();
+        let mut string_image = vec![0x5a; string_plan.image_size()];
+        string_plan.commit(&mut string_image).unwrap();
+        assert_eq!(
+            u64::from_le_bytes(string_image[8..16].try_into().unwrap()),
+            linux_kpi::linux_strscpy as *const () as usize as u64
+        );
     }
 
     #[test]

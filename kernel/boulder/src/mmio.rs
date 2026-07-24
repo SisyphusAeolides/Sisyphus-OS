@@ -1,9 +1,9 @@
 use core::ptr::NonNull;
-use core::sync::atomic::{compiler_fence, Ordering};
+use core::sync::atomic::{Ordering, compiler_fence};
 
 use sisyphus_driver_abi::{
-    Handle, Status, STATUS_BUSY, STATUS_INVALID_ARGUMENT, STATUS_NOT_FOUND, STATUS_OK,
-    STATUS_UNSUPPORTED,
+    Handle, STATUS_BUSY, STATUS_INVALID_ARGUMENT, STATUS_NOT_FOUND, STATUS_OK, STATUS_UNSUPPORTED,
+    Status,
 };
 
 use crate::arch::x86_64::invalidate_page;

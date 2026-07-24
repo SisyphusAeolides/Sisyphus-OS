@@ -17,7 +17,7 @@ use crate::drivers::drivernet::dispatch::{
 };
 use crate::drivers::drivernet::fingerprint::{
     FirmwareFramebufferEvidence, FirmwareFramebufferKind, GpuFingerprint,
-    LegacyConfigurationReader, TopologyEvidence, TOPOLOGY_IOMMU_PRESENT,
+    LegacyConfigurationReader, TOPOLOGY_IOMMU_PRESENT, TopologyEvidence,
 };
 use crate::drivers::drivernet::inventory::{DisplayFunctionInventory, InventoryError};
 use crate::drivers::drivernet::model::{
@@ -31,19 +31,19 @@ use crate::drivers::drivernet::platform::{
     IsolationReceipt, PlatformError,
 };
 use crate::drivers::drivernet::registry::{
-    ProbeSemantic, ProbeStep, ShimDescriptor, PROBE_EVIDENCE_HEALTH, PROBE_EVIDENCE_IDENTITY,
-    PROBE_EVIDENCE_IOMMU_DOMAIN, PROBE_EVIDENCE_MMIO_DECODE,
+    PROBE_EVIDENCE_HEALTH, PROBE_EVIDENCE_IDENTITY, PROBE_EVIDENCE_IOMMU_DOMAIN,
+    PROBE_EVIDENCE_MMIO_DECODE, ProbeSemantic, ProbeStep, ShimDescriptor,
 };
 use crate::drivers::drivernet::topology::{BootTopologyTable, TopologyRecord, TopologyTableError};
 use crate::drivers::drivernet::{
     DriverNet, DriverNetError, DriverNetScratch, DriverNetSecrets, DriverNetSummary,
 };
 use crate::drivers::firmware_display;
-use crate::drivers::gpu_portability::{bar_address, GpuPortabilityResolver, PortabilityFault};
+use crate::drivers::gpu_portability::{GpuPortabilityResolver, PortabilityFault, bar_address};
 use crate::drivers::hermes_gsp::HermesDiscovery;
 use crate::hw::pci::PciInventory;
 use crate::mmio::MmioWindow;
-use crate::predictive_control::hash::{hkdf_expand, hmac_sha256, HashError, Sha256};
+use crate::predictive_control::hash::{HashError, Sha256, hkdf_expand, hmac_sha256};
 
 const GPU_BOOT_DOMAIN_SALT: &[u8] = b"Sisyphus-OS GPU boot domains v1";
 const GPU_BOOT_TRANSCRIPT_DOMAIN: &[u8] = b"Sisyphus-OS GPU boot transcript v1";
@@ -778,7 +778,7 @@ pub fn resolve_drivernet<
 mod tests {
     use super::*;
     use crate::drivers::drivernet::fingerprint::{
-        BarEvidence, BAR_64BIT, BAR_PRESENT, TOPOLOGY_IOMMU_ISOLATED, VENDOR_NVIDIA,
+        BAR_64BIT, BAR_PRESENT, BarEvidence, TOPOLOGY_IOMMU_ISOLATED, VENDOR_NVIDIA,
     };
 
     #[test]

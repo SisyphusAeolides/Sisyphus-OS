@@ -345,9 +345,9 @@ impl<'a, const SCENE: usize, const MUTATIONS: usize, const FOCUS: usize>
         let mut plan = self.oracle.plan(snapshot, &schedule, render_begin_tick)?;
 
         if plan.tile_budget < schedule.scheduled {
-            schedule = self
-                .tiles
-                .compile_schedule(plan.tile_budget, beam_position, self.damage_secret)?;
+            schedule =
+                self.tiles
+                    .compile_schedule(plan.tile_budget, beam_position, self.damage_secret)?;
             plan = self.oracle.bind_schedule(plan, &schedule)?;
         }
 

@@ -1,6 +1,6 @@
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use sisyphus_driver_abi::{Status, STATUS_OK};
+use sisyphus_driver_abi::{STATUS_OK, Status};
 
 use crate::boot::acpi::DmarRemappingUnit;
 use crate::capability::{Capability, DeviceMemoryRight};

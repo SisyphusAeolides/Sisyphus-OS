@@ -3,9 +3,9 @@ use crate::module::relocator::ExternalSymbolResolver;
 use crate::shim::linux_kpi;
 
 const MAXIMUM_SYMBOLS: usize = 64;
-// This is the entire version-labelled Linux contract: nine x86-64 bindings,
-// with printk restricted to the literal-only behavior documented by linux_kpi.
-const LINUX_6_1_KPI_SYMBOLS: [&[u8]; 9] = [
+// This is the entire version-labelled Linux contract, with printk restricted
+// to the literal-only behavior documented by linux_kpi.
+const LINUX_6_1_KPI_SYMBOLS: [&[u8]; 22] = [
     b"kmalloc",
     b"__kmalloc",
     b"kfree",
@@ -15,6 +15,19 @@ const LINUX_6_1_KPI_SYMBOLS: [&[u8]; 9] = [
     b"kmemdup",
     b"kmemdup_nul",
     b"kfree_sensitive",
+    b"memcpy",
+    b"memmove",
+    b"memset",
+    b"memcmp",
+    b"memchr",
+    b"strlen",
+    b"strnlen",
+    b"strcmp",
+    b"strncmp",
+    b"strscpy",
+    b"memzero_explicit",
+    b"kstrdup",
+    b"kstrndup",
 ];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -164,30 +177,33 @@ impl MirageEnclave {
             log: Some(log),
             device_control: None,
         };
-        self.insert_symbol(LINUX_6_1_KPI_SYMBOLS[0], allocate)?;
-        self.insert_symbol(LINUX_6_1_KPI_SYMBOLS[1], allocate)?;
-        self.insert_symbol(LINUX_6_1_KPI_SYMBOLS[2], deallocate)?;
-        self.insert_symbol(LINUX_6_1_KPI_SYMBOLS[3], log)?;
-        self.insert_symbol(
-            LINUX_6_1_KPI_SYMBOLS[4],
+        let addresses = [
+            allocate,
+            allocate,
+            deallocate,
+            log,
             linux_kpi::krealloc as *const () as usize as u64,
-        )?;
-        self.insert_symbol(
-            LINUX_6_1_KPI_SYMBOLS[5],
             linux_kpi::ksize as *const () as usize as u64,
-        )?;
-        self.insert_symbol(
-            LINUX_6_1_KPI_SYMBOLS[6],
             linux_kpi::kmemdup as *const () as usize as u64,
-        )?;
-        self.insert_symbol(
-            LINUX_6_1_KPI_SYMBOLS[7],
             linux_kpi::kmemdup_nul as *const () as usize as u64,
-        )?;
-        self.insert_symbol(
-            LINUX_6_1_KPI_SYMBOLS[8],
             linux_kpi::kfree_sensitive as *const () as usize as u64,
-        )?;
+            linux_kpi::linux_memcpy as *const () as usize as u64,
+            linux_kpi::linux_memmove as *const () as usize as u64,
+            linux_kpi::linux_memset as *const () as usize as u64,
+            linux_kpi::linux_memcmp as *const () as usize as u64,
+            linux_kpi::linux_memchr as *const () as usize as u64,
+            linux_kpi::linux_strlen as *const () as usize as u64,
+            linux_kpi::linux_strnlen as *const () as usize as u64,
+            linux_kpi::linux_strcmp as *const () as usize as u64,
+            linux_kpi::linux_strncmp as *const () as usize as u64,
+            linux_kpi::linux_strscpy as *const () as usize as u64,
+            linux_kpi::linux_memzero_explicit as *const () as usize as u64,
+            linux_kpi::kstrdup as *const () as usize as u64,
+            linux_kpi::kstrndup as *const () as usize as u64,
+        ];
+        for (name, address) in LINUX_6_1_KPI_SYMBOLS.into_iter().zip(addresses) {
+            self.insert_symbol(name, address)?;
+        }
         Ok(())
     }
 
@@ -278,6 +294,14 @@ mod tests {
             CompatibilityLevel::SymbolSubset
         );
         assert_eq!(enclave.resolve(b"kmalloc"), enclave.resolve(b"__kmalloc"));
+        assert_eq!(
+            enclave.resolve(b"strscpy"),
+            Some(linux_kpi::linux_strscpy as *const () as usize as u64)
+        );
+        assert_eq!(
+            enclave.resolve(b"kstrndup"),
+            Some(linux_kpi::kstrndup as *const () as usize as u64)
+        );
         assert!(enclave.resolve(b"schedule_work").is_none());
         assert_eq!(enclave.symbols().len(), LINUX_6_1_KPI_SYMBOLS.len());
         for (binding, expected_name) in enclave.symbols().iter().zip(LINUX_6_1_KPI_SYMBOLS) {

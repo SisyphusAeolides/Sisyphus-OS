@@ -14,7 +14,6 @@
 //!
 //! Does NOT replace Lazarus — it orchestrates multiple membranes.
 
-
 pub const MAX_DRIVER_CELLS: usize = 32;
 pub const LOAD_MITOSIS_THRESHOLD_FP: u32 = 0xE000; // ~87.5% load 16.16
 pub const MIN_TICKS_BETWEEN_MITOSIS: u64 = 10_000_000;

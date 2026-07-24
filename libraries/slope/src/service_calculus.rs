@@ -164,9 +164,7 @@ impl<const N: usize> ResidualCalibrator<N> {
         let numerator = self
             .length
             .checked_add(1)
-            .and_then(|value| {
-                value.checked_mul(usize::from(self.coverage_numerator))
-            })
+            .and_then(|value| value.checked_mul(usize::from(self.coverage_numerator)))
             .ok_or(CalibrationFault::ArithmeticOverflow)?;
         let denominator = usize::from(self.coverage_denominator);
         let rank = numerator
@@ -267,11 +265,7 @@ pub struct ServiceController<const N: usize> {
 }
 
 impl<const N: usize> ServiceController<N> {
-    pub fn new(
-        curve: ServiceCurve,
-        now_tick: u64,
-        secret: u64,
-    ) -> Result<Self, AdmissionFault> {
+    pub fn new(curve: ServiceCurve, now_tick: u64, secret: u64) -> Result<Self, AdmissionFault> {
         if !curve.valid() || secret == 0 || N == 0 {
             return Err(AdmissionFault::InvalidCurve);
         }
@@ -374,20 +368,25 @@ impl<const N: usize> ServiceController<N> {
             return Err(AdmissionFault::DeadlineUnsafe);
         }
 
+        // Reservation identity is authority: wrapping would let a stale
+        // certificate alias a future admission after the counter cycles.
+        // Compute the successor before mutating any admission state so
+        // exhaustion is an exact, fail-closed transaction abort.
+        let reservation_sequence = self
+            .reservation_sequence
+            .checked_add(1)
+            .ok_or(AdmissionFault::ArithmeticOverflow)?;
         let admitted_before = self.admitted_in_window;
         self.admitted_in_window = self
             .admitted_in_window
             .checked_add(1)
             .ok_or(AdmissionFault::ArithmeticOverflow)?;
-        self.reservation_sequence =
-            self.reservation_sequence.wrapping_add(1).max(1);
+        self.reservation_sequence = reservation_sequence;
         self.accepted = self.accepted.saturating_add(1);
-        self.virtual_backlog_q16 = self
-            .virtual_backlog_q16
-            .saturating_add(Q16_ONE);
+        self.virtual_backlog_q16 = self.virtual_backlog_q16.saturating_add(Q16_ONE);
 
-        let backlog_before = u16::try_from(backlog_before)
-            .map_err(|_| AdmissionFault::BacklogSaturated)?;
+        let backlog_before =
+            u16::try_from(backlog_before).map_err(|_| AdmissionFault::BacklogSaturated)?;
         let mut certificate = AdmissionCertificate {
             reservation_sequence: self.reservation_sequence,
             admitted_tick: now_tick,
@@ -403,28 +402,22 @@ impl<const N: usize> ServiceController<N> {
             calibration_root: self.calibrator.root(),
             certificate_root: 0,
         };
-        certificate.certificate_root =
-            admission_certificate_root(self.secret, certificate);
+        certificate.certificate_root = admission_certificate_root(self.secret, certificate);
         Ok(certificate)
     }
 
-    pub fn rollback(
-        &mut self,
-        certificate: AdmissionCertificate,
-    ) -> Result<(), AdmissionFault> {
+    pub fn rollback(&mut self, certificate: AdmissionCertificate) -> Result<(), AdmissionFault> {
         if !self.verify_certificate(certificate)
             || certificate.window_start != self.window_start
             || certificate.reservation_sequence != self.reservation_sequence
-            || self.admitted_in_window
-                != certificate.admitted_before.saturating_add(1)
+            || self.admitted_in_window != certificate.admitted_before.saturating_add(1)
         {
             return Err(AdmissionFault::StaleReservation);
         }
 
         self.admitted_in_window = certificate.admitted_before;
         self.accepted = self.accepted.saturating_sub(1);
-        self.virtual_backlog_q16 =
-            self.virtual_backlog_q16.saturating_sub(Q16_ONE);
+        self.virtual_backlog_q16 = self.virtual_backlog_q16.saturating_sub(Q16_ONE);
         Ok(())
     }
 
@@ -438,9 +431,7 @@ impl<const N: usize> ServiceController<N> {
         certificate: AdmissionCertificate,
         completion_tick: u64,
     ) -> Result<u64, AdmissionFault> {
-        if !self.verify_certificate(certificate)
-            || completion_tick < certificate.admitted_tick
-        {
+        if !self.verify_certificate(certificate) || completion_tick < certificate.admitted_tick {
             return Err(AdmissionFault::CorruptObservation);
         }
 
@@ -456,16 +447,14 @@ impl<const N: usize> ServiceController<N> {
             .push(residual)
             .map_err(|_| AdmissionFault::CorruptObservation)?;
 
-        self.virtual_backlog_q16 =
-            self.virtual_backlog_q16.saturating_sub(Q16_ONE);
+        self.virtual_backlog_q16 = self.virtual_backlog_q16.saturating_sub(Q16_ONE);
         if observed_delay > certificate.delay_bound_ticks {
             let excess = observed_delay - certificate.delay_bound_ticks;
             let pressure = excess
                 .checked_mul(Q16_ONE)
                 .and_then(|value| value.checked_div(self.curve.window_ticks))
                 .unwrap_or(u64::MAX);
-            self.virtual_backlog_q16 =
-                self.virtual_backlog_q16.saturating_add(pressure);
+            self.virtual_backlog_q16 = self.virtual_backlog_q16.saturating_add(pressure);
         }
         self.observed = self.observed.saturating_add(1);
         Ok(guard)
@@ -474,8 +463,7 @@ impl<const N: usize> ServiceController<N> {
     pub fn verify_certificate(&self, certificate: AdmissionCertificate) -> bool {
         certificate.valid()
             && certificate.curve_root == self.curve_root
-            && certificate.certificate_root
-                == admission_certificate_root(self.secret, certificate)
+            && certificate.certificate_root == admission_certificate_root(self.secret, certificate)
     }
 
     fn advance(&mut self, now_tick: u64) -> Result<(), AdmissionFault> {
@@ -498,13 +486,10 @@ impl<const N: usize> ServiceController<N> {
             self.admitted_in_window = 0;
 
             let service = windows
-                .checked_mul(u64::from(
-                    self.curve.minimum_completions_per_window,
-                ))
+                .checked_mul(u64::from(self.curve.minimum_completions_per_window))
                 .and_then(|value| value.checked_mul(Q16_ONE))
                 .ok_or(AdmissionFault::ArithmeticOverflow)?;
-            self.virtual_backlog_q16 =
-                self.virtual_backlog_q16.saturating_sub(service);
+            self.virtual_backlog_q16 = self.virtual_backlog_q16.saturating_sub(service);
         }
         self.last_tick = now_tick;
         Ok(())
@@ -533,17 +518,13 @@ pub fn service_curve_root(secret: u64, curve: ServiceCurve) -> u64 {
     mix(state, u64::from(curve.maximum_backlog))
 }
 
-pub fn admission_certificate_root(
-    secret: u64,
-    certificate: AdmissionCertificate,
-) -> u64 {
+pub fn admission_certificate_root(secret: u64, certificate: AdmissionCertificate) -> u64 {
     let mut state = mix(secret, certificate.reservation_sequence);
     state = mix(state, certificate.admitted_tick);
     state = mix(state, certificate.window_start);
     state = mix(
         state,
-        u64::from(certificate.backlog_before)
-            | (u64::from(certificate.admitted_before) << 16),
+        u64::from(certificate.backlog_before) | (u64::from(certificate.admitted_before) << 16),
     );
     state = mix(state, certificate.deterministic_delay_ticks);
     state = mix(state, certificate.uncertainty_guard_ticks);
@@ -556,14 +537,8 @@ pub fn admission_certificate_root(
 
 fn calibrator_root<const N: usize>(calibrator: &ResidualCalibrator<N>) -> u64 {
     let mut state = mix(calibrator.secret, calibrator.samples);
-    state = mix(
-        state,
-        u64::try_from(calibrator.length).unwrap_or(u64::MAX),
-    );
-    state = mix(
-        state,
-        u64::try_from(calibrator.cursor).unwrap_or(u64::MAX),
-    );
+    state = mix(state, u64::try_from(calibrator.length).unwrap_or(u64::MAX));
+    state = mix(state, u64::try_from(calibrator.cursor).unwrap_or(u64::MAX));
     state = mix(
         state,
         u64::from(calibrator.coverage_numerator)
@@ -609,8 +584,7 @@ mod tests {
 
     #[test]
     fn conformal_guard_tracks_positive_underprediction() {
-        let mut calibrator =
-            ResidualCalibrator::<8>::kernel_default(1, 1_000, 7).unwrap();
+        let mut calibrator = ResidualCalibrator::<8>::kernel_default(1, 1_000, 7).unwrap();
         for residual in [1, 2, 3, 4, 5, 6, 7, 100] {
             calibrator.push(residual).unwrap();
         }
@@ -637,13 +611,24 @@ mod tests {
     }
 
     #[test]
+    fn exhausted_reservation_identity_aborts_without_partial_admission() {
+        let mut controller = ServiceController::<8>::new(curve(), 1_000, 7).unwrap();
+        controller.reservation_sequence = u64::MAX;
+        let before = controller;
+
+        assert_eq!(
+            controller.admit(1_000, 1_500, 0),
+            Err(AdmissionFault::ArithmeticOverflow)
+        );
+        assert_eq!(controller, before);
+    }
+
+    #[test]
     fn completion_updates_uncertainty_and_drains_virtual_backlog() {
         let mut controller = ServiceController::<8>::new(curve(), 1_000, 7).unwrap();
         let certificate = controller.admit(1_000, 2_000, 0).unwrap();
         let before = controller.uncertainty_guard_ticks();
-        let after = controller
-            .observe_completion(certificate, 1_400)
-            .unwrap();
+        let after = controller.observe_completion(certificate, 1_400).unwrap();
         assert!(after >= before);
         assert_eq!(controller.observed(), 1);
     }

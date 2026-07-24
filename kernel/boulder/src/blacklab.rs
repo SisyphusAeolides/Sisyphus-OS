@@ -19,7 +19,7 @@ use ::blacklab::tartarus::{
     FaultAccess, FaultDecision, FaultSnapshot, TartarusError, TartarusVoid, TombstoneRequest,
 };
 use ::blacklab::thermal::{
-    InputQuantization, DIAGNOSTIC_THERMAL_NETWORK, ThermalError, ThermalOracle, ThermalSample,
+    DIAGNOSTIC_THERMAL_NETWORK, InputQuantization, ThermalError, ThermalOracle, ThermalSample,
 };
 use ::blacklab::timeline::{CounterScale, TimelineError, WorkloadTerm, logical_delta};
 

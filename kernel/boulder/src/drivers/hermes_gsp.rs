@@ -1,13 +1,13 @@
 use core::marker::PhantomData;
 
 use sisyphus_driver_abi::gpu::{
-    evaluate_compatibility, GpuCompatibilityManifest, GpuCompatibilityProof, GpuDeviceEvidence,
+    GpuCompatibilityManifest, GpuCompatibilityProof, GpuDeviceEvidence, evaluate_compatibility,
 };
 use sisyphus_driver_abi::hermes::{
-    HermesBootInstruction, HermesNormalizedCommand, HermesNormalizedEvent, HermesPciIdentity,
-    HermesProbeEvidence, HermesTransportProfile, HERMES_BOOT_STAGE_FIRMWARE,
-    HERMES_BOOT_STAGE_IGNITE, HERMES_BOOT_STAGE_NEGOTIATE, HERMES_BOOT_STAGE_QUEUES,
-    HERMES_EVENT_ASYNC, HERMES_EVENT_FAULT, HERMES_EVENT_REPLY, HERMES_MAX_NORMALIZED_PAYLOAD,
+    HERMES_BOOT_STAGE_FIRMWARE, HERMES_BOOT_STAGE_IGNITE, HERMES_BOOT_STAGE_NEGOTIATE,
+    HERMES_BOOT_STAGE_QUEUES, HERMES_EVENT_ASYNC, HERMES_EVENT_FAULT, HERMES_EVENT_REPLY,
+    HERMES_MAX_NORMALIZED_PAYLOAD, HermesBootInstruction, HermesNormalizedCommand,
+    HermesNormalizedEvent, HermesPciIdentity, HermesProbeEvidence, HermesTransportProfile,
 };
 
 use super::hermes_service::{
@@ -158,6 +158,7 @@ pub enum HermesFault {
     DeadlineExpired,
     DeviceFault,
     RecoveryRequired,
+    CorrelationSpaceExhausted,
     ArithmeticOverflow,
 }
 
@@ -553,7 +554,6 @@ struct Runtime<const PENDING: usize> {
     next_sequence: u32,
     command_producer: u32,
     event_consumer: u32,
-    feature_epoch: u32,
     negotiated_features: u64,
     poisoned: bool,
     pending: PendingTable<PENDING>,
@@ -598,7 +598,6 @@ impl<const PENDING: usize> Runtime<PENDING> {
             next_sequence: 1,
             command_producer: 0,
             event_consumer: 0,
-            feature_epoch: 0,
             negotiated_features: 0,
             poisoned: false,
             pending: PendingTable::new(),
@@ -607,14 +606,31 @@ impl<const PENDING: usize> Runtime<PENDING> {
         })
     }
 
-    fn allocate_sequence(&mut self) -> u32 {
-        let sequence = self.next_sequence;
-        self.next_sequence = self.next_sequence.wrapping_add(1);
-        if self.next_sequence == 0 {
-            self.next_sequence = 1;
-            self.epoch = self.epoch.wrapping_add(1).max(1);
+    /// Allocates one correlation identity without ever reusing an earlier
+    /// `(epoch, sequence)` pair. Sequence zero is the permanently retired
+    /// state reached after the terminal `u32::MAX/u32::MAX` identity.
+    fn allocate_correlation(&mut self) -> Result<(u32, u32), HermesFault> {
+        if self.epoch == 0 || self.next_sequence == 0 {
+            return Err(HermesFault::CorrelationSpaceExhausted);
         }
-        sequence
+
+        let correlation = (self.epoch, self.next_sequence);
+        if self.next_sequence == u32::MAX {
+            match self.epoch.checked_add(1) {
+                Some(next_epoch) => {
+                    self.epoch = next_epoch;
+                    self.next_sequence = 1;
+                }
+                None => {
+                    // The terminal pair remains valid for the caller, but no
+                    // future command may alias an identity from epoch one.
+                    self.next_sequence = 0;
+                }
+            }
+        } else {
+            self.next_sequence += 1;
+        }
+        Ok(correlation)
     }
 }
 
@@ -854,8 +870,9 @@ impl<'a, Backend: HermesPlatform + ?Sized, const PENDING: usize>
 
         let desired_features = self.profile.required_features | self.profile.optional_features;
         let mut negotiate = HermesNormalizedCommand::empty();
-        negotiate.epoch = self.runtime.epoch;
-        negotiate.sequence = self.runtime.allocate_sequence();
+        let (epoch, sequence) = self.runtime.allocate_correlation()?;
+        negotiate.epoch = epoch;
+        negotiate.sequence = sequence;
         negotiate.opcode = HERMES_OPCODE_NEGOTIATE;
         negotiate.deadline_tick = deadline_tick;
         negotiate.arguments[0] = desired_features;
@@ -905,7 +922,6 @@ impl<'a, Backend: HermesPlatform + ?Sized, const PENDING: usize>
         }
 
         self.runtime.negotiated_features = negotiated_features;
-        self.runtime.feature_epoch = self.runtime.feature_epoch.wrapping_add(1).max(1);
 
         Ok(Hermes {
             backend: self.backend,
@@ -981,8 +997,16 @@ impl<Backend: HermesPlatform + ?Sized, const PENDING: usize> Hermes<'_, Backend,
             .admit(now_tick, deadline_tick, self.runtime.pending.live_count())
             .map_err(map_admission_fault)?;
 
-        let sequence = self.runtime.allocate_sequence();
-        let epoch = self.runtime.epoch;
+        let (epoch, sequence) = match self.runtime.allocate_correlation() {
+            Ok(correlation) => correlation,
+            Err(error) => {
+                self.runtime
+                    .service
+                    .rollback(admission)
+                    .map_err(|_| HermesFault::ServiceReservationCorrupt)?;
+                return Err(error);
+            }
+        };
 
         let mut command = HermesNormalizedCommand::empty();
         command.epoch = epoch;
@@ -1731,12 +1755,12 @@ fn earlier_deadline(first: u64, second: u64) -> u64 {
 mod tests {
     use super::*;
     use crate::drivers::drivernet::fingerprint::{
-        BarEvidence, BAR_64BIT, BAR_IO, BAR_PRESENT, TOPOLOGY_IOMMU_ISOLATED,
+        BAR_64BIT, BAR_IO, BAR_PRESENT, BarEvidence, TOPOLOGY_IOMMU_ISOLATED,
     };
-    use crate::drivers::gpu_portability::{manifest_for, HERMES_DRIVER_ID};
+    use crate::drivers::gpu_portability::{HERMES_DRIVER_ID, manifest_for};
     use crate::sync::SpinLock;
     use sisyphus_driver_abi::gpu::{
-        GpuBarEvidence, GpuDeviceEvidence, GPU_BAR_PRESENT, GPU_TOPOLOGY_IOMMU_ISOLATED,
+        GPU_BAR_PRESENT, GPU_TOPOLOGY_IOMMU_ISOLATED, GpuBarEvidence, GpuDeviceEvidence,
     };
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2434,6 +2458,55 @@ mod tests {
         assert!(tick_reached(100, 100));
         assert!(tick_reached(101, 100));
         assert!(!tick_reached(99, 100));
+    }
+
+    #[test]
+    fn correlation_rotation_is_atomic_and_terminal_space_never_wraps() {
+        let profile = transport_profile(false);
+        let mut runtime = Runtime::<1>::new(&identity(), &profile, 1, 17).unwrap();
+
+        runtime.epoch = 41;
+        runtime.next_sequence = u32::MAX;
+        assert_eq!(runtime.allocate_correlation(), Ok((41, u32::MAX)));
+        assert_eq!(runtime.allocate_correlation(), Ok((42, 1)));
+
+        runtime.epoch = u32::MAX;
+        runtime.next_sequence = u32::MAX;
+        assert_eq!(runtime.allocate_correlation(), Ok((u32::MAX, u32::MAX)));
+        assert_eq!(runtime.next_sequence, 0);
+        assert_eq!(
+            runtime.allocate_correlation(),
+            Err(HermesFault::CorrelationSpaceExhausted)
+        );
+    }
+
+    #[test]
+    fn exhausted_correlation_rolls_back_service_admission_exactly() {
+        let platform = FaultPlatform::new(FaultPoint::ShortBar);
+        let codec = TestCodec {
+            profile: transport_profile(false),
+            decode_error: false,
+        };
+        let mut hermes = online(&platform, &codec);
+        hermes.runtime.epoch = u32::MAX;
+        hermes.runtime.next_sequence = 0;
+        let accepted = hermes.runtime.service.accepted();
+        let virtual_backlog = hermes.runtime.service.virtual_backlog_q16();
+
+        assert_eq!(
+            hermes.submit(1, 0, 0, [0; 8], &[], 10_000),
+            Err(HermesFault::CorrelationSpaceExhausted)
+        );
+        assert_eq!(hermes.runtime.pending.live_count(), 0);
+        assert_eq!(hermes.runtime.service.accepted(), accepted);
+        assert_eq!(
+            hermes.runtime.service.virtual_backlog_q16(),
+            virtual_backlog
+        );
+        assert_eq!(
+            hermes.runtime.last_admission,
+            HermesAdmissionCertificate::EMPTY
+        );
     }
 
     fn admission(sequence: u64) -> HermesAdmissionCertificate {

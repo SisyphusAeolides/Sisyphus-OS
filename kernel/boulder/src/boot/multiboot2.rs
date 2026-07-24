@@ -121,7 +121,6 @@ impl BootInformation {
         Rsdp::parse(payload).map_err(|_| BootError::MalformedAcpiRsdp)
     }
 
-
     pub fn framebuffer(self) -> Result<Option<BootFramebuffer>, BootError> {
         let Some(tag) = self.find_tag(TAG_FRAMEBUFFER)? else {
             return Ok(None);
@@ -138,12 +137,7 @@ impl BootInformation {
         let bits_per_pixel = unsafe { read_u8(tag.address + 28) };
         let framebuffer_type = unsafe { read_u8(tag.address + 29) };
 
-        if physical_address == 0
-            || pitch == 0
-            || width == 0
-            || height == 0
-            || bits_per_pixel == 0
-        {
+        if physical_address == 0 || pitch == 0 || width == 0 || height == 0 || bits_per_pixel == 0 {
             return Err(BootError::MalformedFramebuffer);
         }
 
@@ -282,7 +276,6 @@ struct Tag {
     address: usize,
     size: usize,
 }
-
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BootFramebuffer {

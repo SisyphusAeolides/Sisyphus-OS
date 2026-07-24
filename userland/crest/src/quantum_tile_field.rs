@@ -373,12 +373,7 @@ impl QuantumTileField {
     ///
     /// Deferred tiles retain their signal state and can be selected by the next
     /// frame without reconstructing damage from external state.
-    pub fn complete_prefix(
-        &mut self,
-        schedule: &TileSchedule,
-        completed: usize,
-        tick: u64,
-    ) {
+    pub fn complete_prefix(&mut self, schedule: &TileSchedule, completed: usize, tick: u64) {
         let completed = completed.min(schedule.scheduled);
         self.complete_indices(&schedule.indices()[..completed], tick);
     }

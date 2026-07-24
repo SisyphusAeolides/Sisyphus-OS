@@ -11,7 +11,6 @@
 //! Syntropic ECC can protect the bulk frame once.
 //! AdS boundary gate admits the IPC that requests entanglement.
 
-
 pub const MAX_BRIDGES: usize = 128;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

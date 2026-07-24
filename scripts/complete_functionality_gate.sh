@@ -39,12 +39,13 @@ fake_success=$(
 [ -z "$fake_success" ] ||
   fail "error-to-success conversion remains:\n$fake_success"
 
+"$root/scripts/check-formal-models.sh"
 cargo fmt --all --check
 cargo check --workspace
 cargo test --workspace
 
-cargo +nightly user-push
-cargo +nightly kernel
+cargo user-push
+cargo kernel
 
 "$root/scripts/test-boot.sh"
 

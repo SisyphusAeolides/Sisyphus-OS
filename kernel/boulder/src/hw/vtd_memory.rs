@@ -7,9 +7,9 @@
 
 use core::mem::size_of;
 use core::ptr;
-use core::sync::atomic::{fence, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU64, Ordering, fence};
 
-use abyss::paging::{PhysicalAddress, PAGE_SIZE};
+use abyss::paging::{PAGE_SIZE, PhysicalAddress};
 
 use crate::capability::{Capability, PhysicalMemoryControl};
 use crate::memory::frame_pool::PhysicalFramePool;

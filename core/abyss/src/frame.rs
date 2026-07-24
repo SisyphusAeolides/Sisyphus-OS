@@ -1,5 +1,5 @@
 use crate::memory::{MemoryMap, MemoryRegionKind};
-use crate::paging::{FrameAllocator, PhysicalAddress, PAGE_SIZE};
+use crate::paging::{FrameAllocator, PAGE_SIZE, PhysicalAddress};
 use crate::reservation::ReservationTable;
 
 const BITS_PER_WORD: usize = u64::BITS as usize;

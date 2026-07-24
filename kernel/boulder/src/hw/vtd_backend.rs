@@ -9,8 +9,8 @@
 //! platform owner supplies those pages and the live register transport.
 
 use sisyphus_driver_abi::{
-    Handle, Status, STATUS_BUSY, STATUS_INVALID_ARGUMENT, STATUS_IO_ERROR, STATUS_NOT_FOUND,
-    STATUS_OK, STATUS_UNSUPPORTED,
+    Handle, STATUS_BUSY, STATUS_INVALID_ARGUMENT, STATUS_IO_ERROR, STATUS_NOT_FOUND, STATUS_OK,
+    STATUS_UNSUPPORTED, Status,
 };
 
 use crate::boot::acpi::{DmarEndpoint, DmarInfo, DmarRemappingUnit};
@@ -296,13 +296,13 @@ pub struct VtdDmaBackend<
 }
 
 impl<
-        Registers: VtdRegisterBackend,
-        Memory: SlptPageMemory,
-        Tables: VtdRootContextStorage,
-        const PAGES: usize,
-        const BATCHES: usize,
-        const MAX_BATCH_PAGES: usize,
-    > VtdDmaBackend<Registers, Memory, Tables, PAGES, BATCHES, MAX_BATCH_PAGES>
+    Registers: VtdRegisterBackend,
+    Memory: SlptPageMemory,
+    Tables: VtdRootContextStorage,
+    const PAGES: usize,
+    const BATCHES: usize,
+    const MAX_BATCH_PAGES: usize,
+> VtdDmaBackend<Registers, Memory, Tables, PAGES, BATCHES, MAX_BATCH_PAGES>
 {
     #[allow(clippy::too_many_arguments)]
     pub fn build(
@@ -577,13 +577,13 @@ impl<
 }
 
 impl<
-        Registers: VtdRegisterBackend + Send,
-        Memory: SlptPageMemory + Send,
-        Tables: VtdRootContextStorage,
-        const PAGES: usize,
-        const BATCHES: usize,
-        const MAX_BATCH_PAGES: usize,
-    > DmaRemappingBackend
+    Registers: VtdRegisterBackend + Send,
+    Memory: SlptPageMemory + Send,
+    Tables: VtdRootContextStorage,
+    const PAGES: usize,
+    const BATCHES: usize,
+    const MAX_BATCH_PAGES: usize,
+> DmaRemappingBackend
     for VtdDmaBackend<Registers, Memory, Tables, PAGES, BATCHES, MAX_BATCH_PAGES>
 {
     fn isolate_device(&self, device: PciAddress) -> Result<Handle, Status> {
@@ -669,13 +669,13 @@ impl<
 }
 
 impl<
-        Registers: VtdRegisterBackend,
-        Memory: SlptPageMemory,
-        Tables: VtdRootContextStorage,
-        const PAGES: usize,
-        const BATCHES: usize,
-        const MAX_BATCH_PAGES: usize,
-    > VtdBackendCore<Registers, Memory, Tables, PAGES, BATCHES, MAX_BATCH_PAGES>
+    Registers: VtdRegisterBackend,
+    Memory: SlptPageMemory,
+    Tables: VtdRootContextStorage,
+    const PAGES: usize,
+    const BATCHES: usize,
+    const MAX_BATCH_PAGES: usize,
+> VtdBackendCore<Registers, Memory, Tables, PAGES, BATCHES, MAX_BATCH_PAGES>
 {
     fn valid_domain(&self, domain: Handle) -> bool {
         self.domain_active
@@ -1390,9 +1390,11 @@ mod tests {
             STATUS_OK
         );
         assert!(!backend.batch_is_live(batch));
-        assert!(backend
-            .batch_handle(0x20_0000, 3 * PAGE_SIZE as usize)
-            .is_none());
+        assert!(
+            backend
+                .batch_handle(0x20_0000, 3 * PAGE_SIZE as usize)
+                .is_none()
+        );
         assert_eq!(
             backend.map(
                 handle,
@@ -1439,9 +1441,11 @@ mod tests {
             ),
             STATUS_IO_ERROR
         );
-        assert!(backend
-            .batch_handle(0x40_0000, PAGE_SIZE as usize)
-            .is_some());
+        assert!(
+            backend
+                .batch_handle(0x40_0000, PAGE_SIZE as usize)
+                .is_some()
+        );
         assert_eq!(
             backend.last_engine_fault(),
             Some(VtdEngineFault::CompletionRejected(
