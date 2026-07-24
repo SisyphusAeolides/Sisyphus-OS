@@ -1,5 +1,4 @@
 pub mod acpi;
-pub mod hotplug;
 pub mod iommu;
 pub mod iova;
 pub mod pci;

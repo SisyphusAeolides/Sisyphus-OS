@@ -15,6 +15,16 @@ use boulder::capability::{
     PolicyControl, ProcessInstallControl, ResonanceControl, UserlandImageControl,
 };
 use boulder::cpu::topology::{self, ExecutionClass, TopologyPolicy};
+use boulder::drivers::device_census::{
+    AUTHORITY_DELEGATE, AUTHORITY_MMIO, BootDeviceCensus, DeviceState, DriverBindingManifest,
+    EVIDENCE_CLASS_TUPLE, EVIDENCE_IDENTITY, EVIDENCE_PCI_CONFIGURATION, MAXIMUM_DISPLAY_CLAIMS,
+    boot_device_record,
+};
+use boulder::drivers::drivernet::fingerprint::LegacyConfigurationReader;
+use boulder::drivers::xhci::{
+    XHCI_PROBE_DRIVER_ID, XhciProbeCensus, boot_xhci_snapshot, boot_xhci_summary,
+    containment_root as xhci_containment_root, probe_read_only, publish_boot_xhci,
+};
 use boulder::fabric::{
     Completion, KERNEL_FABRIC, NodeCapabilities, NodeClass, WorkDescriptor, opcode,
 };
@@ -1002,6 +1012,167 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
             halt();
         }
     };
+    let census_secret = gpu_domains.drivernet.fingerprint.rotate_left(17) | 1;
+    let mut device_census =
+        match BootDeviceCensus::measure_pci(&pci_inventory, dmar.as_ref(), census_secret) {
+            Ok(census) => census,
+            Err(error) => {
+                let _ = writeln!(serial, "Boulder: device census failed: {error:?}");
+                halt();
+            }
+        };
+    let display_route = DriverBindingManifest {
+        driver_id: 0x4452_4956_4552_4e45,
+        family: boulder::drivers::device_census::DeviceFamily::DisplayAdapter,
+        vendor_id: 0xffff,
+        device_id_mask: 0,
+        device_id_value: 0,
+        class_code_mask: u8::MAX,
+        class_code_value: 0x03,
+        subclass_mask: 0,
+        subclass_value: 0,
+        programming_interface_mask: 0,
+        programming_interface_value: 0,
+        revision_minimum: 0,
+        revision_maximum: u8::MAX,
+        required_evidence: EVIDENCE_IDENTITY | EVIDENCE_CLASS_TUPLE | EVIDENCE_PCI_CONFIGURATION,
+        requested_authority: AUTHORITY_DELEGATE,
+    };
+    let display_claims = match device_census
+        .claim_family::<MAXIMUM_DISPLAY_CLAIMS>(display_route, AUTHORITY_DELEGATE)
+    {
+        Ok(claims) => claims,
+        Err(error) => {
+            let _ = writeln!(serial, "Boulder: display routing claim failed: {error:?}");
+            halt();
+        }
+    };
+    let xhci_route = DriverBindingManifest {
+        driver_id: XHCI_PROBE_DRIVER_ID,
+        family: boulder::drivers::device_census::DeviceFamily::UsbHostController,
+        vendor_id: 0xffff,
+        device_id_mask: 0,
+        device_id_value: 0,
+        class_code_mask: u8::MAX,
+        class_code_value: 0x0c,
+        subclass_mask: u8::MAX,
+        subclass_value: 0x03,
+        programming_interface_mask: u8::MAX,
+        programming_interface_value: 0x30,
+        revision_minimum: 0,
+        revision_maximum: u8::MAX,
+        required_evidence: EVIDENCE_IDENTITY | EVIDENCE_CLASS_TUPLE | EVIDENCE_PCI_CONFIGURATION,
+        requested_authority: AUTHORITY_MMIO,
+    };
+    let xhci_claims = match device_census
+        .claim_family::<{ boulder::drivers::xhci::MAXIMUM_XHCI_CONTROLLERS }>(
+            xhci_route,
+            AUTHORITY_MMIO,
+        ) {
+        Ok(claims) => claims,
+        Err(error) => {
+            let _ = writeln!(serial, "Boulder: xHCI routing claim failed: {error:?}");
+            halt();
+        }
+    };
+    let detected_devices = device_census.summary();
+    let _ = writeln!(
+        serial,
+        "Boulder: device census detected total={} display={} audio={} multimedia-video={} network={} wireless={} usb-host={} input={} other={} root={:#x}",
+        detected_devices.total,
+        detected_devices.display,
+        detected_devices.audio,
+        detected_devices.multimedia_video,
+        detected_devices.network,
+        detected_devices.wireless,
+        detected_devices.usb_hosts,
+        detected_devices.input,
+        detected_devices.other,
+        detected_devices.root,
+    );
+    let xhci_secret = census_secret.rotate_left(23) | 1;
+    let mut xhci_census = match XhciProbeCensus::new(xhci_secret) {
+        Ok(census) => census,
+        Err(error) => {
+            let _ = writeln!(serial, "Boulder: xHCI census creation failed: {error:?}");
+            halt();
+        }
+    };
+    let configuration = LegacyConfigurationReader;
+    let xhci_mmio = authority.grant::<DeviceMemoryControl>();
+    for claim in xhci_claims.claims().iter().copied() {
+        let address = claim.address();
+        let Some(evidence) = device_census
+            .evidence()
+            .find(|evidence| evidence.address == address)
+            .copied()
+        else {
+            let _ = writeln!(serial, "Boulder: xHCI claim lost its device evidence");
+            halt();
+        };
+        let authorization =
+            match device_census.authorize(claim, XHCI_PROBE_DRIVER_ID, AUTHORITY_MMIO) {
+                Ok(authorization) => authorization,
+                Err(error) => {
+                    let _ = writeln!(serial, "Boulder: xHCI live authorization failed: {error:?}");
+                    halt();
+                }
+            };
+        match probe_read_only(
+            authorization,
+            evidence,
+            &configuration,
+            &xhci_mmio,
+            xhci_secret,
+        ) {
+            Ok(snapshot) => {
+                if let Err(error) = xhci_census.insert(snapshot) {
+                    let _ = writeln!(serial, "Boulder: xHCI snapshot retention failed: {error:?}");
+                    halt();
+                }
+                if let Err(error) = device_census.defer(claim, snapshot.snapshot_root) {
+                    let _ = writeln!(serial, "Boulder: xHCI deferral failed: {error:?}");
+                    halt();
+                }
+            }
+            Err(error) => {
+                let _ = writeln!(
+                    serial,
+                    "Boulder: xHCI read-only probe quarantined {:?}: {error:?}",
+                    address,
+                );
+                let Some(containment_root) =
+                    xhci_containment_root(xhci_secret, claim.evidence_root(), address, error)
+                else {
+                    let _ = writeln!(serial, "Boulder: xHCI containment sealing failed");
+                    halt();
+                };
+                if let Err(containment) = device_census.quarantine(claim, containment_root) {
+                    let _ = writeln!(serial, "Boulder: xHCI quarantine failed: {containment:?}");
+                    halt();
+                }
+            }
+        }
+    }
+    let xhci_summary = match publish_boot_xhci(xhci_census) {
+        Ok(summary) => summary,
+        Err(error) => {
+            let _ = writeln!(serial, "Boulder: xHCI census publication failed: {error:?}");
+            halt();
+        }
+    };
+    if boot_xhci_summary() != Some(xhci_summary) {
+        let _ = writeln!(serial, "Boulder: retained xHCI census verification failed");
+        halt();
+    }
+    let _ = writeln!(
+        serial,
+        "Boulder: xHCI capability census controllers={} ports={} slots={} deferred=true root={:#x}",
+        xhci_summary.controllers,
+        xhci_summary.total_ports,
+        xhci_summary.total_slots,
+        xhci_summary.root,
+    );
     let mut blacklab_complex =
         match boulder::blacklab_bootstrap::KernelBlackLabComplex::new(gpu_domains.blacklab) {
             Ok(complex) => complex,
@@ -1033,6 +1204,101 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
         serial,
         "Boulder: drivernet resolved {} GPU slot(s), {} display function(s)",
         drivernet.length, drivernet.fingerprint_summary.display_functions
+    );
+    for claim in display_claims.claims().iter().copied() {
+        let address = claim.address();
+        let resolution = drivernet.resolutions().iter().find(|resolution| {
+            resolution.fingerprint.segment == address.segment
+                && resolution.fingerprint.bus == address.bus
+                && resolution.fingerprint.slot == address.slot
+                && resolution.fingerprint.function == address.function
+        });
+        match resolution {
+            Some(resolution)
+                if resolution.status
+                    == boulder::drivers::drivernet::GpuResolutionStatus::Committed =>
+            {
+                if let Err(error) = device_census.commit(claim, resolution.resolution_root) {
+                    let _ = writeln!(serial, "Boulder: display binding commit failed: {error:?}");
+                    halt();
+                }
+            }
+            Some(resolution) => {
+                let containment_root = if resolution.resolution_root != 0 {
+                    resolution.resolution_root
+                } else {
+                    resolution.decision_root
+                };
+                if let Err(error) = device_census.quarantine(claim, containment_root) {
+                    let _ = writeln!(
+                        serial,
+                        "Boulder: display binding quarantine failed: {error:?}"
+                    );
+                    halt();
+                }
+            }
+            None => {
+                if let Err(error) = device_census.quarantine(claim, detected_devices.root) {
+                    let _ = writeln!(
+                        serial,
+                        "Boulder: unresolved display containment failed: {error:?}"
+                    );
+                    halt();
+                }
+            }
+        }
+    }
+    let device_summary = match boulder::drivers::device_census::publish_boot_census(device_census) {
+        Ok(summary) => summary,
+        Err(error) => {
+            let _ = writeln!(
+                serial,
+                "Boulder: device census publication failed: {error:?}"
+            );
+            halt();
+        }
+    };
+    if boulder::drivers::device_census::boot_census_summary() != Some(device_summary) {
+        let _ = writeln!(
+            serial,
+            "Boulder: retained device census verification failed"
+        );
+        halt();
+    }
+    for claim in xhci_claims.claims().iter().copied() {
+        let address = claim.address();
+        let Some(record) = boot_device_record(address) else {
+            let _ = writeln!(serial, "Boulder: retained xHCI device record missing");
+            halt();
+        };
+        match boot_xhci_snapshot(address) {
+            Some(snapshot)
+                if record.state == DeviceState::Deferred
+                    && record.driver_id == XHCI_PROBE_DRIVER_ID
+                    && record.authority & AUTHORITY_MMIO != 0
+                    && record.terminal_root == snapshot.snapshot_root
+                    && record.evidence.evidence_root == snapshot.evidence_root
+                    && snapshot.binding_root != 0 =>
+            {
+                // The retained transport prerequisite and the retained device
+                // binding name the same measured PCI function.
+            }
+            None if record.state == DeviceState::Quarantined => {}
+            _ => {
+                let _ = writeln!(serial, "Boulder: retained xHCI evidence diverged");
+                halt();
+            }
+        }
+    }
+    let _ = writeln!(
+        serial,
+        "Boulder: device bindings retained detected={} claimed={} operational={} quarantined={} deferred={} root={:#x}",
+        device_summary.detected,
+        device_summary.claimed,
+        device_summary.operational,
+        device_summary.quarantined,
+        device_summary.deferred,
+        device_summary.root,
     );
 
     if let Some(primary) = drivernet.primary().filter(|resolution| {

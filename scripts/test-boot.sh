@@ -13,6 +13,9 @@ timeout --signal=TERM 10s qemu-system-x86_64 \
     -cdrom "$image" \
     -m 256M \
     -smp 4 \
+    -device qemu-xhci,id=xhci \
+    -device usb-kbd,bus=xhci.0 \
+    -device usb-tablet,bus=xhci.0 \
     -no-reboot \
     -no-shutdown \
     -display none \
@@ -36,6 +39,9 @@ grep -Fq "PID1 plan entry=" "$output"
 grep -Fq "install=frame-backed:1" "$output"
 grep -Fq "segments=3, retained=true, cr3_activation=validated, argv_envp=prepared, launch=pending" "$output"
 grep -Fq "Boulder: Kairos profile CPUs=4" "$output"
+grep -Fq "wireless=0 usb-host=1 input=0" "$output"
+grep -Fq "Boulder: xHCI capability census controllers=1" "$output"
+grep -Fq "Boulder: device bindings retained detected=" "$output"
 grep -Fq "Boulder: local APIC timer" "$output"
 grep -Fq "Boulder: ignition Multiboot2 online, userland_ready=true" "$output"
 grep -Fq "Boulder: interrupt-routing milestone complete" "$output"

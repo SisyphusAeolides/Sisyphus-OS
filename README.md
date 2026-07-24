@@ -26,10 +26,12 @@ not happen.
 | Firmware display | Implemented | Multiboot framebuffer evidence, retained object, bounded MMIO mapping, write/read verification |
 | Native GPU activation | Fail-closed | Compatibility proof and probe evidence exist; activation requires real generation-specific BAR, DMA, interrupt, reset, and firmware backends |
 | Hermes GSP transport | Implemented foundation | Versioned wire ABI, compatibility manifests, bounded rings, deadline admission, reply tracking, fault states |
-| Crest software compositor | Implemented | Fixed-point scene evaluation, damage tiles, deterministic first-light frame |
+| Crest software compositor | Library foundation | Fixed-point scene evaluation, damage tiles, deterministic first-light frame; no retained input/presentation session loop yet |
 | Crest hardware presentation | In progress | Firmware scanout exists in Boulder; a general userland present lease is not yet complete |
 | Spectral resource geometry | Implemented | Hodge 1-skeleton, normalized-Laplacian Fiedler cut, fixed-point heat flow, periodic recomputation |
 | Foreign driver personalities | Version-scoped | Object validation and narrow service tables exist; unsupported contracts reject loading |
+| Automatic device census | Implemented foundation | Retained identity/class/command/BAR evidence, exact tuple claims, live authorization, queryable terminal records |
+| xHCI transport discovery | Implemented prerequisite | xHCI-only claim, configuration revalidation, corrected geometry, authorization-bound deferred snapshot |
 | Functional-source gate | Implemented | Rejects tracked recovery debris, unfinished markers, simulated success, and production dead-code suppression |
 
 A subsystem should be described as complete only after the exact commit passes
@@ -258,11 +260,37 @@ allocation, interrupt, and unwind contracts. Unresolved contracts reject the
 module. Cross-ABI thunks must prove register, stack, floating-point, and unwind
 translation before executable use.
 
+The boot device census keeps the raw PCI class tuple, command state, and BAR
+assignments intact across every function, including display-plus-audio
+multifunction devices. It deliberately
+labels `02/80` as an other network controller rather than Wi-Fi,
+multimedia-video as a controller rather than a camera, and xHCI as a USB host
+rather than a keyboard or trackpad. Route manifests mask and match the exact
+class/subclass/programming-interface tuple before issuing a non-cloneable,
+live-slot authorization. Each display route is claimed before probe, then
+committed or quarantined from DriverNet's measured result. A failed
+rollback is terminal and prevents every later candidate from touching that
+requester.
+
+The first USB transport step is similarly narrow and real. Boulder claims an
+xHCI-class PCI function before access, revalidates its identity, command state,
+class tuple, header type, and every BAR word against the retained census, then
+decodes BAR0 without mutating or sizing it. It maps only the capability header,
+validates the aligned capability length, BCD interface version, controller
+slots, interrupters, ports, scratchpad geometry, runtime and doorbell offsets,
+seals the observation to the live authorization, unmaps it, and retains a
+queryable snapshot. Failure containment roots bind the device and fault class.
+The binding is marked deferred because command/event
+rings and USB child enumeration are not implemented yet; attached QEMU keyboard
+and tablet devices are therefore not misreported as supported input devices.
+
 ## Formal authority bridge
 
 The dependent-type models are build inputs, not essays. Idris2 checks total
 driver lifecycle and package transaction witnesses without holes or totality
-escape hatches. Agda checks the privilege-ring transition model under `--safe`
+escape hatches. Driver matching proves equality between the observed and
+selected PCI class tuples rather than accepting a Boolean assertion. Agda
+checks the privilege-ring transition model under `--safe`
 and `--without-K`, without postulates or imported libraries.
 
 The checker emits an attestation containing the exact SHA-256 root of each

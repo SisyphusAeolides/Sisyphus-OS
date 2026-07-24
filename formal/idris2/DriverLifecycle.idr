@@ -144,3 +144,165 @@ sampleAdmissionAccepted =
   case sampleAdmission of
     AdmissionRejected fault => False
     AdmissionAccepted certificate => True
+
+-- A binding reservation is indexed by both the observed device and its ledger
+-- generation. There is deliberately no transition from rollback debt to a new
+-- candidate: only a complete cleanup advances the generation and returns the
+-- slot to DetectedBinding.
+
+public export
+data BindingPhase
+  = DetectedBinding
+  | ReservedBinding
+  | ActiveBinding
+  | RollbackDebt
+  | BindingQuarantined
+  | DeferredBinding
+
+public export
+record RawMatch where
+  constructor MkRawMatch
+  observedDevice : Nat
+  selectedDriver : Nat
+  identityMeasured : Bool
+  observedClassTuple : Nat
+  selectedClassTuple : Nat
+
+public export
+record MatchCertificate (device : Nat) where
+  constructor MkMatchCertificate
+  observedDevice : Nat
+  selectedDriver : Nat
+  observedClassTuple : Nat
+  selectedClassTuple : Nat
+  deviceAgreement : device = observedDevice
+  classAgreement : observedClassTuple = selectedClassTuple
+  liveDriver : NonZero selectedDriver
+  identityProof : IsTrue True
+
+public export
+data MatchFault
+  = DeviceMismatch
+  | MissingDriver
+  | IdentityUnmeasured
+  | ClassTupleMismatch
+
+public export
+data MatchDecision : Nat -> Type where
+  MatchRejected : MatchFault -> MatchDecision device
+  MatchAccepted : MatchCertificate device -> MatchDecision device
+
+verifyExactMatch :
+  (device : Nat) ->
+  (driver : Nat) ->
+  (identity : Bool) ->
+  (observedClass : Nat) ->
+  (selectedClass : Nat) ->
+  MatchDecision device
+verifyExactMatch device Z identity observedClass selectedClass =
+  MatchRejected MissingDriver
+verifyExactMatch device (S driver) False observedClass selectedClass =
+  MatchRejected IdentityUnmeasured
+verifyExactMatch device (S driver) True observedClass selectedClass =
+  case decEq observedClass selectedClass of
+    No mismatch => MatchRejected ClassTupleMismatch
+    Yes Refl =>
+      MatchAccepted
+        (MkMatchCertificate
+          device
+          (S driver)
+          selectedClass
+          selectedClass
+          Refl
+          Refl
+          IsSuccessor
+          Proven)
+
+public export
+verifyMatch : (device : Nat) -> RawMatch -> MatchDecision device
+verifyMatch device
+  (MkRawMatch observed driver identity observedClass selectedClass) =
+  case decEq device observed of
+    No mismatch => MatchRejected DeviceMismatch
+    Yes Refl =>
+      verifyExactMatch device driver identity observedClass selectedClass
+
+public export
+data DeviceBinding : BindingPhase -> Nat -> Nat -> Type where
+  DetectedDevice : DeviceBinding DetectedBinding device generation
+  ReservedDevice :
+    MatchCertificate device ->
+    DeviceBinding ReservedBinding device generation
+  ServingDevice :
+    MatchCertificate device ->
+    DeviceBinding ActiveBinding device generation
+  CleanupOwed :
+    MatchCertificate device ->
+    DeviceBinding RollbackDebt device generation
+  ContainedDevice :
+    MatchCertificate device ->
+    DeviceBinding BindingQuarantined device generation
+  DeferredDevice :
+    MatchCertificate device ->
+    DeviceBinding DeferredBinding device generation
+
+public export
+data BindingTransition :
+  BindingPhase -> Nat -> BindingPhase -> Nat -> Nat -> Type where
+  ReserveDevice :
+    MatchCertificate device ->
+    BindingTransition
+      DetectedBinding generation ReservedBinding generation device
+  ActivateDevice :
+    BindingTransition
+      ReservedBinding generation ActiveBinding generation device
+  BeginCleanup :
+    BindingTransition
+      ReservedBinding generation RollbackDebt generation device
+  DetectBindingFault :
+    BindingTransition
+      ActiveBinding generation RollbackDebt generation device
+  FinishExactCleanup :
+    BindingTransition
+      RollbackDebt generation DetectedBinding (S generation) device
+  QuarantineCleanupDebt :
+    BindingTransition
+      RollbackDebt generation BindingQuarantined generation device
+  DeferToEnumerator :
+    BindingTransition
+      ReservedBinding generation DeferredBinding generation device
+
+public export
+advanceBinding :
+  DeviceBinding before device generationBefore ->
+  BindingTransition before generationBefore after generationAfter device ->
+  DeviceBinding after device generationAfter
+advanceBinding DetectedDevice (ReserveDevice certificate) =
+  ReservedDevice certificate
+advanceBinding (ReservedDevice certificate) ActivateDevice =
+  ServingDevice certificate
+advanceBinding (ReservedDevice certificate) BeginCleanup =
+  CleanupOwed certificate
+advanceBinding (ServingDevice certificate) DetectBindingFault =
+  CleanupOwed certificate
+advanceBinding (CleanupOwed certificate) FinishExactCleanup = DetectedDevice
+advanceBinding (CleanupOwed certificate) QuarantineCleanupDebt =
+  ContainedDevice certificate
+advanceBinding (ReservedDevice certificate) DeferToEnumerator =
+  DeferredDevice certificate
+
+public export
+data CleanupResult = CleanupComplete | CleanupPending
+
+public export
+data MayTryNext : CleanupResult -> Type where
+  ExactRollback : MayTryNext CleanupComplete
+
+public export
+fallbackDecision : CleanupResult -> Bool
+fallbackDecision CleanupComplete = True
+fallbackDecision CleanupPending = False
+
+public export
+sampleBinding : MatchDecision 42
+sampleBinding = verifyMatch 42 (MkRawMatch 42 9 True 787248 787248)

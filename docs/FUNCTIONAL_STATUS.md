@@ -31,6 +31,8 @@ Status meanings:
 | General process creation | Fail-closed | Fixed-capacity lifecycle admission record | Retained address spaces, kernel stacks, context switching, wait queues |
 | Tensor and predictive control | Foundation | Bounded fixed-point implementations and queue integration | Workload comparison and target timing evidence |
 | Foreign driver personalities | Fail-closed by contract | Bounded ABI and object validation | Explicit supported-version service implementations |
+| Automatic device census | Integrated foundation | Retained all-function identity/class/command/BAR evidence, exact tuple masks, live-slot authorization, queryable terminal records, rollback-debt quarantine | ECAM/MCFG, BAR aperture lengths, USB and ACPI enumeration, retained native driver instances |
+| xHCI transport discovery | Integrated prerequisite | Real QEMU PCI function, exact xHCI-only claim, configuration revalidation, corrected scratchpad geometry, authorization-bound deferred snapshot | Firmware ownership, BAR aperture proof, controller reset, DMA rings, interrupts, port and USB child enumeration |
 
 No row should be promoted solely because its source compiles. Promotion requires
 its caller, target test, resource bounds, and failure path to pass on the exact

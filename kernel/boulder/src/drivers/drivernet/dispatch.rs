@@ -31,6 +31,7 @@ pub enum AttemptOutcome {
     CommitRejected = 5,
     RolledBack = 6,
     Committed = 7,
+    RollbackFailed = 8,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -267,6 +268,10 @@ pub enum DispatchError {
     FingerprintMismatch,
     Registry(RegistryError),
     TimeRegression,
+    CleanupIncomplete {
+        attempts: [AttemptRecord; MAXIMUM_ATTEMPTS],
+        attempt_count: usize,
+    },
     NoSafeStrategy {
         attempts: [AttemptRecord; MAXIMUM_ATTEMPTS],
         attempt_count: usize,
@@ -434,6 +439,11 @@ impl DriverDispatcher {
                     attempt_count += 1;
                     if matches!(record.outcome, AttemptOutcome::RolledBack) {
                         self.rollbacks = self.rollbacks.saturating_add(1);
+                    } else if matches!(record.outcome, AttemptOutcome::RollbackFailed) {
+                        return Err(DispatchError::CleanupIncomplete {
+                            attempts,
+                            attempt_count,
+                        });
                     }
                 }
             }
@@ -817,7 +827,7 @@ impl DriverDispatcher {
         let (outcome, final_fault, detail) = match rollback {
             Ok(()) => (AttemptOutcome::RolledBack, fault.code, fault.detail),
             Err(rollback_fault) => (
-                AttemptOutcome::CommitRejected,
+                AttemptOutcome::RollbackFailed,
                 FaultCode::RollbackFault,
                 rollback_fault.detail,
             ),
@@ -923,9 +933,21 @@ mod tests {
 
     struct Backend {
         tick: u64,
+        begins: usize,
+        reject_probe: bool,
+        reject_rollback: bool,
     }
 
     impl Backend {
+        const fn healthy(tick: u64) -> Self {
+            Self {
+                tick,
+                begins: 0,
+                reject_probe: false,
+                reject_rollback: false,
+            }
+        }
+
         fn advance(&mut self) -> u64 {
             self.tick = self.tick.saturating_add(1);
             self.tick
@@ -943,6 +965,7 @@ mod tests {
             descriptor: &ShimDescriptor,
             _decision: &OracleDecision,
         ) -> Result<ProbeTransaction, BackendFault> {
+            self.begins = self.begins.saturating_add(1);
             let tick = self.advance();
             Ok(ProbeTransaction {
                 token: tick,
@@ -965,6 +988,9 @@ mod tests {
             step: ProbeStep,
             _attempt: u8,
         ) -> Result<ProbeObservation, BackendFault> {
+            if self.reject_probe {
+                return Err(BackendFault::new(FaultCode::ProbeFault, false, 0xfeed));
+            }
             let tick = self.advance();
             Ok(ProbeObservation {
                 semantic: step.semantic,
@@ -1040,7 +1066,15 @@ mod tests {
             _fault: BackendFault,
         ) -> Result<(), BackendFault> {
             self.advance();
-            Ok(())
+            if self.reject_rollback {
+                Err(BackendFault::new(
+                    FaultCode::RollbackFault,
+                    false,
+                    0xdead_beef,
+                ))
+            } else {
+                Ok(())
+            }
         }
     }
 
@@ -1071,7 +1105,7 @@ mod tests {
         let decision = oracle.classify(&fingerprint).unwrap();
         let registry = ShimRegistry::black_lab().unwrap();
         let mut dispatcher = DriverDispatcher::new(dispatch_secret, oracle_secret).unwrap();
-        let mut backend = Backend { tick: 1 };
+        let mut backend = Backend::healthy(1);
 
         let resolution = dispatcher
             .resolve(&fingerprint, &decision, &registry, &mut backend)
@@ -1092,12 +1126,44 @@ mod tests {
         let decision = oracle.classify(&fingerprint).unwrap();
         let registry = ShimRegistry::black_lab().unwrap();
         let mut dispatcher = DriverDispatcher::new(22, 33).unwrap();
-        let mut backend = Backend { tick: 1 };
+        let mut backend = Backend::healthy(1);
 
         assert_eq!(
             dispatcher.resolve(&fingerprint, &decision, &registry, &mut backend,),
             Err(DispatchError::CorruptDecision)
         );
         assert_eq!(backend.tick, 1);
+    }
+
+    #[test]
+    fn failed_rollback_stops_before_the_next_candidate_begins() {
+        let oracle_secret = 11;
+        let dispatch_secret = 22;
+        let fingerprint = firmware_fingerprint();
+        let oracle = CompatibilityOracle::new(oracle_secret, OraclePolicy::BLACK_LAB).unwrap();
+        let decision = oracle.classify(&fingerprint).unwrap();
+        let registry = ShimRegistry::black_lab().unwrap();
+        let mut dispatcher = DriverDispatcher::new(dispatch_secret, oracle_secret).unwrap();
+        let mut backend = Backend {
+            reject_probe: true,
+            reject_rollback: true,
+            ..Backend::healthy(1)
+        };
+
+        let error = dispatcher
+            .resolve(&fingerprint, &decision, &registry, &mut backend)
+            .unwrap_err();
+
+        let DispatchError::CleanupIncomplete {
+            attempts,
+            attempt_count,
+        } = error
+        else {
+            panic!("rollback debt must be terminal");
+        };
+        assert_eq!(attempt_count, 1);
+        assert_eq!(attempts[0].outcome, AttemptOutcome::RollbackFailed);
+        assert_eq!(attempts[0].fault, FaultCode::RollbackFault);
+        assert_eq!(backend.begins, 1);
     }
 }

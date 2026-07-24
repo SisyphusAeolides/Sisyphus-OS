@@ -55,6 +55,9 @@ pub struct PciDevice {
     pub header_type: u8,
     pub interrupt_line: u8,
     pub interrupt_pin: u8,
+    pub command: u16,
+    pub bar_count: u8,
+    pub raw_bars: [u32; BAR_COUNT],
 }
 
 impl PciDevice {
@@ -73,6 +76,9 @@ impl PciDevice {
         header_type: 0,
         interrupt_line: 0xff,
         interrupt_pin: 0,
+        command: 0,
+        bar_count: 0,
+        raw_bars: [0; BAR_COUNT],
     };
 }
 
@@ -157,20 +163,34 @@ pub unsafe fn scan_buses() -> PciInventory {
 }
 
 unsafe fn read_device(address: PciAddress) -> Option<PciDevice> {
-    let vendor_device = unsafe { read_configuration_u32(address, 0) };
+    let _access = CONFIGURATION_ACCESS.lock();
+    let vendor_device = unsafe { read_configuration_u32_unlocked(address, 0) };
     let vendor_id = vendor_device as u16;
     if vendor_id == INVALID_VENDOR_ID {
         return None;
     }
-    let class_revision = unsafe { read_configuration_u32(address, 0x08) };
-    let header = unsafe { read_configuration_u32(address, 0x0c) };
-    let interrupt = unsafe { read_configuration_u32(address, 0x3c) };
+    let command_status = unsafe { read_configuration_u32_unlocked(address, 0x04) };
+    let class_revision = unsafe { read_configuration_u32_unlocked(address, 0x08) };
+    let header = unsafe { read_configuration_u32_unlocked(address, 0x0c) };
+    let interrupt = unsafe { read_configuration_u32_unlocked(address, 0x3c) };
+    let bar_count = match ((header >> 16) as u8) & 0x7f {
+        0 => 6,
+        1 => 2,
+        _ => 0,
+    };
+    let mut raw_bars = [0_u32; BAR_COUNT];
+    for (index, bar) in raw_bars[..bar_count].iter_mut().enumerate() {
+        *bar = unsafe { read_configuration_u32_unlocked(address, BAR0_OFFSET + (index as u8 * 4)) };
+    }
     Some(decode_device(
         address,
         vendor_device,
+        command_status,
         class_revision,
         header,
         interrupt,
+        bar_count as u8,
+        raw_bars,
     ))
 }
 
@@ -213,9 +233,12 @@ unsafe fn write_configuration_u16_unlocked(address: PciAddress, offset: u8, valu
 fn decode_device(
     address: PciAddress,
     vendor_device: u32,
+    command_status: u32,
     class_revision: u32,
     header: u32,
     interrupt: u32,
+    bar_count: u8,
+    raw_bars: [u32; BAR_COUNT],
 ) -> PciDevice {
     PciDevice {
         address,
@@ -228,6 +251,9 @@ fn decode_device(
         header_type: (header >> 16) as u8,
         interrupt_line: interrupt as u8,
         interrupt_pin: (interrupt >> 8) as u8,
+        command: command_status as u16,
+        bar_count,
+        raw_bars,
     }
 }
 /// Read a 32-bit PCI config dword. Safe wrapper over the locked CF8/CFC path.
@@ -627,7 +653,17 @@ mod tests {
     #[test]
     fn decodes_standard_configuration_fields() {
         let address = PciAddress::new(2, 3, 1).unwrap();
-        let device = decode_device(address, 0x5678_1234, 0x0200_01a2, 0x0080_0000, 0x0000_010b);
+        let bars = [0xfebf_0004, 0, 0, 0, 0, 0];
+        let device = decode_device(
+            address,
+            0x5678_1234,
+            0x0010_0007,
+            0x0200_01a2,
+            0x0080_0000,
+            0x0000_010b,
+            6,
+            bars,
+        );
 
         assert_eq!(device.address, address);
         assert_eq!(device.vendor_id, 0x1234);
@@ -639,6 +675,9 @@ mod tests {
         assert_eq!(device.header_type, 0x80);
         assert_eq!(device.interrupt_line, 0x0b);
         assert_eq!(device.interrupt_pin, 0x01);
+        assert_eq!(device.command, 0x0007);
+        assert_eq!(device.bar_count, 6);
+        assert_eq!(device.raw_bars, bars);
     }
 
     #[test]

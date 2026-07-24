@@ -139,6 +139,7 @@ pub fn resolution_events(
             AttemptOutcome::Committed => 0,
             AttemptOutcome::Skipped => 1,
             AttemptOutcome::RolledBack => 2,
+            AttemptOutcome::RollbackFailed => 4,
             AttemptOutcome::ProbeRejected
             | AttemptOutcome::ActivationRejected
             | AttemptOutcome::HealthRejected

@@ -506,6 +506,7 @@ fn dispatch_fault(error: &DispatchError) -> FaultCode {
         DispatchError::FingerprintMismatch => FaultCode::FingerprintMismatch,
         DispatchError::Registry(_) => FaultCode::RegistryFault,
         DispatchError::TimeRegression => FaultCode::TimeRegression,
+        DispatchError::CleanupIncomplete { .. } => FaultCode::RollbackFault,
         DispatchError::NoSafeStrategy { .. } => FaultCode::NoSafeStrategy,
     }
 }
