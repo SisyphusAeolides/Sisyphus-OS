@@ -48,9 +48,11 @@ selection, retained PCI configuration evidence, and the queryable
 detected/operational/quarantined binding reconciliation before PID1 entry.
 The QEMU machine includes an xHCI controller with keyboard and tablet children;
 the boot check requires a reset-ready controller with a measured 16 KiB BAR0,
-bus mastering disabled, one retained reset-ready root, and zero mutation debts.
-Those children remain deferred until real DMA rings, interrupts, and USB
-enumeration exist.
+two lease-decoded protocol bodies covering four USB2 and four USB3 ports, bus
+mastering disabled, one retained reset-ready root, and zero mutation debts.
+The fixed-capacity DMA arena and cycle-last command/event ring are covered by
+focused Rust tests, but those children remain deferred until the rings are
+bound to the retained controller, with interrupts and USB enumeration.
 
 ## Required validation on the receiving machine
 

@@ -323,6 +323,8 @@ data XhciPhase
   | XhciHalted
   | XhciApertureMeasured
   | XhciResetReady
+  | XhciProtocolMapped
+  | XhciRingsReady
   | XhciOperationalDeferred
   | XhciMutationDebt
   | XhciQuarantined
@@ -477,6 +479,27 @@ record ResetReadyReceipt (device : Nat) (generation : Nat) where
   controllerRemainsHalted : IsTrue True
 
 public export
+record ProtocolMapReceipt (device : Nat) (generation : Nat) where
+  constructor MkProtocolMapReceipt
+  protocolCount : Nat
+  protocolRoot : Nat
+  liveProtocolCount : NonZero protocolCount
+  liveProtocolRoot : NonZero protocolRoot
+  portOneHasProtocol : IsTrue True
+
+public export
+record RingReadyReceipt (device : Nat) (generation : Nat) where
+  constructor MkRingReadyReceipt
+  commandCapacity : Nat
+  eventCapacity : Nat
+  ringRoot : Nat
+  liveCommandCapacity : NonZero commandCapacity
+  liveEventCapacity : NonZero eventCapacity
+  liveRingRoot : NonZero ringRoot
+  commandCyclePublicationBound : IsTrue True
+  completionCorrelationBound : IsTrue True
+
+public export
 data XhciOperationalPrerequisite
   = DcbaaAllocationRequired
   | CommandRingRequired
@@ -501,6 +524,10 @@ data XhciMutationFault : XhciPhase -> Type where
     XhciMutationFault XhciHalted
   ControllerResetTimedOut :
     XhciMutationFault XhciApertureMeasured
+  ProtocolMapRejected :
+    XhciMutationFault XhciResetReady
+  RingInitializationRejected :
+    XhciMutationFault XhciProtocolMapped
 
 public export
 record XhciDebtReceipt
@@ -547,8 +574,16 @@ data XhciController :
     XhciController XhciApertureMeasured device generation (Just geometry) ->
     ResetReadyReceipt device generation ->
     XhciController XhciResetReady device generation (Just geometry)
-  OperationalDeferredXhci :
+  ProtocolMappedXhci :
     XhciController XhciResetReady device generation (Just geometry) ->
+    ProtocolMapReceipt device generation ->
+    XhciController XhciProtocolMapped device generation (Just geometry)
+  RingsReadyXhci :
+    XhciController XhciProtocolMapped device generation (Just geometry) ->
+    RingReadyReceipt device generation ->
+    XhciController XhciRingsReady device generation (Just geometry)
+  OperationalDeferredXhci :
+    XhciController XhciRingsReady device generation (Just geometry) ->
     DeferredOperationalReceipt device generation ->
     XhciController XhciOperationalDeferred device generation (Just geometry)
   MutationDebtXhci :
@@ -605,8 +640,22 @@ recordXhciResetReady :
 recordXhciResetReady = ResetReadyXhci
 
 public export
-deferXhciOperational :
+recordXhciProtocolMap :
   XhciController XhciResetReady device generation (Just geometry) ->
+  ProtocolMapReceipt device generation ->
+  XhciController XhciProtocolMapped device generation (Just geometry)
+recordXhciProtocolMap = ProtocolMappedXhci
+
+public export
+recordXhciRingsReady :
+  XhciController XhciProtocolMapped device generation (Just geometry) ->
+  RingReadyReceipt device generation ->
+  XhciController XhciRingsReady device generation (Just geometry)
+recordXhciRingsReady = RingsReadyXhci
+
+public export
+deferXhciOperational :
+  XhciController XhciRingsReady device generation (Just geometry) ->
   DeferredOperationalReceipt device generation ->
   XhciController XhciOperationalDeferred device generation (Just geometry)
 deferXhciOperational = OperationalDeferredXhci

@@ -31,7 +31,7 @@ not happen.
 | Spectral resource geometry | Implemented | Hodge 1-skeleton, normalized-Laplacian Fiedler cut, fixed-point heat flow, periodic recomputation |
 | Foreign driver personalities | Version-scoped | Object validation and narrow service tables exist; unsupported contracts reject loading |
 | Automatic device census | Implemented foundation | Retained identity/class/command/BAR evidence, exact tuple claims, live authorization, queryable terminal records |
-| xHCI reset-ready transport | Implemented prerequisite | Retained live claim, bounded firmware handoff/halt, exact BAR0 lease, reset-ready audit root; DMA rings and USB children remain deferred |
+| xHCI reset-ready transport | Implemented prerequisite | Retained live claim, bounded firmware handoff/halt, exact BAR0 lease, lease-backed USB2/USB3 port map, reset-ready audit root; fixed-capacity DMA/ring machinery is now proven in isolation, while controller binding, interrupts, and USB children remain deferred |
 | Functional-source gate | Implemented | Rejects tracked recovery debris, unfinished markers, simulated success, and production dead-code suppression |
 
 A subsystem should be described as complete only after the exact commit passes
@@ -291,8 +291,16 @@ lease. Every later register access is derived from that lease. Reset completion
 must re-establish CNR clear, HCHalted, and HCE clear before Boulder retains a
 reset-ready controller root; any post-mutation failure instead retains explicit
 mutation debt. QEMU currently proves a 16 KiB aperture and bus mastering off.
-The binding remains deferred because command/event rings, interrupts, and USB
-child enumeration are not implemented yet, so the attached QEMU keyboard and
+After reset, a second walk may read complete Supported Protocol bodies only
+through ranges derived from that aperture lease. It validates the BCD protocol
+revision, PSI tail, slot type, and non-overlapping MaxPorts coverage, then folds
+the USB2/USB3 port map into the retained controller root. QEMU proves two
+protocol capabilities covering four USB2 and four USB3 ports.
+The fixed-capacity DMA arena and cycle-last command/event ring are now real
+Rust machinery with generation-bound storage, self-link/ERST geometry, exact
+completion correlation, and rollback-oriented tests. The binding remains
+deferred until that machinery is attached to the retained hardware controller,
+with interrupts and USB child enumeration, so the attached QEMU keyboard and
 tablet are not misreported as supported input devices.
 
 ## Formal authority bridge

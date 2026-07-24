@@ -1,7 +1,7 @@
 use core::marker::PhantomData;
 
 use crate::arch::x86_64::{inb, inl, outb, outl};
-use crate::capability::{Capability, InterruptsDisabled, PciConfigurationControl};
+use crate::capability::{Capability, DmaControl, InterruptsDisabled, PciConfigurationControl};
 use crate::sync::SpinLock;
 
 const CONFIG_ADDRESS: u16 = 0x0cf8;
@@ -483,6 +483,101 @@ impl Bar0ApertureLease {
     }
 }
 
+/// The exact configuration fault that prevented a bus-master transition.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BusMasterFault {
+    ConfigurationAccessFailed { offset: u8 },
+    ExpectedAddressMismatch,
+    ApertureConfigurationMismatch,
+    ConfigurationChanged { offset: u8 },
+    CommandWriteFailed,
+    CommandReadbackFailed,
+    CommandReadbackMismatch { expected: u16, observed: u16 },
+}
+
+/// Last command-register state observed while containing a DMA transition.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BusMasterCommandState {
+    Safe(u16),
+    Enabled(u16),
+    Observed(u16),
+    Unknown,
+}
+
+/// Exclusive proof that PCI memory decode and bus mastering were enabled.
+///
+/// This value is intentionally neither `Copy` nor `Clone`. It owns the BAR0
+/// aperture that was used to authorize the transition, so the aperture cannot
+/// be independently recycled while the function may still issue DMA.
+#[derive(Debug, Eq, PartialEq)]
+pub struct BusMasterLease {
+    aperture: Bar0ApertureLease,
+    expected: PciExpectedConfiguration,
+    enabled_command: u16,
+    safe_command: u16,
+}
+
+impl BusMasterLease {
+    pub const fn address(&self) -> PciAddress {
+        self.aperture.address
+    }
+
+    pub const fn aperture(&self) -> &Bar0ApertureLease {
+        &self.aperture
+    }
+
+    pub const fn enabled_command(&self) -> u16 {
+        self.enabled_command
+    }
+}
+
+/// Ownership receipt for a bus-master transition whose safe state is not yet
+/// proven. The aperture is deliberately private and can only be recovered by
+/// completing [`retry_bus_master_revoke`].
+#[derive(Debug, Eq, PartialEq)]
+pub struct BusMasterDebt {
+    aperture: Bar0ApertureLease,
+    expected: PciExpectedConfiguration,
+    enabled_command: u16,
+    safe_command: u16,
+    fault: BusMasterFault,
+    command_state: BusMasterCommandState,
+}
+
+impl BusMasterDebt {
+    pub const fn address(&self) -> PciAddress {
+        self.aperture.address
+    }
+
+    pub const fn fault(&self) -> BusMasterFault {
+        self.fault
+    }
+
+    pub const fn command_state(&self) -> BusMasterCommandState {
+        self.command_state
+    }
+}
+
+/// Enablement either leaves the untouched aperture recoverable or returns a
+/// containment debt after the command write may have taken effect.
+#[derive(Debug, Eq, PartialEq)]
+pub enum BusMasterEnableFailure {
+    Rejected {
+        fault: BusMasterFault,
+        aperture: Bar0ApertureLease,
+    },
+    Debt(BusMasterDebt),
+}
+
+impl BusMasterEnableFailure {
+    pub const fn fault(&self) -> BusMasterFault {
+        match self {
+            Self::Rejected { fault, .. } => *fault,
+            Self::Debt(debt) => debt.fault,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BarApertureBoundsError {
     Empty,
@@ -536,6 +631,358 @@ impl ConfigurationSpace for LegacyConfigurationSpace {
     fn write_command(&mut self, value: u16) -> Result<(), ()> {
         unsafe { write_configuration_u16_unlocked(self.address, COMMAND_OFFSET, value) };
         Ok(())
+    }
+}
+
+/// Enables exactly PCI memory decode and bus mastering for a measured BAR0.
+///
+/// The two capability arguments are deliberately distinct: configuration
+/// authority cannot stand in for DMA authority, or vice versa. All retained
+/// type-0 identity, class, revision, header, BAR, and command evidence is
+/// re-read under the global configuration lock before the command mutation.
+pub fn enable_bus_master(
+    aperture: Bar0ApertureLease,
+    expected: PciExpectedConfiguration,
+    _dma_authority: Capability<'_, DmaControl>,
+    _configuration_authority: Capability<'_, PciConfigurationControl>,
+) -> Result<BusMasterLease, BusMasterEnableFailure> {
+    let address = aperture.address;
+    let _access = CONFIGURATION_ACCESS.lock();
+    let mut configuration = LegacyConfigurationSpace { address };
+    enable_bus_master_transaction(&mut configuration, aperture, expected)
+}
+
+/// Revokes bus mastering and releases the aperture only after exact readback.
+pub fn revoke_bus_master(
+    lease: BusMasterLease,
+    _dma_authority: Capability<'_, DmaControl>,
+    _configuration_authority: Capability<'_, PciConfigurationControl>,
+) -> Result<Bar0ApertureLease, BusMasterDebt> {
+    let address = lease.address();
+    let _access = CONFIGURATION_ACCESS.lock();
+    let mut configuration = LegacyConfigurationSpace { address };
+    revoke_bus_master_transaction(&mut configuration, lease)
+}
+
+/// Retries fail-closed containment of an ambiguous bus-master transition.
+///
+/// No aperture can be extracted from the debt unless the retained function is
+/// unchanged and the safe command value is observed exactly.
+pub fn retry_bus_master_revoke(
+    debt: BusMasterDebt,
+    _dma_authority: Capability<'_, DmaControl>,
+    _configuration_authority: Capability<'_, PciConfigurationControl>,
+) -> Result<Bar0ApertureLease, BusMasterDebt> {
+    let address = debt.address();
+    let _access = CONFIGURATION_ACCESS.lock();
+    let mut configuration = LegacyConfigurationSpace { address };
+    retry_bus_master_revoke_transaction(&mut configuration, debt)
+}
+
+fn enable_bus_master_transaction(
+    configuration: &mut impl ConfigurationSpace,
+    aperture: Bar0ApertureLease,
+    expected: PciExpectedConfiguration,
+) -> Result<BusMasterLease, BusMasterEnableFailure> {
+    if aperture.address != expected.address {
+        return Err(rejected_enable(
+            BusMasterFault::ExpectedAddressMismatch,
+            aperture,
+        ));
+    }
+    if retained_bar0_base(&expected) != Some(aperture.physical_base) {
+        return Err(rejected_enable(
+            BusMasterFault::ApertureConfigurationMismatch,
+            aperture,
+        ));
+    }
+
+    let observed_command = match observe_retained_configuration(configuration, &expected) {
+        Ok(command) => command,
+        Err(fault) => return Err(rejected_enable(fault, aperture)),
+    };
+    let measured_command = expected.command & !(COMMAND_IO_SPACE | COMMAND_BUS_MASTER);
+    if observed_command != measured_command {
+        return Err(rejected_enable(
+            BusMasterFault::ConfigurationChanged {
+                offset: COMMAND_OFFSET,
+            },
+            aperture,
+        ));
+    }
+
+    let non_decode_controls = expected.command & !COMMAND_DECODE_AND_MASTER;
+    let enabled_command = non_decode_controls | COMMAND_MEMORY_SPACE | COMMAND_BUS_MASTER;
+    let safe_command = non_decode_controls | COMMAND_MEMORY_SPACE;
+    if configuration.write_command(enabled_command).is_err() {
+        return Err(BusMasterEnableFailure::Debt(bus_master_debt(
+            aperture,
+            expected,
+            enabled_command,
+            safe_command,
+            BusMasterFault::CommandWriteFailed,
+            BusMasterCommandState::Unknown,
+        )));
+    }
+    match configuration.read_command() {
+        Ok(observed) if observed == enabled_command => Ok(BusMasterLease {
+            aperture,
+            expected,
+            enabled_command,
+            safe_command,
+        }),
+        Ok(observed) => Err(BusMasterEnableFailure::Debt(bus_master_debt(
+            aperture,
+            expected,
+            enabled_command,
+            safe_command,
+            BusMasterFault::CommandReadbackMismatch {
+                expected: enabled_command,
+                observed,
+            },
+            classify_bus_master_command(observed, safe_command, enabled_command),
+        ))),
+        Err(()) => Err(BusMasterEnableFailure::Debt(bus_master_debt(
+            aperture,
+            expected,
+            enabled_command,
+            safe_command,
+            BusMasterFault::CommandReadbackFailed,
+            BusMasterCommandState::Unknown,
+        ))),
+    }
+}
+
+fn revoke_bus_master_transaction(
+    configuration: &mut impl ConfigurationSpace,
+    lease: BusMasterLease,
+) -> Result<Bar0ApertureLease, BusMasterDebt> {
+    let BusMasterLease {
+        aperture,
+        expected,
+        enabled_command,
+        safe_command,
+    } = lease;
+    let observed = match observe_retained_configuration(configuration, &expected) {
+        Ok(command) => command,
+        Err(fault) => {
+            return Err(bus_master_debt(
+                aperture,
+                expected,
+                enabled_command,
+                safe_command,
+                fault,
+                BusMasterCommandState::Unknown,
+            ));
+        }
+    };
+    if observed != enabled_command {
+        return Err(bus_master_debt(
+            aperture,
+            expected,
+            enabled_command,
+            safe_command,
+            BusMasterFault::ConfigurationChanged {
+                offset: COMMAND_OFFSET,
+            },
+            classify_bus_master_command(observed, safe_command, enabled_command),
+        ));
+    }
+    contain_bus_master(
+        configuration,
+        aperture,
+        expected,
+        enabled_command,
+        safe_command,
+    )
+}
+
+fn retry_bus_master_revoke_transaction(
+    configuration: &mut impl ConfigurationSpace,
+    debt: BusMasterDebt,
+) -> Result<Bar0ApertureLease, BusMasterDebt> {
+    let BusMasterDebt {
+        aperture,
+        expected,
+        enabled_command,
+        safe_command,
+        ..
+    } = debt;
+    let observed = match observe_retained_configuration(configuration, &expected) {
+        Ok(command) => command,
+        Err(fault) => {
+            return Err(bus_master_debt(
+                aperture,
+                expected,
+                enabled_command,
+                safe_command,
+                fault,
+                BusMasterCommandState::Unknown,
+            ));
+        }
+    };
+    if observed == safe_command {
+        return Ok(aperture);
+    }
+    if observed != enabled_command {
+        return Err(bus_master_debt(
+            aperture,
+            expected,
+            enabled_command,
+            safe_command,
+            BusMasterFault::ConfigurationChanged {
+                offset: COMMAND_OFFSET,
+            },
+            BusMasterCommandState::Observed(observed),
+        ));
+    }
+    contain_bus_master(
+        configuration,
+        aperture,
+        expected,
+        enabled_command,
+        safe_command,
+    )
+}
+
+fn contain_bus_master(
+    configuration: &mut impl ConfigurationSpace,
+    aperture: Bar0ApertureLease,
+    expected: PciExpectedConfiguration,
+    enabled_command: u16,
+    safe_command: u16,
+) -> Result<Bar0ApertureLease, BusMasterDebt> {
+    if configuration.write_command(safe_command).is_err() {
+        return Err(bus_master_debt(
+            aperture,
+            expected,
+            enabled_command,
+            safe_command,
+            BusMasterFault::CommandWriteFailed,
+            BusMasterCommandState::Unknown,
+        ));
+    }
+    match configuration.read_command() {
+        Ok(observed) if observed == safe_command => Ok(aperture),
+        Ok(observed) => Err(bus_master_debt(
+            aperture,
+            expected,
+            enabled_command,
+            safe_command,
+            BusMasterFault::CommandReadbackMismatch {
+                expected: safe_command,
+                observed,
+            },
+            classify_bus_master_command(observed, safe_command, enabled_command),
+        )),
+        Err(()) => Err(bus_master_debt(
+            aperture,
+            expected,
+            enabled_command,
+            safe_command,
+            BusMasterFault::CommandReadbackFailed,
+            BusMasterCommandState::Unknown,
+        )),
+    }
+}
+
+fn observe_retained_configuration(
+    configuration: &mut impl ConfigurationSpace,
+    expected: &PciExpectedConfiguration,
+) -> Result<u16, BusMasterFault> {
+    let vendor_device = bus_master_read(configuration, 0x00)?;
+    let expected_vendor_device =
+        (u32::from(expected.device_id) << 16) | u32::from(expected.vendor_id);
+    if vendor_device != expected_vendor_device {
+        return Err(BusMasterFault::ConfigurationChanged { offset: 0x00 });
+    }
+
+    let class_revision = bus_master_read(configuration, 0x08)?;
+    let expected_class_revision = (u32::from(expected.class_code) << 24)
+        | (u32::from(expected.subclass) << 16)
+        | (u32::from(expected.programming_interface) << 8)
+        | u32::from(expected.revision);
+    if class_revision != expected_class_revision {
+        return Err(BusMasterFault::ConfigurationChanged { offset: 0x08 });
+    }
+
+    let header_type = (bus_master_read(configuration, HEADER_OFFSET)? >> 16) as u8;
+    if header_type != expected.header_type {
+        return Err(BusMasterFault::ConfigurationChanged {
+            offset: HEADER_OFFSET,
+        });
+    }
+    for (index, retained) in expected.raw_bars.iter().copied().enumerate() {
+        let offset = bar_offset(index);
+        if bus_master_read(configuration, offset)? != retained {
+            return Err(BusMasterFault::ConfigurationChanged { offset });
+        }
+    }
+    configuration
+        .read_command()
+        .map_err(|()| BusMasterFault::ConfigurationAccessFailed {
+            offset: COMMAND_OFFSET,
+        })
+}
+
+fn bus_master_read(
+    configuration: &mut impl ConfigurationSpace,
+    offset: u8,
+) -> Result<u32, BusMasterFault> {
+    configuration
+        .read_u32(offset)
+        .map_err(|()| BusMasterFault::ConfigurationAccessFailed { offset })
+}
+
+const fn retained_bar0_base(expected: &PciExpectedConfiguration) -> Option<u64> {
+    let low = expected.raw_bars[0];
+    if low & 1 != 0 {
+        return None;
+    }
+    match (low >> 1) & 0x3 {
+        0 => Some((low & 0xffff_fff0) as u64),
+        1 => Some((low & 0x000f_fff0) as u64),
+        2 => Some(((expected.raw_bars[1] as u64) << 32) | ((low & 0xffff_fff0) as u64)),
+        _ => None,
+    }
+}
+
+const fn classify_bus_master_command(
+    observed: u16,
+    safe_command: u16,
+    enabled_command: u16,
+) -> BusMasterCommandState {
+    if observed == safe_command {
+        BusMasterCommandState::Safe(observed)
+    } else if observed == enabled_command {
+        BusMasterCommandState::Enabled(observed)
+    } else {
+        BusMasterCommandState::Observed(observed)
+    }
+}
+
+const fn rejected_enable(
+    fault: BusMasterFault,
+    aperture: Bar0ApertureLease,
+) -> BusMasterEnableFailure {
+    BusMasterEnableFailure::Rejected { fault, aperture }
+}
+
+const fn bus_master_debt(
+    aperture: Bar0ApertureLease,
+    expected: PciExpectedConfiguration,
+    enabled_command: u16,
+    safe_command: u16,
+    fault: BusMasterFault,
+    command_state: BusMasterCommandState,
+) -> BusMasterDebt {
+    BusMasterDebt {
+        aperture,
+        expected,
+        enabled_command,
+        safe_command,
+        fault,
+        command_state,
     }
 }
 
@@ -1070,7 +1517,10 @@ mod tests {
         fail_probe_read: Option<usize>,
         fail_restore_write: Option<usize>,
         fail_command_write: Option<usize>,
+        fail_command_read: Option<usize>,
+        ignore_command_write: Option<usize>,
         command_write_count: usize,
+        command_read_count: usize,
         bar_write_while_active: bool,
         bar_verify_while_active: bool,
         sizing_started: bool,
@@ -1092,7 +1542,10 @@ mod tests {
                 fail_probe_read: None,
                 fail_restore_write: None,
                 fail_command_write: None,
+                fail_command_read: None,
+                ignore_command_write: None,
                 command_write_count: 0,
+                command_read_count: 0,
                 bar_write_while_active: false,
                 bar_verify_while_active: false,
                 sizing_started: false,
@@ -1122,7 +1575,7 @@ mod tests {
                     }
                     return Ok(self.masks[bar]);
                 }
-                if self.sizing_started && self.read_command()? & COMMAND_DECODE_AND_MASTER != 0 {
+                if self.sizing_started && self.values[1] as u16 & COMMAND_DECODE_AND_MASTER != 0 {
                     self.bar_verify_while_active = true;
                 }
             }
@@ -1132,7 +1585,7 @@ mod tests {
         fn write_u32(&mut self, offset: u8, value: u32) -> Result<(), ()> {
             if (BAR0_OFFSET..BAR0_OFFSET + BAR_COUNT as u8 * 4).contains(&offset) {
                 let bar = usize::from((offset - BAR0_OFFSET) / 4);
-                if self.read_command()? & COMMAND_DECODE_AND_MASTER != 0 {
+                if self.values[1] as u16 & COMMAND_DECODE_AND_MASTER != 0 {
                     self.bar_write_while_active = true;
                 }
                 let slot = usize::from(offset / 4);
@@ -1153,6 +1606,12 @@ mod tests {
         }
 
         fn read_command(&mut self) -> Result<u16, ()> {
+            let read_number = self.command_read_count;
+            self.command_read_count += 1;
+            if self.fail_command_read == Some(read_number) {
+                self.fail_command_read = None;
+                return Err(());
+            }
             Ok(self.values[1] as u16)
         }
 
@@ -1161,6 +1620,10 @@ mod tests {
             self.command_write_count += 1;
             if self.fail_command_write == Some(write_number) {
                 return Err(());
+            }
+            if self.ignore_command_write == Some(write_number) {
+                self.ignore_command_write = None;
+                return Ok(());
             }
             self.values[1] = (self.values[1] & 0xffff_0000) | u32::from(value);
             Ok(())
@@ -1471,5 +1934,217 @@ mod tests {
         assert_eq!(bar_drift.command_write_count, 0);
         assert_eq!(bar_drift.restore_count, 0);
         assert!(!bar_drift.sizing_started);
+    }
+
+    fn bus_master_fixture() -> (
+        ModelConfiguration,
+        PciExpectedConfiguration,
+        Bar0ApertureLease,
+    ) {
+        let bars = [0x8000_0000, 0, 0, 0, 0, 0];
+        let mut expected = expected_configuration(bars);
+        expected.command = 0x0407;
+        let mut configuration = ModelConfiguration::with_bars(bars, [0; BAR_COUNT]);
+        configuration.values[1] = 0x0402;
+        configuration.original[1] = 0x0407;
+        let aperture = Bar0ApertureLease {
+            address: TEST_ADDRESS,
+            physical_base: 0x8000_0000,
+            length: 0x1000,
+        };
+        (configuration, expected, aperture)
+    }
+
+    #[test]
+    fn bus_master_transaction_preserves_only_non_decode_controls() {
+        let (mut configuration, expected, aperture) = bus_master_fixture();
+
+        let lease = super::enable_bus_master_transaction(&mut configuration, aperture, expected)
+            .expect("exact retained configuration enables DMA");
+
+        assert_eq!(configuration.committed_command(), 0x0406);
+        assert_eq!(lease.enabled_command(), 0x0406);
+        assert_eq!(lease.aperture().physical_base(), 0x8000_0000);
+        assert_eq!(configuration.command_write_count, 1);
+
+        let aperture = super::revoke_bus_master_transaction(&mut configuration, lease)
+            .expect("exact readback revokes DMA");
+        assert_eq!(configuration.committed_command(), 0x0402);
+        assert_eq!(configuration.command_write_count, 2);
+        assert_eq!(aperture.physical_base(), 0x8000_0000);
+    }
+
+    #[test]
+    fn bus_master_enable_rejects_every_retained_field_drift_without_writing() {
+        let drifted_slots = [0_usize, 2, 3, 4, 5, 6, 7, 8, 9];
+        for slot in drifted_slots {
+            let (mut configuration, expected, aperture) = bus_master_fixture();
+            configuration.values[slot] ^= match slot {
+                0 => 1,
+                3 => 0x0010_0000,
+                _ => 0x1000,
+            };
+            let expected_offset = match slot {
+                0 => 0x00,
+                2 => 0x08,
+                3 => HEADER_OFFSET,
+                _ => (slot as u8) * 4,
+            };
+
+            let failure =
+                super::enable_bus_master_transaction(&mut configuration, aperture, expected)
+                    .expect_err("retained configuration drift must reject");
+            assert_eq!(
+                failure.fault(),
+                BusMasterFault::ConfigurationChanged {
+                    offset: expected_offset,
+                }
+            );
+            assert!(matches!(failure, BusMasterEnableFailure::Rejected { .. }));
+            assert_eq!(configuration.command_write_count, 0);
+        }
+
+        let (mut configuration, expected, aperture) = bus_master_fixture();
+        configuration.values[1] = 0x0400;
+        let failure = super::enable_bus_master_transaction(&mut configuration, aperture, expected)
+            .expect_err("current command drift must reject");
+        assert_eq!(
+            failure.fault(),
+            BusMasterFault::ConfigurationChanged {
+                offset: COMMAND_OFFSET,
+            }
+        );
+        assert_eq!(configuration.command_write_count, 0);
+    }
+
+    #[test]
+    fn bus_master_enable_binds_the_exact_measured_aperture() {
+        let (mut configuration, expected, mut aperture) = bus_master_fixture();
+        aperture.physical_base += 0x1000;
+        let failure = super::enable_bus_master_transaction(&mut configuration, aperture, expected)
+            .expect_err("different aperture must reject");
+        assert_eq!(
+            failure.fault(),
+            BusMasterFault::ApertureConfigurationMismatch
+        );
+        assert_eq!(configuration.command_read_count, 0);
+        assert_eq!(configuration.command_write_count, 0);
+
+        let (mut configuration, expected, mut aperture) = bus_master_fixture();
+        aperture.address = PciAddress::new(0, 21, 0).unwrap();
+        let failure = super::enable_bus_master_transaction(&mut configuration, aperture, expected)
+            .expect_err("different address must reject");
+        assert_eq!(failure.fault(), BusMasterFault::ExpectedAddressMismatch);
+        assert_eq!(configuration.command_read_count, 0);
+        assert_eq!(configuration.command_write_count, 0);
+    }
+
+    #[test]
+    fn ignored_enable_write_returns_debt_until_safe_state_is_reobserved() {
+        let (mut configuration, expected, aperture) = bus_master_fixture();
+        configuration.ignore_command_write = Some(0);
+
+        let debt =
+            match super::enable_bus_master_transaction(&mut configuration, aperture, expected) {
+                Err(BusMasterEnableFailure::Debt(debt)) => debt,
+                result => panic!("ignored write must return ownership debt: {result:?}"),
+            };
+        assert_eq!(
+            debt.fault(),
+            BusMasterFault::CommandReadbackMismatch {
+                expected: 0x0406,
+                observed: 0x0402,
+            }
+        );
+        assert_eq!(debt.command_state(), BusMasterCommandState::Safe(0x0402));
+
+        let aperture = super::retry_bus_master_revoke_transaction(&mut configuration, debt)
+            .expect("retry may release an exactly observed safe command");
+        assert_eq!(aperture.length(), 0x1000);
+        assert_eq!(configuration.command_write_count, 1);
+    }
+
+    #[test]
+    fn failed_enable_readback_contains_a_live_bus_master_on_retry() {
+        let (mut configuration, expected, aperture) = bus_master_fixture();
+        configuration.fail_command_read = Some(1);
+
+        let debt =
+            match super::enable_bus_master_transaction(&mut configuration, aperture, expected) {
+                Err(BusMasterEnableFailure::Debt(debt)) => debt,
+                result => panic!("ambiguous readback must return debt: {result:?}"),
+            };
+        assert_eq!(debt.fault(), BusMasterFault::CommandReadbackFailed);
+        assert_eq!(debt.command_state(), BusMasterCommandState::Unknown);
+        assert_eq!(configuration.committed_command(), 0x0406);
+
+        super::retry_bus_master_revoke_transaction(&mut configuration, debt)
+            .expect("retry must revoke the live bus master");
+        assert_eq!(configuration.committed_command(), 0x0402);
+    }
+
+    #[test]
+    fn ignored_revoke_write_retains_ownership_until_retry_succeeds() {
+        let (mut configuration, expected, aperture) = bus_master_fixture();
+        let lease =
+            super::enable_bus_master_transaction(&mut configuration, aperture, expected).unwrap();
+        configuration.ignore_command_write = Some(1);
+
+        let debt = super::revoke_bus_master_transaction(&mut configuration, lease)
+            .expect_err("ignored revoke cannot release the aperture");
+        assert_eq!(configuration.committed_command(), 0x0406);
+        assert_eq!(debt.command_state(), BusMasterCommandState::Enabled(0x0406));
+        assert_eq!(
+            debt.fault(),
+            BusMasterFault::CommandReadbackMismatch {
+                expected: 0x0402,
+                observed: 0x0406,
+            }
+        );
+
+        super::retry_bus_master_revoke_transaction(&mut configuration, debt)
+            .expect("second revoke must release the aperture");
+        assert_eq!(configuration.committed_command(), 0x0402);
+        assert_eq!(configuration.command_write_count, 3);
+    }
+
+    #[test]
+    fn revoke_write_and_readback_failures_are_retryable_debts() {
+        let (mut write_failure, expected, aperture) = bus_master_fixture();
+        let lease =
+            super::enable_bus_master_transaction(&mut write_failure, aperture, expected).unwrap();
+        write_failure.fail_command_write = Some(1);
+        let debt = super::revoke_bus_master_transaction(&mut write_failure, lease)
+            .expect_err("failed write has an unknown side effect");
+        assert_eq!(debt.fault(), BusMasterFault::CommandWriteFailed);
+        assert_eq!(debt.command_state(), BusMasterCommandState::Unknown);
+        super::retry_bus_master_revoke_transaction(&mut write_failure, debt).unwrap();
+        assert_eq!(write_failure.committed_command(), 0x0402);
+
+        let (mut read_failure, expected, aperture) = bus_master_fixture();
+        let lease =
+            super::enable_bus_master_transaction(&mut read_failure, aperture, expected).unwrap();
+        read_failure.fail_command_read = Some(3);
+        let debt = super::revoke_bus_master_transaction(&mut read_failure, lease)
+            .expect_err("failed readback retains ownership despite a completed write");
+        assert_eq!(debt.fault(), BusMasterFault::CommandReadbackFailed);
+        assert_eq!(read_failure.committed_command(), 0x0402);
+        super::retry_bus_master_revoke_transaction(&mut read_failure, debt).unwrap();
+        assert_eq!(read_failure.committed_command(), 0x0402);
+    }
+
+    #[test]
+    fn revoke_command_drift_becomes_debt_before_any_write() {
+        let (mut configuration, expected, aperture) = bus_master_fixture();
+        let lease =
+            super::enable_bus_master_transaction(&mut configuration, aperture, expected).unwrap();
+        configuration.values[1] = 0x0402;
+
+        let debt = super::revoke_bus_master_transaction(&mut configuration, lease)
+            .expect_err("external command drift cannot directly release ownership");
+        assert_eq!(debt.command_state(), BusMasterCommandState::Safe(0x0402));
+        assert_eq!(configuration.command_write_count, 1);
+        super::retry_bus_master_revoke_transaction(&mut configuration, debt).unwrap();
+        assert_eq!(configuration.command_write_count, 1);
     }
 }

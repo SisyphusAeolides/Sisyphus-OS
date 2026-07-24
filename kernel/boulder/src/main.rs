@@ -1164,6 +1164,17 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
                         let reset_ready_root = controller.reset_ready_root();
                         let aperture_bytes = controller.aperture().length();
                         let legacy = controller.ready().legacy_handoff_performed();
+                        let protocol_count = controller.protocols().protocol_count();
+                        let usb2_ports = controller
+                            .protocols()
+                            .usb2_protocols()
+                            .map(|protocol| usize::from(protocol.port_count))
+                            .sum::<usize>();
+                        let usb3_ports = controller
+                            .protocols()
+                            .usb3_protocols()
+                            .map(|protocol| usize::from(protocol.port_count))
+                            .sum::<usize>();
                         if let Err(error) = xhci_census.insert_reset_ready(controller) {
                             let _ = writeln!(
                                 serial,
@@ -1177,8 +1188,14 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
                         }
                         let _ = writeln!(
                             serial,
-                            "Boulder: xHCI reset-ready {:?} bar0-bytes={} legacy-handoff={} halted=true bus-master=false root={:#x}",
-                            snapshot.address, aperture_bytes, legacy, reset_ready_root,
+                            "Boulder: xHCI reset-ready {:?} bar0-bytes={} legacy-handoff={} protocols={} usb2-ports={} usb3-ports={} halted=true bus-master=false root={:#x}",
+                            snapshot.address,
+                            aperture_bytes,
+                            legacy,
+                            protocol_count,
+                            usb2_ports,
+                            usb3_ports,
+                            reset_ready_root,
                         );
                     }
                     Err(failure) => {
@@ -1210,16 +1227,12 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
                                     halt();
                                 }
                             };
-                            let root = match debt.debt_root(xhci_secret) {
-                                Ok(root) => root,
-                                Err(error) => {
-                                    let _ = writeln!(
-                                        serial,
-                                        "Boulder: xHCI mutation debt audit failed: {error:?}"
-                                    );
-                                    halt();
-                                }
-                            };
+                            let root = debt.debt_root(xhci_secret);
+                            if root == 0 {
+                                let _ =
+                                    writeln!(serial, "Boulder: xHCI mutation debt audit failed");
+                                halt();
+                            }
                             if let Err(error) = xhci_census.insert_mutation_debt(debt) {
                                 let _ = writeln!(
                                     serial,
@@ -1290,7 +1303,7 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
     }
     let _ = writeln!(
         serial,
-        "Boulder: xHCI capability census controllers={} ports={} slots={} bootstrap-headers={} legacy-capable={} reset-ready={} aperture-bytes={} debt={} deferred=true root={:#x}",
+        "Boulder: xHCI capability census controllers={} ports={} slots={} bootstrap-headers={} legacy-capable={} reset-ready={} aperture-bytes={} protocols={} usb2-ports={} usb3-ports={} debt={} deferred=true root={:#x}",
         xhci_summary.controllers,
         xhci_summary.total_ports,
         xhci_summary.total_slots,
@@ -1298,6 +1311,9 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
         xhci_summary.legacy_capable_controllers,
         xhci_summary.reset_ready_controllers,
         xhci_summary.measured_aperture_bytes,
+        xhci_summary.supported_protocols,
+        xhci_summary.usb2_ports,
+        xhci_summary.usb3_ports,
         xhci_summary.mutation_debts,
         xhci_summary.root,
     );

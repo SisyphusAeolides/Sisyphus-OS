@@ -1,9 +1,10 @@
-//! Read-only xHCI capability discovery.
+//! Retained xHCI discovery and bounded reset-ready activation.
 //!
 //! This module proves that a claimed PCI function exposes a structurally valid
-//! xHCI capability header. It does not reset the controller, allocate rings, or
-//! enumerate USB children, so a successful probe remains a deferred transport
-//! prerequisite rather than operational keyboard, camera, or network support.
+//! xHCI register set, transfers firmware ownership, measures the exact BAR0
+//! aperture, resets the controller, and decodes its protocol-to-port map. It
+//! does not yet allocate DMA rings or enumerate USB children, so reset-ready
+//! remains a deferred transport prerequisite rather than input-device support.
 
 use sisyphus_driver_abi::STATUS_OK;
 
@@ -13,11 +14,15 @@ use crate::drivers::device_census::{BindingAuthorization, DeviceAddress, PciFunc
 use crate::drivers::drivernet::fingerprint::{
     FingerprintError, PciConfigReader, PciFunctionAddress,
 };
+use crate::drivers::xhci_protocol::{
+    CheckedSupportedProtocolRead, SupportedProtocolError, SupportedProtocolEvidence,
+    decode_supported_protocols,
+};
 use crate::drivers::xhci_takeover::{
     ApertureBindingError, ApicRelativeDeadline, ReadyHalted, RegisterIo, TakeoverConfig,
     TakeoverConfigError, TakeoverFaultClass, TakeoverMachine, TakeoverObservation, TakeoverPhase,
 };
-use crate::hw::pci::{Bar0ApertureLease, BarApertureBoundsError, PciDevice};
+use crate::hw::pci::{Bar0ApertureLease, Bar0ApertureRange, BarApertureBoundsError, PciDevice};
 use crate::hw::pci::{
     BarProbeError, BarProbeQuiescence, PciAddress, PciExpectedConfiguration, measure_bar0_aperture,
 };
@@ -188,6 +193,7 @@ pub enum XhciRetentionError {
     AddressMismatch,
     AuthorizationMismatch,
     ApertureEvidenceMismatch,
+    ProtocolEvidenceMismatch,
     ApertureBounds(BarApertureBoundsError),
     InvalidRoot,
 }
@@ -196,6 +202,7 @@ pub struct XhciResetReadyController {
     bootstrap: XhciBootstrap,
     aperture: Bar0ApertureLease,
     ready: ReadyHalted,
+    protocols: SupportedProtocolEvidence,
     reset_ready_root: u64,
 }
 
@@ -212,6 +219,10 @@ impl XhciResetReadyController {
         &self.ready
     }
 
+    pub const fn protocols(&self) -> &SupportedProtocolEvidence {
+        &self.protocols
+    }
+
     pub const fn reset_ready_root(&self) -> u64 {
         self.reset_ready_root
     }
@@ -221,6 +232,7 @@ fn validate_retained_controller(
     bootstrap: &XhciBootstrap,
     aperture: &Bar0ApertureLease,
     ready: &ReadyHalted,
+    protocols: &SupportedProtocolEvidence,
     secret: u64,
 ) -> Result<u64, XhciRetentionError> {
     if secret == 0 {
@@ -239,6 +251,14 @@ fn validate_retained_controller(
         || aperture.length() != ready.measured_aperture_bytes()
     {
         return Err(XhciRetentionError::ApertureEvidenceMismatch);
+    }
+    if protocols.aperture_base != aperture.physical_base()
+        || protocols.aperture_bytes != aperture.length()
+        || protocols.initial_offset != snapshot.extended_capabilities_offset
+        || protocols.maximum_ports != snapshot.maximum_ports
+        || protocols.root == 0
+    {
+        return Err(XhciRetentionError::ProtocolEvidenceMismatch);
     }
     aperture
         .checked_range(0, CAPABILITY_BYTES)
@@ -262,6 +282,7 @@ fn validate_retained_controller(
     root = mix(root, u64::from(ready.status()));
     root = mix(root, ready.legacy_handoff_performed() as u64);
     root = mix(root, u64::from(ready.ports_observed()));
+    root = mix(root, protocols.root);
     if root == 0 {
         return Err(XhciRetentionError::InvalidRoot);
     }
@@ -327,6 +348,7 @@ pub enum XhciDebtClass {
     ApertureBinding,
     Retention,
     StepCapacity,
+    ProtocolEvidence,
 }
 
 impl XhciDebtClass {
@@ -357,6 +379,7 @@ impl XhciDebtClass {
             Self::ApertureBinding => 10,
             Self::Retention => 11,
             Self::StepCapacity => 12,
+            Self::ProtocolEvidence => 13,
         }
     }
 }
@@ -383,23 +406,27 @@ impl XhciMutationDebt {
         self.bootstrap.snapshot
     }
 
-    pub fn debt_root(&self, secret: u64) -> Result<u64, XhciRetentionError> {
-        let root = mutation_debt_root(
+    pub fn debt_root(&self, secret: u64) -> u64 {
+        let Ok(root) = mutation_debt_root(
             &self.bootstrap,
             self.aperture.as_ref(),
             self.phase,
             self.fault_class,
             secret,
-        )?;
-        (root == self.debt_root)
-            .then_some(root)
-            .ok_or(XhciRetentionError::InvalidRoot)
+        ) else {
+            return 0;
+        };
+        if root != self.debt_root {
+            return 0;
+        }
+        root
     }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum XhciRegisterError {
     AddressOverflow,
+    InvalidRangeLength(usize),
     OutsideBootstrapContainment,
     OutsideMeasuredAperture(BarApertureBoundsError),
     Mmio(MmioAccessError),
@@ -516,6 +543,24 @@ impl RegisterIo for XhciRegisterTransport<'_, '_, '_> {
     }
 }
 
+impl CheckedSupportedProtocolRead for XhciRegisterTransport<'_, '_, '_> {
+    type Error = XhciRegisterError;
+
+    fn read_u32(&mut self, range: Bar0ApertureRange<'_>) -> Result<u32, Self::Error> {
+        if range.length() != core::mem::size_of::<u32>() {
+            return Err(XhciRegisterError::InvalidRangeLength(range.length()));
+        }
+        let window = MmioWindow::map(range.physical_address(), range.length(), self.authority)
+            .map_err(XhciRegisterError::Mmio)?;
+        let result = window.read_u32(0).map_err(XhciRegisterError::Mmio);
+        let close = window.close(self.authority);
+        if close != STATUS_OK {
+            return Err(XhciRegisterError::Unmap(close));
+        }
+        result
+    }
+}
+
 #[derive(Debug, Eq, PartialEq)]
 pub enum XhciActivationError {
     InvalidTakeoverConfiguration(TakeoverConfigError),
@@ -526,6 +571,7 @@ pub enum XhciActivationError {
     InvalidPciEvidence,
     Pci(BarProbeError),
     ApertureBinding(ApertureBindingError),
+    Protocol(SupportedProtocolError<XhciRegisterError>),
     Retention(XhciRetentionError),
     StepCapacity,
 }
@@ -562,6 +608,7 @@ impl XhciActivationFailure {
                 XhciDebtClass::PciTransaction
             }
             XhciActivationError::ApertureBinding(_) => XhciDebtClass::ApertureBinding,
+            XhciActivationError::Protocol(_) => XhciDebtClass::ProtocolEvidence,
             XhciActivationError::Retention(_) => XhciDebtClass::Retention,
             XhciActivationError::StepCapacity => XhciDebtClass::StepCapacity,
             XhciActivationError::InvalidTakeoverConfiguration(_) => {
@@ -755,23 +802,45 @@ pub fn activate_reset_ready(
             mutated: true,
         });
     };
-    let reset_ready_root = match validate_retained_controller(&bootstrap, &aperture, &ready, secret)
-    {
-        Ok(root) => root,
-        Err(error) => {
-            return Err(XhciActivationFailure {
-                bootstrap,
-                aperture: Some(aperture),
-                phase: TakeoverPhase::ReadyHalted,
-                error: XhciActivationError::Retention(error),
-                mutated: true,
-            });
+    let protocols = {
+        let mut registers = XhciRegisterTransport::measured(&aperture, mmio_authority);
+        match decode_supported_protocols(
+            &aperture,
+            snapshot.extended_capabilities_offset,
+            snapshot.maximum_ports,
+            secret.rotate_left(17) | 1,
+            &mut registers,
+        ) {
+            Ok(protocols) => protocols,
+            Err(error) => {
+                return Err(XhciActivationFailure {
+                    bootstrap,
+                    aperture: Some(aperture),
+                    phase: TakeoverPhase::ReadyHalted,
+                    error: XhciActivationError::Protocol(error),
+                    mutated: true,
+                });
+            }
         }
     };
+    let reset_ready_root =
+        match validate_retained_controller(&bootstrap, &aperture, &ready, &protocols, secret) {
+            Ok(root) => root,
+            Err(error) => {
+                return Err(XhciActivationFailure {
+                    bootstrap,
+                    aperture: Some(aperture),
+                    phase: TakeoverPhase::ReadyHalted,
+                    error: XhciActivationError::Retention(error),
+                    mutated: true,
+                });
+            }
+        };
     Ok(XhciResetReadyController {
         bootstrap,
         aperture,
         ready,
+        protocols,
         reset_ready_root,
     })
 }
@@ -786,6 +855,9 @@ pub struct XhciProbeSummary {
     pub reset_ready_controllers: usize,
     pub mutation_debts: usize,
     pub measured_aperture_bytes: u64,
+    pub supported_protocols: usize,
+    pub usb2_ports: usize,
+    pub usb3_ports: usize,
     pub root: u64,
 }
 
@@ -866,6 +938,9 @@ impl XhciProbeCensus {
             reset_ready_controllers: 0,
             mutation_debts: 0,
             measured_aperture_bytes: 0,
+            supported_protocols: 0,
+            usb2_ports: 0,
+            usb3_ports: 0,
             root: mix(self.secret, self.length as u64),
         };
         for (index, snapshot) in self.snapshots().iter().enumerate() {
@@ -887,14 +962,28 @@ impl XhciProbeCensus {
                     summary.measured_aperture_bytes = summary
                         .measured_aperture_bytes
                         .saturating_add(controller.aperture().length());
+                    summary.supported_protocols = summary
+                        .supported_protocols
+                        .saturating_add(usize::from(controller.protocols().protocol_count()));
+                    summary.usb2_ports = summary.usb2_ports.saturating_add(
+                        controller
+                            .protocols()
+                            .usb2_protocols()
+                            .map(|protocol| usize::from(protocol.port_count))
+                            .sum::<usize>(),
+                    );
+                    summary.usb3_ports = summary.usb3_ports.saturating_add(
+                        controller
+                            .protocols()
+                            .usb3_protocols()
+                            .map(|protocol| usize::from(protocol.port_count))
+                            .sum::<usize>(),
+                    );
                     summary.root = mix(summary.root, controller.reset_ready_root());
                 }
                 Some(RetainedController::MutationDebt(debt)) => {
                     summary.mutation_debts += 1;
-                    summary.root = match debt.debt_root(self.secret) {
-                        Ok(root) => mix(summary.root, root),
-                        Err(_) => 0,
-                    };
+                    summary.root = mix(summary.root, debt.debt_root(self.secret));
                 }
                 None => {}
             }
@@ -942,7 +1031,10 @@ pub fn boot_xhci_terminal_root(address: DeviceAddress) -> Option<u64> {
         .position(|snapshot| snapshot.address == address)?;
     Some(match census.retained[index].as_ref() {
         Some(RetainedController::ResetReady(controller)) => controller.reset_ready_root(),
-        Some(RetainedController::MutationDebt(debt)) => debt.debt_root(census.secret).ok()?,
+        Some(RetainedController::MutationDebt(debt)) => {
+            let root = debt.debt_root(census.secret);
+            (root != 0).then_some(root)?
+        }
         None => census.snapshots[index].snapshot_root,
     })
 }

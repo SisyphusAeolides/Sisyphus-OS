@@ -388,6 +388,30 @@ impl MmioWindow {
         Ok(())
     }
 
+    pub fn read_u64(&self, offset: usize) -> Result<u64, MmioAccessError> {
+        let pointer = self.checked_pointer::<u64>(offset)?;
+        compiler_fence(Ordering::SeqCst);
+
+        // SAFETY: checked_pointer verified range and eight-byte alignment, and
+        // the non-Copy window retains the mapping for the complete access.
+        let value = unsafe { pointer.read_volatile() };
+
+        compiler_fence(Ordering::SeqCst);
+        Ok(value)
+    }
+
+    pub fn write_u64(&self, offset: usize, value: u64) -> Result<(), MmioAccessError> {
+        let pointer = self.checked_pointer::<u64>(offset)?;
+        compiler_fence(Ordering::SeqCst);
+
+        // SAFETY: checked_pointer verified range and eight-byte alignment, and
+        // the non-Copy window retains the mapping for the complete access.
+        unsafe { pointer.write_volatile(value) };
+
+        compiler_fence(Ordering::SeqCst);
+        Ok(())
+    }
+
     pub fn close(self, _authority: &Capability<'_, DeviceMemoryRight>) -> Status {
         kernel_mmio().unmap(self.id.0)
     }
@@ -430,5 +454,21 @@ mod tests {
             window.read_u8(storage.len()),
             Err(MmioAccessError::OutOfBounds)
         );
+    }
+
+    #[test]
+    fn qword_access_is_exact_aligned_and_bounds_checked() {
+        let mut storage = [0_u64; 2];
+        let window = MmioWindow {
+            id: WindowId(0),
+            base: NonNull::new(storage.as_mut_ptr().cast::<u8>()).unwrap(),
+            length: core::mem::size_of_val(&storage),
+        };
+
+        window.write_u64(8, 0x0123_4567_89ab_cdef).unwrap();
+        assert_eq!(window.read_u64(8), Ok(0x0123_4567_89ab_cdef));
+        assert_eq!(storage, [0, 0x0123_4567_89ab_cdef]);
+        assert_eq!(window.read_u64(4), Err(MmioAccessError::Misaligned));
+        assert_eq!(window.read_u64(16), Err(MmioAccessError::OutOfBounds));
     }
 }
