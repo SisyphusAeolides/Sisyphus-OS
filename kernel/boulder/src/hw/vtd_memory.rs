@@ -160,16 +160,18 @@ impl<'allocator, 'storage> DirectMapVtdTables<'allocator, 'storage> {
 
     fn entries_are_empty(&self) -> bool {
         let roots_empty = (0..=u8::MAX).all(|bus| self.root_table().entry(bus).raw() == (0, 0));
-        let contexts_empty = (0..32).all(|slot| {
-            (0..8).all(|function| {
-                self.context_table()
-                    .entry(PciAddress {
-                        bus: 0,
-                        slot,
-                        function,
-                    })
-                    .raw()
-                    == (0, 0)
+        let contexts_empty = (0..=u8::MAX).all(|bus| {
+            (0..32).all(|slot| {
+                (0..8).all(|function| {
+                    self.context_table()
+                        .entry(PciAddress {
+                            bus,
+                            slot,
+                            function,
+                        })
+                        .raw()
+                        == (0, 0)
+                })
             })
         });
         roots_empty && contexts_empty
@@ -495,6 +497,18 @@ mod tests {
         let tables = failure.into_tables();
         assert_eq!(pool.free_frames(), free_before - 2);
         tables.root_table().entry(0).clear();
+        tables
+            .context_table()
+            .entry(PciAddress::new(9, 1, 0).unwrap())
+            .install_second_level_translation(3, 2, 0x3000)
+            .unwrap();
+        let failure = tables.close().unwrap_err();
+        assert_eq!(failure.fault(), DirectMapVtdTablesError::EntriesStillLive);
+        let tables = failure.into_tables();
+        tables
+            .context_table()
+            .entry(PciAddress::new(9, 1, 0).unwrap())
+            .clear();
         tables.close().unwrap();
         assert_eq!(pool.free_frames(), free_before);
     }

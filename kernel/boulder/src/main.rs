@@ -10,10 +10,10 @@ use boulder::arch::x86_64::{active_page_table_root, enable_execute_disable, halt
 use boulder::boot::acpi::{discover_dmar, discover_madt};
 use boulder::boot::multiboot2::BootInformation;
 use boulder::capability::{
-    ArtifactSynthesisControl, Authority, DeviceMemoryControl, FabricControl, FaultPolicyControl,
-    LearningControl, MachineProfileControl, MemorySharingControl, PciConfigurationControl,
-    PhysicalMemoryControl, PolicyControl, ProcessInstallControl, ResonanceControl,
-    UserlandImageControl,
+    ArtifactSynthesisControl, Authority, DeviceMemoryControl, DmaControl, FabricControl,
+    FaultPolicyControl, LearningControl, MachineProfileControl, MemorySharingControl,
+    PciConfigurationControl, PhysicalMemoryControl, PolicyControl, ProcessInstallControl,
+    ResonanceControl, UserlandImageControl,
 };
 use boulder::cpu::topology::{self, ExecutionClass, TopologyPolicy};
 use boulder::drivers::device_census::{
@@ -23,15 +23,25 @@ use boulder::drivers::device_census::{
 };
 use boulder::drivers::drivernet::fingerprint::LegacyConfigurationReader;
 use boulder::drivers::xhci::{
-    XHCI_PROBE_DRIVER_ID, XhciMutationDebt, XhciProbeCensus, activate_reset_ready,
-    activation_containment_root as xhci_activation_containment_root, boot_xhci_snapshot,
-    boot_xhci_summary, boot_xhci_terminal_root, containment_root as xhci_containment_root,
-    probe_bootstrap, publish_boot_xhci,
+    XHCI_PROBE_DRIVER_ID, XhciMutationDebt, XhciProbeCensus, XhciRegisterTransport,
+    activate_reset_ready, activation_containment_root as xhci_activation_containment_root,
+    boot_xhci_port_survey, boot_xhci_snapshot, boot_xhci_summary, boot_xhci_terminal_root,
+    containment_root as xhci_containment_root, probe_bootstrap, publish_boot_xhci,
 };
+use boulder::drivers::xhci_dma::{
+    IdentityDmaObservation, IdentityDmaWindow, XhciDmaArena, XhciDmaQuiescence,
+};
+use boulder::drivers::xhci_ports::survey_halted_ports;
+use boulder::drivers::xhci_runtime::prepare_halted_from_evidence;
 use boulder::fabric::{
     Completion, KERNEL_FABRIC, NodeCapabilities, NodeClass, WorkDescriptor, opcode,
 };
 use boulder::hw::pci;
+use boulder::hw::iommu::IommuDomain;
+use boulder::hw::iova::IovaRange;
+use boulder::hw::vtd_backend::{VtdDmaBackend, select_requester_scope};
+use boulder::hw::vtd_memory::{DirectMapSlptMemory, DirectMapVtdTables};
+use boulder::hw::vtd_slpt::SlptPageMemory;
 use boulder::ignition::{BootProtocol, IgnitionSequence};
 use boulder::interrupts;
 use boulder::memory::frame_pool::PhysicalFramePool;
@@ -581,6 +591,20 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
             dmar.host_address_width,
             dmar.remapping_units().len(),
         );
+        for unit in dmar.remapping_units().iter().copied() {
+            let endpoints = dmar
+                .explicit_endpoints_for(unit)
+                .map_or(0, |endpoints| endpoints.len());
+            let _ = writeln!(
+                serial,
+                "Boulder: DMAR unit segment={} base={:#x} include-all={} endpoints={} unresolved-requester-scopes={}",
+                unit.segment,
+                unit.register_base,
+                unit.include_all,
+                endpoints,
+                unit.has_unresolved_scopes(),
+            );
+        }
     }
 
     let mmio = kernel_mmio();
@@ -1126,8 +1150,46 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
     let configuration = LegacyConfigurationReader;
     let xhci_mmio = authority.grant::<DeviceMemoryControl>();
     let xhci_pci_configuration = authority.grant::<PciConfigurationControl>();
+    let xhci_dma_authority = authority.grant::<DmaControl>();
     for claim in xhci_claims.claims().iter().copied() {
         let address = claim.address();
+        let vtd_scope = if let Some(dmar) = dmar.as_ref() {
+            let requester = (address.segment == 0)
+                .then(|| pci::PciAddress::new(address.bus, address.slot, address.function))
+                .flatten();
+            match requester.map(|requester| select_requester_scope(dmar, requester)) {
+                Some(Ok(scope)) => {
+                    let unit = scope.unit();
+                    let _ = writeln!(
+                        serial,
+                        "Boulder: xHCI VT-d requester candidate {:?} policy={} unit={:#x} include-all={}",
+                        scope.requester(),
+                        scope.policy_name(),
+                        unit.register_base,
+                        unit.include_all,
+                    );
+                    Some(scope)
+                }
+                Some(Err(error)) => {
+                    let _ = writeln!(
+                        serial,
+                        "Boulder: xHCI VT-d requester proof unavailable {:?}: {error:?}",
+                        address
+                    );
+                    None
+                }
+                None => {
+                    let _ = writeln!(
+                        serial,
+                        "Boulder: xHCI VT-d requester proof unavailable {:?}: nonzero PCI segment",
+                        address
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
         let Some(evidence) = device_census
             .evidence()
             .find(|evidence| evidence.address == address)
@@ -1178,7 +1240,220 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
                             .usb3_protocols()
                             .map(|protocol| usize::from(protocol.port_count))
                             .sum::<usize>();
-                        if let Err(error) = xhci_census.insert_reset_ready(controller) {
+                        if let Some(scope) = vtd_scope {
+                            let unit = scope.unit();
+                            let unit_disabled = match boulder::hw::vtd::VtdMmioRegisters::map(
+                                unit, &xhci_mmio,
+                            ) {
+                                Ok(registers) => match registers.into_engine() {
+                                    Ok(engine) => {
+                                        let disabled = matches!(
+                                            engine.state(),
+                                            boulder::hw::vtd::VtdEngineState::Disabled
+                                        );
+                                        match engine.into_registers() {
+                                            Ok(registers) => {
+                                                let close = registers.close(&xhci_mmio);
+                                                if close.is_err() {
+                                                    let _ = writeln!(
+                                                        serial,
+                                                        "Boulder: xHCI VT-d recheck close failed unit={:#x}: {close:?}",
+                                                        unit.register_base,
+                                                    );
+                                                }
+                                                disabled && close.is_ok()
+                                            }
+                                            Err(_) => false,
+                                        }
+                                    }
+                                    Err(failure) => {
+                                        let fault = failure.fault();
+                                        let registers = failure.into_registers();
+                                        let close = registers.close(&xhci_mmio);
+                                        let _ = writeln!(
+                                            serial,
+                                            "Boulder: xHCI VT-d recheck rejected unit={:#x}: {fault:?}, close={close:?}",
+                                            unit.register_base,
+                                        );
+                                        false
+                                    }
+                                },
+                                Err(error) => {
+                                    let _ = writeln!(
+                                        serial,
+                                        "Boulder: xHCI VT-d recheck MMIO rejected unit={:#x}: {error:?}",
+                                        unit.register_base,
+                                    );
+                                    false
+                                }
+                            };
+                            if !unit_disabled {
+                                let _ = writeln!(
+                                    serial,
+                                    "Boulder: xHCI reversible DMA preparation deferred: routed VT-d unit is not proven disabled"
+                                );
+                            } else {
+                                let runtime_evidence = match controller
+                                    .runtime_evidence(xhci_secret)
+                                {
+                                    Ok(evidence) => evidence,
+                                    Err(error) => {
+                                        let _ = writeln!(
+                                            serial,
+                                            "Boulder: xHCI runtime evidence revalidation failed: {error:?}"
+                                        );
+                                        halt();
+                                    }
+                                };
+                                // SAFETY: The exact routed VT-d unit was freshly observed
+                                // disabled, the controller is reset-ready and HCHalted with
+                                // bus mastering clear, and the frame pool is wholly covered
+                                // by Boulder's stable cache-coherent direct map.
+                                let identity = unsafe {
+                                    IdentityDmaWindow::establish(
+                                        scope.requester(),
+                                        0,
+                                        EARLY_MAPPED_PHYSICAL_LIMIT,
+                                        HIGHER_HALF_DIRECT_MAP_BASE,
+                                        if snapshot.supports_64_bit_addresses {
+                                            u64::MAX
+                                        } else {
+                                            u64::from(u32::MAX)
+                                        },
+                                        runtime_evidence.generation,
+                                        runtime_evidence.reset_ready_root,
+                                        IdentityDmaObservation {
+                                            x86_cache_coherent: true,
+                                            requester_remapping_active: false,
+                                        },
+                                    )
+                                };
+                                let identity = match identity {
+                                    Ok(identity) => identity,
+                                    Err(error) => {
+                                        let _ = writeln!(
+                                            serial,
+                                            "Boulder: xHCI reversible DMA identity proof failed: {error:?}"
+                                        );
+                                        halt();
+                                    }
+                                };
+                                let arena = match XhciDmaArena::allocate(
+                                    &frame_pool,
+                                    &xhci_dma_authority,
+                                    identity,
+                                    snapshot.maximum_scratchpad_buffers,
+                                    snapshot.supports_64_bit_addresses,
+                                    xhci_secret,
+                                ) {
+                                    Ok(arena) => arena,
+                                    Err(failure) => {
+                                        let _ = writeln!(
+                                            serial,
+                                            "Boulder: xHCI reversible DMA allocation failed: {failure:?}"
+                                        );
+                                        halt();
+                                    }
+                                };
+                                let arena_root = arena.arena_root();
+                                let mut registers = XhciRegisterTransport::measured(
+                                    controller.aperture(),
+                                    &xhci_mmio,
+                                );
+                                match prepare_halted_from_evidence(
+                                    runtime_evidence,
+                                    controller.aperture().length(),
+                                    &arena,
+                                    &mut registers,
+                                    xhci_secret,
+                                ) {
+                                    Ok(prepared) => {
+                                        if let Err(error) = prepared.scrub_halted(&mut registers) {
+                                            let _ = writeln!(
+                                                serial,
+                                                "Boulder: xHCI reversible DMA scrub failed; retaining arena: {error:?}"
+                                            );
+                                            halt();
+                                        }
+                                        // SAFETY: scrub_halted re-proved HCHalted after
+                                        // clearing every programmed address, and PCI bus
+                                        // mastering has not been enabled in this epoch.
+                                        let quiescence = unsafe {
+                                            XhciDmaQuiescence::establish(
+                                                runtime_evidence.address,
+                                                runtime_evidence.generation,
+                                                runtime_evidence.reset_ready_root,
+                                            )
+                                        };
+                                        let Some(quiescence) = quiescence else {
+                                            let _ = writeln!(
+                                                serial,
+                                                "Boulder: xHCI DMA quiescence receipt rejected"
+                                            );
+                                            halt();
+                                        };
+                                        match arena.release(quiescence) {
+                                            Ok(release) => {
+                                                let _ = writeln!(
+                                                    serial,
+                                                    "Boulder: xHCI reversible DMA epoch prepared/scrubbed/reclaimed regions={} pages={} runtime-root={:#x} arena-root={:#x} release-root={:#x}",
+                                                    4 + usize::from(
+                                                        snapshot.maximum_scratchpad_buffers != 0
+                                                    ) * 2,
+                                                    release.released_pages,
+                                                    prepared.runtime_root(),
+                                                    arena_root,
+                                                    release.release_root,
+                                                );
+                                            }
+                                            Err(debt) => {
+                                                let _ = writeln!(
+                                                    serial,
+                                                    "Boulder: xHCI DMA reclamation debt retained: {debt:?}"
+                                                );
+                                                halt();
+                                            }
+                                        }
+                                    }
+                                    Err(error) => {
+                                        let _ = writeln!(
+                                            serial,
+                                            "Boulder: xHCI reversible DMA preparation failed; retaining arena because register publication may be partial: {error:?}"
+                                        );
+                                        halt();
+                                    }
+                                }
+                            }
+                        }
+                        let port_survey = {
+                            let mut registers =
+                                XhciRegisterTransport::measured(controller.aperture(), &xhci_mmio);
+                            survey_halted_ports(&controller, &mut registers, xhci_secret)
+                        };
+                        let port_survey = match port_survey {
+                            Ok(survey) => {
+                                let _ = writeln!(
+                                    serial,
+                                    "Boulder: xHCI halted port census connected={} enabled={} resetting={} overcurrent={} root={:#x}",
+                                    survey.connected_ports,
+                                    survey.enabled_ports,
+                                    survey.reset_active_ports,
+                                    survey.overcurrent_ports,
+                                    survey.root,
+                                );
+                                Some(survey)
+                            }
+                            Err(error) => {
+                                let _ = writeln!(
+                                    serial,
+                                    "Boulder: xHCI halted port census unavailable: {error:?}"
+                                );
+                                None
+                            }
+                        };
+                        if let Err(error) =
+                            xhci_census.insert_reset_ready_with_port_survey(controller, port_survey)
+                        {
                             let _ = writeln!(
                                 serial,
                                 "Boulder: xHCI reset-ready retention failed: {error:?}"
@@ -1306,7 +1581,7 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
     }
     let _ = writeln!(
         serial,
-        "Boulder: xHCI capability census controllers={} ports={} slots={} bootstrap-headers={} legacy-capable={} reset-ready={} aperture-bytes={} protocols={} usb2-ports={} usb3-ports={} debt={} deferred=true root={:#x}",
+        "Boulder: xHCI capability census controllers={} ports={} slots={} bootstrap-headers={} legacy-capable={} reset-ready={} aperture-bytes={} protocols={} usb2-ports={} usb3-ports={} connected={} enabled={} overcurrent={} debt={} deferred=true root={:#x}",
         xhci_summary.controllers,
         xhci_summary.total_ports,
         xhci_summary.total_slots,
@@ -1317,6 +1592,9 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
         xhci_summary.supported_protocols,
         xhci_summary.usb2_ports,
         xhci_summary.usb3_ports,
+        xhci_summary.connected_ports,
+        xhci_summary.enabled_ports,
+        xhci_summary.overcurrent_ports,
         xhci_summary.mutation_debts,
         xhci_summary.root,
     );
@@ -1433,6 +1711,13 @@ pub extern "C" fn boulder_main(multiboot_address: usize, multiboot_physical_addr
             {
                 // The retained transport prerequisite and the retained device
                 // binding name the same measured PCI function.
+                if let Some(survey) = boot_xhci_port_survey(address)
+                    && (survey.root == 0
+                        || survey.observations().len() != usize::from(snapshot.maximum_ports))
+                {
+                    let _ = writeln!(serial, "Boulder: retained xHCI port survey diverged");
+                    halt();
+                }
             }
             None if record.state == DeviceState::Quarantined => {}
             _ => {

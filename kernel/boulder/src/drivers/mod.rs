@@ -10,6 +10,7 @@ pub mod net;
 pub mod xhci;
 pub mod xhci_dma;
 pub mod xhci_iommu;
+pub mod xhci_ports;
 pub mod xhci_protocol;
 pub mod xhci_ring;
 pub mod xhci_runtime;

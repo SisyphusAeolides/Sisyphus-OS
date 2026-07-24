@@ -48,5 +48,6 @@ cargo user-push
 cargo kernel
 
 "$root/scripts/test-boot.sh"
+"$root/scripts/test-xhci-iommu.sh"
 
 printf '%s\n' "complete functionality gate passed"

@@ -5,7 +5,7 @@
 //! never treats missing DMAR data as an identity-DMA witness. Bus mastering,
 //! Run/Stop, and teardown remain separate transactions with their own debt.
 
-use super::xhci::XhciRuntimeSeed;
+use super::xhci::{XhciRuntimeEvidence, XhciRuntimeSeed};
 use super::xhci_dma::{XhciDmaPurpose, XhciDmaRegionPhase, XhciDmaRegionRecord};
 use super::xhci_iommu::{XhciIommuBindFailure, XhciIommuBinding, bind_core_regions};
 use super::xhci_ring::{
@@ -63,6 +63,7 @@ pub enum XhciRuntimeError<StorageError, RegisterError> {
 pub struct XhciPreparedRuntime {
     rings: XhciRingMachine,
     generation: u32,
+    operational_offset: u32,
     runtime_offset: u32,
     doorbell_offset: u32,
     event_dequeue_pointer: u64,
@@ -144,6 +145,17 @@ impl XhciPreparedRuntime {
         Ok(completion)
     }
 
+    /// Removes every address-bearing runtime register while HCHalted remains
+    /// observed.  This is the reverse half of a reversible preparation epoch:
+    /// after it succeeds, the backing arena may be reclaimed without leaving
+    /// stale physical addresses armed for a later controller start.
+    pub fn scrub_halted<R>(&self, registers: &mut R) -> Result<(), XhciRuntimeError<(), R::Error>>
+    where
+        R: XhciRuntimeRegisters,
+    {
+        scrub_halted_registers(registers, self.operational_offset, self.runtime_offset)
+    }
+
     fn event_dequeue_pointer_offset(&self) -> u32 {
         self.runtime_offset + RUNTIME_INTERRUPTER + RT_ERDP
     }
@@ -164,25 +176,36 @@ where
             XhciRuntimeInvariant::InvalidSecret,
         ));
     }
-    let evidence = seed.evidence();
+    prepare_halted_from_evidence(
+        seed.evidence(),
+        seed.aperture().length(),
+        storage,
+        registers,
+        secret,
+    )
+}
+
+/// Programs a halted controller from revalidated retained evidence without
+/// consuming the reset-ready controller.  It exists for reversible hardware
+/// preparation; an operational epoch must still consume `XhciRuntimeSeed`.
+pub fn prepare_halted_from_evidence<S, R>(
+    evidence: XhciRuntimeEvidence,
+    aperture_length: u64,
+    storage: &S,
+    registers: &mut R,
+    secret: u64,
+) -> Result<XhciPreparedRuntime, XhciRuntimeError<S::Error, R::Error>>
+where
+    S: XhciRingStorage,
+    R: XhciRuntimeRegisters,
+{
+    if secret == 0 {
+        return Err(XhciRuntimeError::Invariant(
+            XhciRuntimeInvariant::InvalidSecret,
+        ));
+    }
     let operational_offset = u32::from(evidence.snapshot.capability_length);
-    let status_offset = checked_offset(operational_offset, 4)?;
-    let command = registers
-        .read32(operational_offset)
-        .map_err(XhciRuntimeError::Register)?;
-    let status = registers
-        .read32(status_offset)
-        .map_err(XhciRuntimeError::Register)?;
-    if command & USBCMD_RUN_STOP != 0 || status & USBSTS_HCHALTED == 0 {
-        return Err(XhciRuntimeError::Invariant(
-            XhciRuntimeInvariant::ControllerNotHalted,
-        ));
-    }
-    if status & USBSTS_HOST_CONTROLLER_ERROR != 0 {
-        return Err(XhciRuntimeError::Invariant(
-            XhciRuntimeInvariant::ControllerError,
-        ));
-    }
+    verify_halted::<S::Error, _>(registers, operational_offset)?;
 
     let dcbaa = ready_region(storage, XhciDmaPurpose::Dcbaa, evidence.generation)?;
     let erst = ready_region(
@@ -201,7 +224,7 @@ where
         .ok_or(XhciRuntimeError::Invariant(
             XhciRuntimeInvariant::RegisterOffsetOverflow,
         ))?;
-    if u64::from(runtime_end) > seed.aperture().length() {
+    if u64::from(runtime_end) > aperture_length {
         return Err(XhciRuntimeError::Invariant(
             XhciRuntimeInvariant::RegisterOffsetOverflow,
         ));
@@ -229,7 +252,7 @@ where
         .ok_or(XhciRuntimeError::Invariant(
             XhciRuntimeInvariant::RegisterOffsetOverflow,
         ))?;
-    if u64::from(doorbell_end) > seed.aperture().length() {
+    if u64::from(doorbell_end) > aperture_length {
         return Err(XhciRuntimeError::Invariant(
             XhciRuntimeInvariant::RegisterOffsetOverflow,
         ));
@@ -284,11 +307,88 @@ where
     Ok(XhciPreparedRuntime {
         rings,
         generation: evidence.generation,
+        operational_offset,
         runtime_offset,
         doorbell_offset: doorbell,
         event_dequeue_pointer: program.event_ring_dequeue_pointer,
         runtime_root: canonical_root(root),
     })
+}
+
+fn verify_halted<StorageError, R>(
+    registers: &mut R,
+    operational_offset: u32,
+) -> Result<(), XhciRuntimeError<StorageError, R::Error>>
+where
+    R: XhciRuntimeRegisters,
+{
+    let status_offset = checked_offset(operational_offset, 4)?;
+    let command = registers
+        .read32(operational_offset)
+        .map_err(XhciRuntimeError::Register)?;
+    let status = registers
+        .read32(status_offset)
+        .map_err(XhciRuntimeError::Register)?;
+    if command & USBCMD_RUN_STOP != 0 || status & USBSTS_HCHALTED == 0 {
+        return Err(XhciRuntimeError::Invariant(
+            XhciRuntimeInvariant::ControllerNotHalted,
+        ));
+    }
+    if status & USBSTS_HOST_CONTROLLER_ERROR != 0 {
+        return Err(XhciRuntimeError::Invariant(
+            XhciRuntimeInvariant::ControllerError,
+        ));
+    }
+    Ok(())
+}
+
+fn scrub_halted_registers<R>(
+    registers: &mut R,
+    operational_offset: u32,
+    runtime_offset: u32,
+) -> Result<(), XhciRuntimeError<(), R::Error>>
+where
+    R: XhciRuntimeRegisters,
+{
+    verify_halted(registers, operational_offset)?;
+    let crcr = checked_offset(operational_offset, OP_CRCR)?;
+    let dcbaap = checked_offset(operational_offset, OP_DCBAAP)?;
+    let config = checked_offset(operational_offset, OP_CONFIG)?;
+    let erstsz = runtime_offset
+        .checked_add(RUNTIME_INTERRUPTER)
+        .and_then(|offset| offset.checked_add(RT_ERSTSZ))
+        .ok_or(XhciRuntimeError::Invariant(
+            XhciRuntimeInvariant::RegisterOffsetOverflow,
+        ))?;
+    let erstba = erstsz
+        .checked_add(RT_ERSTBA - RT_ERSTSZ)
+        .ok_or(XhciRuntimeError::Invariant(
+            XhciRuntimeInvariant::RegisterOffsetOverflow,
+        ))?;
+    let erdp = erstsz
+        .checked_add(RT_ERDP - RT_ERSTSZ)
+        .ok_or(XhciRuntimeError::Invariant(
+            XhciRuntimeInvariant::RegisterOffsetOverflow,
+        ))?;
+    registers
+        .write64(erdp, 0)
+        .map_err(XhciRuntimeError::Register)?;
+    registers
+        .write64(erstba, 0)
+        .map_err(XhciRuntimeError::Register)?;
+    registers
+        .write32(erstsz, 0)
+        .map_err(XhciRuntimeError::Register)?;
+    registers
+        .write64(crcr, 0)
+        .map_err(XhciRuntimeError::Register)?;
+    registers
+        .write64(dcbaap, 0)
+        .map_err(XhciRuntimeError::Register)?;
+    registers
+        .write32(config, 0)
+        .map_err(XhciRuntimeError::Register)?;
+    verify_halted(registers, operational_offset)
 }
 
 fn ready_region<S: XhciRingStorage, R>(
@@ -374,6 +474,7 @@ mod tests {
     #[derive(Default)]
     struct RegisterProbe {
         read_value: u32,
+        status_offset: u32,
         last_offset: u32,
         last_value: u64,
         writes: u8,
@@ -382,8 +483,10 @@ mod tests {
     impl XhciRuntimeRegisters for RegisterProbe {
         type Error = ();
 
-        fn read32(&mut self, _offset: u32) -> Result<u32, Self::Error> {
-            Ok(self.read_value)
+        fn read32(&mut self, offset: u32) -> Result<u32, Self::Error> {
+            Ok((offset == self.status_offset)
+                .then_some(self.read_value)
+                .unwrap_or(0))
         }
 
         fn write32(&mut self, offset: u32, value: u32) -> Result<(), Self::Error> {
@@ -429,5 +532,18 @@ mod tests {
                 XhciRuntimeInvariant::RegisterOffsetOverflow
             ))
         );
+    }
+
+    #[test]
+    fn halted_scrub_zeros_all_address_bearing_runtime_registers() {
+        let mut probe = RegisterProbe {
+            read_value: USBSTS_HCHALTED,
+            status_offset: 0x24,
+            ..RegisterProbe::default()
+        };
+        scrub_halted_registers(&mut probe, 0x20, 0x100).unwrap();
+        assert_eq!(probe.writes, 6);
+        assert_eq!(probe.last_offset, 0x58);
+        assert_eq!(probe.last_value, 0);
     }
 }

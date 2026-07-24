@@ -301,9 +301,15 @@ Rust machinery with generation-bound storage, self-link/ERST geometry, exact
 completion correlation, and rollback-oriented tests. A consuming runtime seed
 and halted-register programming bridge now retain the PCI/BAR/protocol proof
 chain through DCBAAP/CRCR/CONFIG/ERST/ERDP preparation. The binding remains
-deferred until an explicit requester identity-DMA witness, bus-master/Run-Stop
-transaction, interrupts, and USB child enumeration exist, so the attached
-QEMU keyboard and tablet are not misreported as supported input devices.
+deferred until its live translated-DMA, bus-master/Run-Stop transaction,
+interrupts, and USB child enumeration exist, so the attached QEMU keyboard
+and tablet are not misreported as supported input devices. The Intel-IOMMU
+Q35 lane now freshly proves its routed unit disabled, allocates the real DMA
+arena, programs the halted registers, scrubs them, and reclaims every frame;
+this is a reversible proof of the data path, not controller activation.
+While still halted and before DMA, Boulder performs a bounded root-port census;
+the QEMU lane currently measures two connected ports without treating them as
+enumerated children.
 The VT-d substrate now supports exact IOVA reservation and `map_dma_at`,
 allowing a future scoped requester domain to prove IOVA==physical mappings
 without relocating them; the default no-DMAR lane remains deliberately
@@ -317,6 +323,9 @@ escape hatches. Driver matching proves equality between the observed and
 selected PCI class tuples rather than accepting a Boolean assertion. Agda
 checks the privilege-ring transition model under `--safe`
 and `--without-K`, without postulates or imported libraries.
+The driver lifecycle model also rejects unresolved, nonzero-segment, and
+misrouted DMAR scopes, and represents a published context by both its selected
+requester and target so another requester's context cannot be constructed.
 
 The checker emits an attestation containing the exact SHA-256 root of each
 accepted source. A bare-metal Boulder build fails if that attestation is absent,

@@ -51,9 +51,14 @@ the boot check requires a reset-ready controller with a measured 16 KiB BAR0,
 two lease-decoded protocol bodies covering four USB2 and four USB3 ports, bus
 mastering disabled, one retained reset-ready root, and zero mutation debts.
 The fixed-capacity DMA arena, cycle-last command/event ring, and halted
-register-programming bridge are covered by focused Rust tests, but those
-children remain deferred until an explicit requester DMA witness, bus-master
-and Run/Stop transaction, interrupts, and USB enumeration exist.
+register-programming bridge are covered by focused Rust tests. The Q35 lane
+also freshly re-proves that the routed VT-d unit is disabled, allocates the
+real arena, programs and scrubs the halted controller, then reclaims every
+frame. It remains a reversible preparation epoch: live translated DMA,
+bus-master/Run-Stop, interrupts, and USB enumeration are still absent.
+Before that transition, the QEMU boot lane performs a read-only halted-port
+census and currently observes two connected root ports; this is evidence only,
+not USB child enumeration or input-driver support.
 The VT-d substrate now also has an exact-range IOVA reservation and
 `map_dma_at` path; tests prove an IOVA==physical mapping is retained and
 cannot be relocated or overlapped. The xHCI binding retains each mapping
@@ -63,6 +68,23 @@ witness, not a claim that the default no-DMAR QEMU lane is isolated.
 VT-d construction additionally rejects nonempty context entries across every
 PCI bus before it installs the sole requester context; a stale entry on any
 bus therefore blocks activation rather than escaping the isolation check.
+The production direct-map table allocator applies the same all-bus rule before
+reclaiming its pinned root/context pages, preventing table release while a
+nonzero-bus translation entry remains live.
+Include-all DRHD units have a separate policy type: only segment-zero,
+resolved, endpoint-free firmware routing may enter it. Resolved shared DRHD
+units also have an explicit policy type: the selected requester must be one of
+that unit's exact endpoints. Backend tests prove that either policy starts
+from empty tables and publishes exactly one requester context before
+translation.
+The device census keeps PCI segment identity; the current VT-d backend rejects
+nonzero-segment requesters explicitly until its requester and context-table
+model carries segment-aware identity end to end.
+The dedicated Q35 + Intel IOMMU lane measures QEMU's actual one-unit DMAR
+shape (seven explicit endpoints) and selects its xHCI endpoint through the
+shared-unit policy. It exercises the reversible DMA epoch above, but remains
+deferred: that epoch is not live VT-d enablement, bus mastering, Run/Stop,
+interrupt routing, or USB child enumeration.
 
 ## Required validation on the receiving machine
 

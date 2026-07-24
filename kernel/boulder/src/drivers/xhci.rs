@@ -14,6 +14,7 @@ use crate::drivers::device_census::{BindingAuthorization, DeviceAddress, PciFunc
 use crate::drivers::drivernet::fingerprint::{
     FingerprintError, PciConfigReader, PciFunctionAddress,
 };
+use crate::drivers::xhci_ports::XhciPortSurvey;
 use crate::drivers::xhci_protocol::{
     CheckedSupportedProtocolRead, SupportedProtocolError, SupportedProtocolEvidence,
     decode_supported_protocols,
@@ -262,6 +263,25 @@ impl XhciResetReadyController {
         self.bootstrap.authorization.generation()
     }
 
+    /// Revalidates the retained controller evidence without consuming its
+    /// reset-ready ownership. This supports a reversible halted-controller
+    /// programming epoch; the consuming [`XhciRuntimeSeed`] remains required
+    /// for a future bus-master transition.
+    pub fn runtime_evidence(
+        &self,
+        secret: u64,
+    ) -> Result<XhciRuntimeEvidence, XhciRuntimeSeedError> {
+        validate_retained_controller(
+            &self.bootstrap,
+            &self.aperture,
+            &self.ready,
+            &self.protocols,
+            secret,
+        )
+        .map_err(XhciRuntimeSeedError::Retention)?;
+        runtime_evidence_from_bootstrap(&self.bootstrap, self.reset_ready_root)
+    }
+
     pub fn into_runtime_seed(self, secret: u64) -> Result<XhciRuntimeSeed, XhciRuntimeSeedError> {
         let XhciResetReadyController {
             bootstrap,
@@ -272,37 +292,7 @@ impl XhciResetReadyController {
         } = self;
         validate_retained_controller(&bootstrap, &aperture, &ready, &protocols, secret)
             .map_err(XhciRuntimeSeedError::Retention)?;
-        let snapshot = bootstrap.snapshot;
-        let evidence = bootstrap.evidence;
-        let address = PciAddress::new(
-            snapshot.address.bus,
-            snapshot.address.slot,
-            snapshot.address.function,
-        )
-        .ok_or(XhciRuntimeSeedError::InvalidPciEvidence)?;
-        let expected = PciExpectedConfiguration::from_device(PciDevice {
-            address,
-            vendor_id: evidence.vendor_id,
-            device_id: evidence.device_id,
-            class_code: evidence.class_code,
-            subclass: evidence.subclass,
-            programming_interface: evidence.programming_interface,
-            revision: evidence.revision,
-            header_type: evidence.header_type,
-            interrupt_line: evidence.interrupt_line,
-            interrupt_pin: evidence.interrupt_pin,
-            command: evidence.command,
-            bar_count: evidence.bar_count,
-            raw_bars: evidence.raw_bars,
-        })
-        .ok_or(XhciRuntimeSeedError::InvalidPciEvidence)?;
-        let runtime_evidence = XhciRuntimeEvidence {
-            address,
-            generation: bootstrap.authorization.generation(),
-            expected,
-            snapshot,
-            reset_ready_root,
-        };
+        let runtime_evidence = runtime_evidence_from_bootstrap(&bootstrap, reset_ready_root)?;
         Ok(XhciRuntimeSeed {
             evidence: runtime_evidence,
             bootstrap,
@@ -311,6 +301,43 @@ impl XhciResetReadyController {
             protocols,
         })
     }
+}
+
+fn runtime_evidence_from_bootstrap(
+    bootstrap: &XhciBootstrap,
+    reset_ready_root: u64,
+) -> Result<XhciRuntimeEvidence, XhciRuntimeSeedError> {
+    let snapshot = bootstrap.snapshot;
+    let evidence = bootstrap.evidence;
+    let address = PciAddress::new(
+        snapshot.address.bus,
+        snapshot.address.slot,
+        snapshot.address.function,
+    )
+    .ok_or(XhciRuntimeSeedError::InvalidPciEvidence)?;
+    let expected = PciExpectedConfiguration::from_device(PciDevice {
+        address,
+        vendor_id: evidence.vendor_id,
+        device_id: evidence.device_id,
+        class_code: evidence.class_code,
+        subclass: evidence.subclass,
+        programming_interface: evidence.programming_interface,
+        revision: evidence.revision,
+        header_type: evidence.header_type,
+        interrupt_line: evidence.interrupt_line,
+        interrupt_pin: evidence.interrupt_pin,
+        command: evidence.command,
+        bar_count: evidence.bar_count,
+        raw_bars: evidence.raw_bars,
+    })
+    .ok_or(XhciRuntimeSeedError::InvalidPciEvidence)?;
+    Ok(XhciRuntimeEvidence {
+        address,
+        generation: bootstrap.authorization.generation(),
+        expected,
+        snapshot,
+        reset_ready_root,
+    })
 }
 
 impl XhciRuntimeSeed {
@@ -1001,11 +1028,17 @@ pub struct XhciProbeSummary {
     pub supported_protocols: usize,
     pub usb2_ports: usize,
     pub usb3_ports: usize,
+    pub connected_ports: usize,
+    pub enabled_ports: usize,
+    pub overcurrent_ports: usize,
     pub root: u64,
 }
 
 enum RetainedController {
-    ResetReady(XhciResetReadyController),
+    ResetReady {
+        controller: XhciResetReadyController,
+        port_survey: Option<XhciPortSurvey>,
+    },
     MutationDebt(XhciMutationDebt),
 }
 
@@ -1037,8 +1070,22 @@ impl XhciProbeCensus {
         &mut self,
         controller: XhciResetReadyController,
     ) -> Result<(), XhciProbeError> {
+        self.insert_reset_ready_with_port_survey(controller, None)
+    }
+
+    pub fn insert_reset_ready_with_port_survey(
+        &mut self,
+        controller: XhciResetReadyController,
+        port_survey: Option<XhciPortSurvey>,
+    ) -> Result<(), XhciProbeError> {
         let snapshot = controller.snapshot();
-        self.insert_snapshot(snapshot, Some(RetainedController::ResetReady(controller)))
+        self.insert_snapshot(
+            snapshot,
+            Some(RetainedController::ResetReady {
+                controller,
+                port_survey,
+            }),
+        )
     }
 
     pub fn insert_mutation_debt(&mut self, debt: XhciMutationDebt) -> Result<(), XhciProbeError> {
@@ -1084,6 +1131,9 @@ impl XhciProbeCensus {
             supported_protocols: 0,
             usb2_ports: 0,
             usb3_ports: 0,
+            connected_ports: 0,
+            enabled_ports: 0,
+            overcurrent_ports: 0,
             root: mix(self.secret, self.length as u64),
         };
         for (index, snapshot) in self.snapshots().iter().enumerate() {
@@ -1100,7 +1150,10 @@ impl XhciProbeCensus {
                 .legacy_capable_controllers
                 .saturating_add(usize::from(snapshot.legacy_support_offset != 0));
             match self.retained[index].as_ref() {
-                Some(RetainedController::ResetReady(controller)) => {
+                Some(RetainedController::ResetReady {
+                    controller,
+                    port_survey,
+                }) => {
                     summary.reset_ready_controllers += 1;
                     summary.measured_aperture_bytes = summary
                         .measured_aperture_bytes
@@ -1123,6 +1176,18 @@ impl XhciProbeCensus {
                             .sum::<usize>(),
                     );
                     summary.root = mix(summary.root, controller.reset_ready_root());
+                    if let Some(survey) = port_survey {
+                        summary.connected_ports = summary
+                            .connected_ports
+                            .saturating_add(usize::from(survey.connected_ports));
+                        summary.enabled_ports = summary
+                            .enabled_ports
+                            .saturating_add(usize::from(survey.enabled_ports));
+                        summary.overcurrent_ports = summary
+                            .overcurrent_ports
+                            .saturating_add(usize::from(survey.overcurrent_ports));
+                        summary.root = mix(summary.root, survey.root);
+                    }
                 }
                 Some(RetainedController::MutationDebt(debt)) => {
                     summary.mutation_debts += 1;
@@ -1173,13 +1238,26 @@ pub fn boot_xhci_terminal_root(address: DeviceAddress) -> Option<u64> {
         .iter()
         .position(|snapshot| snapshot.address == address)?;
     Some(match census.retained[index].as_ref() {
-        Some(RetainedController::ResetReady(controller)) => controller.reset_ready_root(),
+        Some(RetainedController::ResetReady { controller, .. }) => controller.reset_ready_root(),
         Some(RetainedController::MutationDebt(debt)) => {
             let root = debt.debt_root(census.secret);
             (root != 0).then_some(root)?
         }
         None => census.snapshots[index].snapshot_root,
     })
+}
+
+pub fn boot_xhci_port_survey(address: DeviceAddress) -> Option<XhciPortSurvey> {
+    let census = BOOT_XHCI_CENSUS.lock();
+    let census = census.as_ref()?;
+    let index = census
+        .snapshots()
+        .iter()
+        .position(|snapshot| snapshot.address == address)?;
+    match census.retained[index].as_ref()? {
+        RetainedController::ResetReady { port_survey, .. } => *port_survey,
+        RetainedController::MutationDebt(_) => None,
+    }
 }
 
 pub fn containment_root(

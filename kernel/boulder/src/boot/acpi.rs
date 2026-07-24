@@ -15,6 +15,9 @@ const DMAR_DRHD_TYPE: u16 = 0;
 const DMAR_DRHD_HEADER_LENGTH: usize = 16;
 const DMAR_SCOPE_HEADER_LENGTH: usize = 6;
 const DMAR_SCOPE_ENDPOINT: u8 = 1;
+const DMAR_SCOPE_PCI_BRIDGE: u8 = 2;
+const DMAR_SCOPE_IO_APIC: u8 = 3;
+const DMAR_SCOPE_HPET: u8 = 4;
 const DMAR_INCLUDE_ALL: u8 = 1;
 
 pub const MAXIMUM_IO_APICS: usize = 8;
@@ -674,9 +677,11 @@ fn parse_drhd(structure: &[u8], dmar: &mut DmarInfo) -> Result<(), AcpiError> {
                 return Err(AcpiError::MalformedDmar);
             }
         }
-        // A multi-hop path needs live bridge topology to resolve its terminal
-        // bus. Retaining it as a direct endpoint would manufacture coverage,
-        // so only exact one-hop endpoint scopes enter the evidence set.
+        // A multi-hop endpoint or PCI-bridge path needs live bridge topology
+        // to resolve its terminal bus. Retaining either as a direct endpoint
+        // would manufacture coverage. IO-APIC and HPET scopes do not name PCI
+        // requesters, so they must not block a separately proven requester
+        // context on an include-all DRHD.
         if scope[0] == DMAR_SCOPE_ENDPOINT && path_count == 1 {
             if scope[4] != 0 {
                 return Err(AcpiError::MalformedDmar);
@@ -691,7 +696,9 @@ fn parse_drhd(structure: &[u8], dmar: &mut DmarInfo) -> Result<(), AcpiError> {
                 return Err(AcpiError::MalformedDmar);
             }
             dmar.push_endpoint(endpoint)?;
-        } else {
+        } else if matches!(scope[0], DMAR_SCOPE_ENDPOINT | DMAR_SCOPE_PCI_BRIDGE)
+            || !matches!(scope[0], DMAR_SCOPE_IO_APIC | DMAR_SCOPE_HPET)
+        {
             unresolved_scope_count = unresolved_scope_count
                 .checked_add(1)
                 .ok_or(AcpiError::CapacityExceeded)?;
@@ -756,6 +763,8 @@ fn read_u64(bytes: &[u8], offset: usize) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hw::pci::PciAddress;
+    use crate::hw::vtd_backend::{VtdRequesterScope, select_requester_scope};
 
     const MEMORY_BASE: u64 = 0x1000;
     const XSDT_OFFSET: usize = 0x100;
@@ -869,6 +878,25 @@ mod tests {
         table
     }
 
+    fn include_all_dmar_with_non_requester_scope(scope_type: u8) -> [u8; 72] {
+        let mut table = [0_u8; 72];
+        table[..4].copy_from_slice(DMAR_SIGNATURE);
+        table[4..8].copy_from_slice(&(72_u32).to_le_bytes());
+        table[36] = 47;
+
+        let drhd = &mut table[48..72];
+        drhd[..2].copy_from_slice(&DMAR_DRHD_TYPE.to_le_bytes());
+        drhd[2..4].copy_from_slice(&(24_u16).to_le_bytes());
+        drhd[4] = DMAR_INCLUDE_ALL;
+        drhd[8..16].copy_from_slice(&(0xfeda_0000_u64).to_le_bytes());
+        drhd[16] = scope_type;
+        drhd[17] = 8;
+        // enumeration id=0, start bus=0, one syntactically valid path hop.
+        drhd[22] = 0;
+        drhd[23] = 0;
+        table
+    }
+
     #[test]
     fn parses_extended_rsdp_and_rejects_corruption() {
         let mut bytes = rsdp(MEMORY_BASE + XSDT_OFFSET as u64);
@@ -949,6 +977,70 @@ mod tests {
             slot: 3,
             function: 1,
         }));
+    }
+
+    #[test]
+    fn non_requester_dmar_scopes_do_not_poison_include_all_requester_selection() {
+        for scope_type in [DMAR_SCOPE_IO_APIC, DMAR_SCOPE_HPET] {
+            let table = include_all_dmar_with_non_requester_scope(scope_type);
+            let dmar = parse_dmar(&table).unwrap();
+            let unit = dmar.remapping_units()[0];
+            assert!(unit.include_all);
+            assert!(!unit.has_unresolved_scopes());
+        }
+
+        let table = include_all_dmar_with_non_requester_scope(DMAR_SCOPE_PCI_BRIDGE);
+        let dmar = parse_dmar(&table).unwrap();
+        assert!(dmar.remapping_units()[0].has_unresolved_scopes());
+    }
+
+    #[test]
+    fn include_all_dmar_routes_only_through_the_explicit_single_context_policy() {
+        let memory = acpi_memory();
+        let rsdp = Rsdp::parse(&rsdp(MEMORY_BASE + XSDT_OFFSET as u64)).unwrap();
+        let map = |address: u64, length: usize| {
+            let offset = address.checked_sub(MEMORY_BASE)? as usize;
+            let bytes = memory.get(offset..offset.checked_add(length)?)?;
+            Some(bytes.as_ptr())
+        };
+        let dmar = unsafe { discover_dmar(rsdp, map) }.unwrap().unwrap();
+        let scope = select_requester_scope(&dmar, PciAddress::new(0, 4, 0).unwrap()).unwrap();
+        assert!(matches!(scope, VtdRequesterScope::IsolatedIncludeAll(_)));
+        assert!(scope.unit().include_all);
+        assert_eq!(scope.requester(), PciAddress::new(0, 4, 0).unwrap());
+    }
+
+    #[test]
+    fn shared_dmar_unit_routes_through_the_empty_table_single_context_policy() {
+        let requester = PciAddress::new(0, 3, 0).unwrap();
+        let mut dmar = DmarInfo::new(48, 0);
+        dmar.push_endpoint(DmarEndpoint {
+            segment: 0,
+            bus: requester.bus,
+            slot: requester.slot,
+            function: requester.function,
+        })
+        .unwrap();
+        dmar.push_endpoint(DmarEndpoint {
+            segment: 0,
+            bus: 0,
+            slot: 4,
+            function: 0,
+        })
+        .unwrap();
+        dmar.push_unit(DmarRemappingUnit {
+            segment: 0,
+            register_base: 0xfed9_0000,
+            include_all: false,
+            endpoint_start: 0,
+            endpoint_count: 2,
+            unresolved_scope_count: 0,
+        })
+        .unwrap();
+        let scope = select_requester_scope(&dmar, requester).unwrap();
+        assert!(matches!(scope, VtdRequesterScope::IsolatedSharedUnit(_)));
+        assert_eq!(scope.policy_name(), "isolated-shared-unit");
+        assert_eq!(scope.requester(), requester);
     }
 
     #[test]

@@ -700,3 +700,127 @@ public export
 xhciQuarantineCannotRelease :
   XhciReleasePermission XhciQuarantined -> Void
 xhciQuarantineCannotRelease permission impossible
+
+-- VT-d firmware tables often describe a remapping unit shared by several PCI
+-- requesters.  Sharing a unit is not permission to publish several contexts:
+-- the admission decision below constructs one context target, indexed by the
+-- selected requester.  This mirrors the Rust backend's empty-table,
+-- single-context construction policy.
+
+public export
+data DmarScopePolicy
+  = FirmwareSingle
+  | IsolatedIncludeAll
+  | IsolatedSharedUnit
+
+public export
+data DmarScopeFault
+  = NonZeroPciSegment
+  | UnresolvedRequesterScope
+  | FirmwareRouteMismatch
+  | IncludeAllHasExplicitEndpoints
+  | MissingExplicitEndpoint
+  | RequesterOutsideExplicitScope
+
+public export
+record RawDmarScope where
+  constructor MkRawDmarScope
+  segmentZero : Bool
+  includeAll : Bool
+  unresolvedRequesterScopes : Bool
+  explicitEndpoints : List Nat
+  routedRequester : Nat
+
+-- A context table may contain an entry only for its type-indexed requester.
+-- There is deliberately no constructor that names a different requester.
+public export
+data PublishedContext : Nat -> Nat -> Type where
+  PublishSelectedRequester : PublishedContext requester requester
+
+public export
+record ScopedDmaCertificate (requester : Nat) where
+  constructor MkScopedDmaCertificate
+  policy : DmarScopePolicy
+  routedRequester : Nat
+  requesterAgreement : requester = routedRequester
+  tablesEmptyBeforePublication : IsTrue True
+  publishedContext : PublishedContext requester requester
+
+public export
+data ScopedDmaDecision : Nat -> Type where
+  ScopeRejected : DmarScopeFault -> ScopedDmaDecision requester
+  ScopeAccepted : ScopedDmaCertificate requester -> ScopedDmaDecision requester
+
+containsRequester : Nat -> List Nat -> Bool
+containsRequester requester [] = False
+containsRequester requester (candidate :: rest) =
+  case decEq requester candidate of
+    Yes Refl => True
+    No different => containsRequester requester rest
+
+admitScopedDma :
+  (requester : Nat) ->
+  (policy : DmarScopePolicy) ->
+  ScopedDmaDecision requester
+admitScopedDma requester policy =
+  ScopeAccepted
+    (MkScopedDmaCertificate
+      policy
+      requester
+      Refl
+      Proven
+      PublishSelectedRequester)
+
+verifyExplicitScope :
+  (requester : Nat) ->
+  List Nat ->
+  ScopedDmaDecision requester
+verifyExplicitScope requester [] = ScopeRejected MissingExplicitEndpoint
+verifyExplicitScope requester (endpoint :: []) =
+  case decEq requester endpoint of
+    Yes Refl => admitScopedDma requester FirmwareSingle
+    No different => ScopeRejected RequesterOutsideExplicitScope
+verifyExplicitScope requester endpoints =
+  case containsRequester requester endpoints of
+    True => admitScopedDma requester IsolatedSharedUnit
+    False => ScopeRejected RequesterOutsideExplicitScope
+
+public export
+verifyDmarScope :
+  (requester : Nat) ->
+  RawDmarScope ->
+  ScopedDmaDecision requester
+verifyDmarScope requester
+  (MkRawDmarScope False includeAll unresolved endpoints routed) =
+    ScopeRejected NonZeroPciSegment
+verifyDmarScope requester
+  (MkRawDmarScope True includeAll True endpoints routed) =
+    ScopeRejected UnresolvedRequesterScope
+verifyDmarScope requester
+  (MkRawDmarScope True True False [] routed) =
+    case decEq requester routed of
+      Yes Refl => admitScopedDma requester IsolatedIncludeAll
+      No different => ScopeRejected FirmwareRouteMismatch
+verifyDmarScope requester
+  (MkRawDmarScope True True False endpoints routed) =
+    ScopeRejected IncludeAllHasExplicitEndpoints
+verifyDmarScope requester
+  (MkRawDmarScope True False False endpoints routed) =
+    case decEq requester routed of
+      Yes Refl => verifyExplicitScope requester endpoints
+      No different => ScopeRejected FirmwareRouteMismatch
+
+public export
+publishedContextCannotNameAnotherRequester :
+  PublishedContext requester requester ->
+  (other : Nat) ->
+  Not (requester = other) ->
+  Not (PublishedContext requester other)
+publishedContextCannotNameAnotherRequester PublishSelectedRequester other different
+  PublishSelectedRequester = different Refl
+
+public export
+sharedUnitExample : ScopedDmaDecision 17
+sharedUnitExample =
+  verifyDmarScope 17
+    (MkRawDmarScope True False False [4, 17, 99] 17)

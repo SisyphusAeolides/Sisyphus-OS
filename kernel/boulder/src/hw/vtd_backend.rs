@@ -1,8 +1,10 @@
-//! Single-requester Intel VT-d DMA-remapping backend.
+//! Single-context Intel VT-d DMA-remapping backend.
 //!
 //! This is an owning, fixed-capacity integration core.  It deliberately does
-//! not interpret an include-all DRHD as exclusive ownership: a scope can only
-//! be obtained from one non-include-all DRHD containing exactly one endpoint.
+//! not interpret a shared or include-all DRHD as permission to translate every
+//! requester. A scope is admissible only when firmware routing selects the
+//! target requester and construction starts with empty root/context tables,
+//! then publishes exactly that requester's context.
 //! Production storage is supplied by `vtd_memory`: exclusive root/context and
 //! SLPT pages pinned in the same physical-frame ledger used by process address
 //! spaces. This module still makes no system-wide isolation claim until the
@@ -13,7 +15,7 @@ use sisyphus_driver_abi::{
     STATUS_UNSUPPORTED, Status,
 };
 
-use crate::boot::acpi::{DmarEndpoint, DmarInfo, DmarRemappingUnit};
+use crate::boot::acpi::{DmarEndpoint, DmarInfo, DmarRemappingUnit, DmarRouteError};
 use crate::sync::SpinLock;
 
 use super::iommu::{DmaAccess, DmaRemappingBackend};
@@ -52,6 +54,236 @@ pub enum SingleRequesterScopeError {
 pub struct SingleRequesterScope {
     unit: DmarRemappingUnit,
     requester: PciAddress,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum IsolatedIncludeAllScopeError {
+    NotIncludeAll,
+    NonZeroSegment,
+    IncompleteScope,
+    UnitNotPresent,
+    ExplicitEndpointsPresent,
+    RouteMismatch,
+}
+
+/// An include-all DRHD narrowed by an empty-table, single-context policy.
+///
+/// Firmware did not grant exclusive ownership here.  Instead, the eventual
+/// backend construction proves that both root/context tables are empty and
+/// installs exactly one requester context before translation is enabled.
+/// Segment zero is required until PCI identity carries a segment field.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct IsolatedIncludeAllRequesterScope {
+    unit: DmarRemappingUnit,
+    requester: PciAddress,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum IsolatedSharedUnitScopeError {
+    IncludeAll,
+    NonZeroSegment,
+    IncompleteScope,
+    UnitNotPresent,
+    MissingEndpoints,
+    EndpointMismatch,
+    AmbiguousRouting,
+}
+
+/// A multi-requester DRHD narrowed by an empty-table, single-context policy.
+///
+/// The unit is shared by firmware routing, but that does not grant its other
+/// requesters translation access: backend construction starts from empty root
+/// and context tables and installs only this requester's context entry.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct IsolatedSharedUnitRequesterScope {
+    unit: DmarRemappingUnit,
+    requester: PciAddress,
+}
+
+impl IsolatedSharedUnitRequesterScope {
+    pub fn from_dmar(
+        dmar: &DmarInfo,
+        unit: DmarRemappingUnit,
+        requester: PciAddress,
+    ) -> Result<Self, IsolatedSharedUnitScopeError> {
+        if unit.include_all {
+            return Err(IsolatedSharedUnitScopeError::IncludeAll);
+        }
+        if unit.segment != 0 {
+            return Err(IsolatedSharedUnitScopeError::NonZeroSegment);
+        }
+        if unit.has_unresolved_scopes() {
+            return Err(IsolatedSharedUnitScopeError::IncompleteScope);
+        }
+        let endpoints = dmar
+            .explicit_endpoints_for(unit)
+            .ok_or(IsolatedSharedUnitScopeError::UnitNotPresent)?;
+        if endpoints.is_empty() {
+            return Err(IsolatedSharedUnitScopeError::MissingEndpoints);
+        }
+        let expected = DmarEndpoint {
+            segment: 0,
+            bus: requester.bus,
+            slot: requester.slot,
+            function: requester.function,
+        };
+        if !endpoints.contains(&expected) {
+            return Err(IsolatedSharedUnitScopeError::EndpointMismatch);
+        }
+        if dmar.remapping_unit_for(expected).ok() != Some(Some(unit)) {
+            return Err(IsolatedSharedUnitScopeError::AmbiguousRouting);
+        }
+        Ok(Self { unit, requester })
+    }
+
+    pub const fn requester(self) -> PciAddress {
+        self.requester
+    }
+
+    pub const fn unit(self) -> DmarRemappingUnit {
+        self.unit
+    }
+}
+
+impl IsolatedIncludeAllRequesterScope {
+    pub fn from_dmar(
+        dmar: &DmarInfo,
+        unit: DmarRemappingUnit,
+        requester: PciAddress,
+    ) -> Result<Self, IsolatedIncludeAllScopeError> {
+        if !unit.include_all {
+            return Err(IsolatedIncludeAllScopeError::NotIncludeAll);
+        }
+        if unit.segment != 0 {
+            return Err(IsolatedIncludeAllScopeError::NonZeroSegment);
+        }
+        if unit.has_unresolved_scopes() {
+            return Err(IsolatedIncludeAllScopeError::IncompleteScope);
+        }
+        let endpoints = dmar
+            .explicit_endpoints_for(unit)
+            .ok_or(IsolatedIncludeAllScopeError::UnitNotPresent)?;
+        if !endpoints.is_empty() {
+            return Err(IsolatedIncludeAllScopeError::ExplicitEndpointsPresent);
+        }
+        let endpoint = DmarEndpoint {
+            segment: 0,
+            bus: requester.bus,
+            slot: requester.slot,
+            function: requester.function,
+        };
+        if dmar.remapping_unit_for(endpoint).ok() != Some(Some(unit)) {
+            return Err(IsolatedIncludeAllScopeError::RouteMismatch);
+        }
+        Ok(Self { unit, requester })
+    }
+
+    pub const fn requester(self) -> PciAddress {
+        self.requester
+    }
+
+    pub const fn unit(self) -> DmarRemappingUnit {
+        self.unit
+    }
+}
+
+/// One requester selected either by exact firmware scope or by the explicit
+/// empty-table include-all policy above.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VtdRequesterScope {
+    Explicit(SingleRequesterScope),
+    IsolatedIncludeAll(IsolatedIncludeAllRequesterScope),
+    IsolatedSharedUnit(IsolatedSharedUnitRequesterScope),
+}
+
+impl VtdRequesterScope {
+    pub const fn requester(self) -> PciAddress {
+        match self {
+            Self::Explicit(scope) => scope.requester(),
+            Self::IsolatedIncludeAll(scope) => scope.requester(),
+            Self::IsolatedSharedUnit(scope) => scope.requester(),
+        }
+    }
+
+    pub const fn unit(self) -> DmarRemappingUnit {
+        match self {
+            Self::Explicit(scope) => scope.unit(),
+            Self::IsolatedIncludeAll(scope) => scope.unit(),
+            Self::IsolatedSharedUnit(scope) => scope.unit(),
+        }
+    }
+
+    pub const fn policy_name(self) -> &'static str {
+        match self {
+            Self::Explicit(_) => "firmware-single",
+            Self::IsolatedIncludeAll(_) => "isolated-include-all",
+            Self::IsolatedSharedUnit(_) => "isolated-shared-unit",
+        }
+    }
+}
+
+impl From<SingleRequesterScope> for VtdRequesterScope {
+    fn from(scope: SingleRequesterScope) -> Self {
+        Self::Explicit(scope)
+    }
+}
+
+impl From<IsolatedIncludeAllRequesterScope> for VtdRequesterScope {
+    fn from(scope: IsolatedIncludeAllRequesterScope) -> Self {
+        Self::IsolatedIncludeAll(scope)
+    }
+}
+
+impl From<IsolatedSharedUnitRequesterScope> for VtdRequesterScope {
+    fn from(scope: IsolatedSharedUnitRequesterScope) -> Self {
+        Self::IsolatedSharedUnit(scope)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VtdRequesterScopeSelectionError {
+    Routing(DmarRouteError),
+    NoRemappingUnit,
+    Explicit(SingleRequesterScopeError),
+    IncludeAll(IsolatedIncludeAllScopeError),
+    SharedUnit(IsolatedSharedUnitScopeError),
+}
+
+/// Selects the only admissible requester policy for a segment-zero PCI BDF.
+/// The caller still needs pinned empty tables and live register proof before
+/// hardware translation can be enabled.
+pub fn select_requester_scope(
+    dmar: &DmarInfo,
+    requester: PciAddress,
+) -> Result<VtdRequesterScope, VtdRequesterScopeSelectionError> {
+    let endpoint = DmarEndpoint {
+        segment: 0,
+        bus: requester.bus,
+        slot: requester.slot,
+        function: requester.function,
+    };
+    let unit = dmar
+        .remapping_unit_for(endpoint)
+        .map_err(VtdRequesterScopeSelectionError::Routing)?
+        .ok_or(VtdRequesterScopeSelectionError::NoRemappingUnit)?;
+    if unit.include_all {
+        IsolatedIncludeAllRequesterScope::from_dmar(dmar, unit, requester)
+            .map(VtdRequesterScope::from)
+            .map_err(VtdRequesterScopeSelectionError::IncludeAll)
+    } else {
+        let endpoint_count = dmar
+            .explicit_endpoints_for(unit)
+            .map_or(0, |endpoints| endpoints.len());
+        if endpoint_count == 1 {
+            SingleRequesterScope::from_dmar(dmar, unit, requester)
+                .map(VtdRequesterScope::from)
+                .map_err(VtdRequesterScopeSelectionError::Explicit)
+        } else {
+            IsolatedSharedUnitRequesterScope::from_dmar(dmar, unit, requester)
+                .map(VtdRequesterScope::from)
+                .map_err(VtdRequesterScopeSelectionError::SharedUnit)
+        }
+    }
 }
 
 impl SingleRequesterScope {
@@ -141,7 +373,7 @@ pub struct VtdBackendBuildOwnership<
     pub tables: Tables,
     pub slpt: Option<Slpt<PAGES>>,
     pub slpt_root: SlptFrame,
-    pub scope: SingleRequesterScope,
+    pub scope: VtdRequesterScope,
     pub tables_installed: bool,
 }
 
@@ -269,7 +501,7 @@ struct VtdBackendCore<
     memory: Memory,
     tables: Tables,
     slpt: Slpt<PAGES>,
-    scope: SingleRequesterScope,
+    scope: VtdRequesterScope,
     poll_limit: u32,
     domain_generation: u32,
     domain_active: bool,
@@ -306,7 +538,7 @@ impl<
 {
     #[allow(clippy::too_many_arguments)]
     pub fn build(
-        scope: SingleRequesterScope,
+        scope: impl Into<VtdRequesterScope>,
         registers: Registers,
         memory: Memory,
         tables: Tables,
@@ -314,7 +546,8 @@ impl<
         domain_id: u16,
         poll_limit: u32,
     ) -> Result<Self, VtdBackendBuildFailure<Registers, Memory, Tables, PAGES>> {
-        let engine = match VtdRemappingEngine::probe(scope.unit, registers) {
+        let scope = scope.into();
+        let engine = match VtdRemappingEngine::probe(scope.unit(), registers) {
             Ok(engine) => engine,
             Err(failure) => {
                 let fault = failure.fault();
@@ -429,7 +662,7 @@ impl<
 
         if let Err(fault) = tables
             .context_table()
-            .entry(scope.requester)
+            .entry(scope.requester())
             .install_second_level_translation(
                 domain_id,
                 slpt.address_width_encoding(),
@@ -449,10 +682,10 @@ impl<
         }
         if let Err(fault) = tables
             .root_table()
-            .entry(scope.requester.bus)
+            .entry(scope.requester().bus)
             .install_context_table(context_pa)
         {
-            tables.context_table().entry(scope.requester).clear();
+            tables.context_table().entry(scope.requester()).clear();
             return Err(build_failure(
                 VtdBackendBuildFault::Table(fault),
                 VtdEngineOwnership::Engine(engine),
@@ -469,7 +702,7 @@ impl<
         if let Err(fault) = engine.enable(root_pa, poll_limit) {
             let safe_to_clear = engine.state() == VtdEngineState::Disabled;
             if safe_to_clear {
-                clear_requester_entries(&tables, scope.requester);
+                clear_requester_entries(&tables, scope.requester());
             }
             return Err(build_failure(
                 VtdBackendBuildFault::Enable(fault),
@@ -559,7 +792,7 @@ impl<
                     drop(guard);
                     return failure(VtdBackendShutdownFault::Disable(fault), self);
                 }
-                clear_requester_entries(&core.tables, core.scope.requester);
+                clear_requester_entries(&core.tables, core.scope.requester());
                 core.authority_released = true;
             }
         }
@@ -589,7 +822,7 @@ impl<
     fn isolate_device(&self, device: PciAddress) -> Result<Handle, Status> {
         let mut guard = self.core.lock();
         let core = guard.as_mut().ok_or(STATUS_IO_ERROR)?;
-        if device != core.scope.requester {
+        if device != core.scope.requester() {
             return Err(STATUS_UNSUPPORTED);
         }
         if core.poisoned || core.authority_released {
@@ -656,7 +889,7 @@ impl<
             }
             return STATUS_IO_ERROR;
         }
-        clear_requester_entries(&core.tables, core.scope.requester);
+        clear_requester_entries(&core.tables, core.scope.requester());
         core.authority_released = true;
         core.domain_active = false;
         if core.domain_generation == u32::MAX {
@@ -939,7 +1172,7 @@ pub struct VtdReleasedResources<Registers: VtdRegisterBackend, Memory, Tables, c
     pub memory: Memory,
     pub tables: Tables,
     pub slpt: Slpt<PAGES>,
-    pub scope: SingleRequesterScope,
+    pub scope: VtdRequesterScope,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -950,7 +1183,7 @@ fn build_failure<Registers: VtdRegisterBackend, Memory, Tables, const PAGES: usi
     tables: Tables,
     slpt: Option<Slpt<PAGES>>,
     slpt_root: SlptFrame,
-    scope: SingleRequesterScope,
+    scope: VtdRequesterScope,
     tables_installed: bool,
 ) -> VtdBackendBuildFailure<Registers, Memory, Tables, PAGES> {
     VtdBackendBuildFailure {
@@ -1329,6 +1562,22 @@ mod tests {
         }
     }
 
+    fn include_all_scope() -> IsolatedIncludeAllRequesterScope {
+        let mut include_all = unit();
+        include_all.include_all = true;
+        IsolatedIncludeAllRequesterScope {
+            unit: include_all,
+            requester: scope().requester(),
+        }
+    }
+
+    fn shared_unit_scope() -> IsolatedSharedUnitRequesterScope {
+        IsolatedSharedUnitRequesterScope {
+            unit: unit(),
+            requester: scope().requester(),
+        }
+    }
+
     fn backend() -> Backend {
         let memory = TestMemory::new();
         let root = memory.root();
@@ -1360,6 +1609,82 @@ mod tests {
                 Err(failure) => failure,
             };
         assert_eq!(failure.fault(), VtdBackendBuildFault::ContextTableNotEmpty);
+    }
+
+    #[test]
+    fn include_all_policy_still_publishes_only_its_single_requester_context() {
+        let memory = TestMemory::new();
+        let root = memory.root();
+        let backend = Backend::build(
+            include_all_scope(),
+            TestRegisters::new(),
+            memory,
+            TestTables::new(),
+            root,
+            7,
+            4,
+        )
+        .unwrap();
+        let guard = backend.core.lock();
+        let core = guard.as_ref().unwrap();
+        assert_eq!(
+            core.scope,
+            VtdRequesterScope::IsolatedIncludeAll(include_all_scope())
+        );
+        assert_ne!(
+            core.tables.roots.entry(scope().requester().bus).raw(),
+            (0, 0)
+        );
+        assert_eq!(core.tables.roots.entry(1).raw(), (0, 0));
+        assert_eq!(
+            core.tables.contexts.entry(scope().requester()).raw(),
+            (0x3001, (7 << 8) | 2)
+        );
+        assert_eq!(
+            core.tables
+                .contexts
+                .entry(PciAddress::new(2, 3, 0).unwrap())
+                .raw(),
+            (0, 0)
+        );
+    }
+
+    #[test]
+    fn shared_unit_policy_still_publishes_only_its_single_requester_context() {
+        let memory = TestMemory::new();
+        let root = memory.root();
+        let backend = Backend::build(
+            shared_unit_scope(),
+            TestRegisters::new(),
+            memory,
+            TestTables::new(),
+            root,
+            7,
+            4,
+        )
+        .unwrap();
+        let guard = backend.core.lock();
+        let core = guard.as_ref().unwrap();
+        assert_eq!(
+            core.scope,
+            VtdRequesterScope::IsolatedSharedUnit(shared_unit_scope())
+        );
+        assert_ne!(
+            core.tables.roots.entry(scope().requester().bus).raw(),
+            (0, 0)
+        );
+        assert_eq!(core.tables.roots.entry(1).raw(), (0, 0));
+        assert_eq!(
+            core.tables.contexts.entry(scope().requester()).raw(),
+            (0x3001, (7 << 8) | 2)
+        );
+        assert_eq!(
+            core.tables
+                .contexts
+                .entry(PciAddress::new(2, 3, 0).unwrap())
+                .raw(),
+            (0, 0)
+        );
     }
 
     #[test]
